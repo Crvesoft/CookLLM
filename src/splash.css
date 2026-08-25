@@ -1,0 +1,21 @@
+/* 启动 splash：JS 未就绪前避免黑屏，React 挂载后 #splash 被替换 */
+html, body { margin: 0; background: #080b10; }
+#splash {
+  height: 100vh; display: flex; flex-direction: column; align-items: center;
+  justify-content: center; gap: 18px; background: radial-gradient(circle at 72% 0%, rgba(104,71,200,.12), transparent 29%), #080b10;
+  font-family: Inter, "Noto Sans SC", system-ui, sans-serif;
+}
+#splash .mark {
+  width: 52px; height: 52px; display: grid; place-items: center;
+  border: 1px solid #7254d1; border-radius: 14px;
+  background: linear-gradient(145deg,#322659,#17152a);
+  box-shadow: 0 8px 25px rgba(111,76,200,.25);
+}
+#splash .title { margin-top: 2px; color: #eef2f8; font-size: 20px; font-weight: 600; letter-spacing: -.02em; }
+#splash .subtitle { margin-top: 5px; color: #6f7888; font: 600 11px/1 Inter, system-ui, sans-serif; letter-spacing: .16em; text-transform: uppercase; }
+#splash .spinner {
+  margin-top: 10px; width: 20px; height: 20px; border-radius: 50%;
+  border: 2px solid #2a3443; border-top-color: #8b5cf6;
+  animation: splash-spin 0.9s linear infinite;
+}
+@keyframes splash-spin { to { transform: rotate(360deg); } }

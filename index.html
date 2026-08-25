@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <script>
+      // 最早启动计时锚点：记录文档解析开始时间（performance 相对值 + 墙上时间），供 main.tsx 上报 splash/React 挂载耗时
+      window.__startup = { t0: performance.now(), wall0: Date.now(), domReady: 0 };
+      document.addEventListener("DOMContentLoaded", () => { window.__startup.domReady = Date.now(); }, { once: true });
+    </script>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#090d12" />
+    <title>CookLLM · 本地模型调度器</title>
+    <link rel="stylesheet" href="/src/splash.css" />
+  </head>
+  <body>
+    <div id="root">
+      <div id="splash">
+        <div class="mark">
+          <svg width="30" height="30" viewBox="260 160 520 680" aria-hidden="true">
+            <defs>
+              <linearGradient id="lds-body" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#cbbcff" /><stop offset="1" stop-color="#8b5cf6" /></linearGradient>
+              <linearGradient id="lds-muzzle" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#e6dcff" /><stop offset="1" stop-color="#a488e8" /></linearGradient>
+              <linearGradient id="lds-dock" x1="0" y1="0" x2="1" y2="0"><stop offset="0" stop-color="#7254d1" /><stop offset="1" stop-color="#8b5cf6" /></linearGradient>
+            </defs>
+            <rect x="398" y="206" width="72" height="112" rx="32" fill="#8b5cf6" transform="rotate(-16 434 262)" />
+            <rect x="554" y="206" width="72" height="112" rx="32" fill="#8b5cf6" transform="rotate(16 590 262)" />
+            <circle cx="512" cy="268" r="40" fill="#8b5cf6" />
+            <rect x="392" y="270" width="240" height="340" rx="104" fill="url(#lds-body)" />
+            <rect x="430" y="504" width="256" height="110" rx="55" fill="url(#lds-muzzle)" />
+            <circle cx="556" cy="396" r="30" fill="#19c8d1" opacity="0.25" />
+            <circle cx="556" cy="396" r="18" fill="#19c8d1" />
+            <circle cx="636" cy="559" r="11" fill="#17152a" opacity="0.85" />
+            <rect x="382" y="770" width="260" height="32" rx="16" fill="#3f3374" />
+            <rect x="298" y="698" width="428" height="46" rx="23" fill="url(#lds-dock)" />
+            <circle cx="686" cy="721" r="18" fill="#39d98a" opacity="0.35" />
+            <circle cx="686" cy="721" r="9" fill="#39d98a" />
+          </svg>
+        </div>
+        <div class="title">CookLLM</div>
+        <div class="subtitle">本地模型调度器</div>
+        <div class="spinner"></div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
