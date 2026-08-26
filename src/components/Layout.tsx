@@ -13,7 +13,7 @@ export function Sidebar({ page, onPage, modelCount, theme, onSetTheme }: { page:
     { id: "logs", label: "日志", icon: SquareTerminal },
   ];
   return <aside className="sidebar">
-    <div className="brand"><div className="brand-mark"><LlamaMark size={21} /></div><div><strong>CookLLM</strong></div></div>
+    <div className="brand"><div className="brand-mark"><LlamaMark size={36} /></div><div><strong>CookLLM</strong></div></div>
     <div className="side-section-label">工作区</div>
     <nav className="side-nav">{nav.map((item) => { const Icon = item.icon; return <button key={item.id} className={cn("side-link", page === item.id && "active")} onClick={() => onPage(item.id)}><Icon size={18} /><span>{item.label}</span>{item.badge && <em>{item.badge}</em>}</button>; })}</nav>
     <div className="sidebar-spacer" />
@@ -21,8 +21,10 @@ export function Sidebar({ page, onPage, modelCount, theme, onSetTheme }: { page:
   </aside>;
 }
 
-export function Topbar({ query, onQuery, running, busy, onToggleService, models, modelId, onSelectModel }: { query: string; onQuery: (value: string) => void; running: boolean; busy: boolean; onToggleService: () => void; models: ModelAsset[]; modelId: string; onSelectModel: (id: string) => void }) {
-  return <header className="topbar" data-tauri-drag-region><div className="breadcrumbs"><span>本地工作区</span><ChevronRight size={14} /><strong>模型调度</strong></div><div className="topbar-actions"><label className="search-box"><Search size={16} /><input value={query} onChange={(e) => onQuery(e.target.value)} placeholder="搜索模型、量化或路径…" /><kbd>⌘ K</kbd></label><label className="topbar-model" title="快速启动的模型"><select value={modelId} onChange={(e) => onSelectModel(e.target.value)} disabled={!models.length}>{!models.length && <option value="">选择模型</option>}{models.map((item) => <option key={item.id} value={item.id}>{modelTitle(item)}</option>)}</select></label><button className={cn("service-toggle", running && "running")} disabled={busy} onClick={onToggleService}>{running ? <><Square size={13} fill="currentColor" />关闭服务</> : <><Play size={14} fill="currentColor" />启动服务</>}</button></div></header>;
+const PAGE_LABELS: Record<Page, string> = { models: "模型仓库", profiles: "运行预设", playground: "会话", logs: "日志", settings: "偏好设置" };
+
+export function Topbar({ page, query, onQuery, running, busy, onToggleService, models, modelId, onSelectModel }: { page: Page; query: string; onQuery: (value: string) => void; running: boolean; busy: boolean; onToggleService: () => void; models: ModelAsset[]; modelId: string; onSelectModel: (id: string) => void }) {
+  return <header className="topbar" data-tauri-drag-region><div className="breadcrumbs"><strong>{PAGE_LABELS[page]}</strong></div><div className="topbar-actions"><label className="search-box"><Search size={16} /><input value={query} onChange={(e) => onQuery(e.target.value)} placeholder="搜索模型、量化或路径…" /><kbd>⌘ K</kbd></label><label className="topbar-model" title="快速启动的模型"><select value={modelId} onChange={(e) => onSelectModel(e.target.value)} disabled={!models.length}>{!models.length && <option value="">选择模型</option>}{models.map((item) => <option key={item.id} value={item.id}>{modelTitle(item)}</option>)}</select></label><button className={cn("service-toggle", running && "running")} disabled={busy} onClick={onToggleService}>{running ? <><Square size={13} fill="currentColor" />关闭服务</> : <><Play size={14} fill="currentColor" />启动服务</>}</button></div></header>;
 }
 
 // llama.cpp 日志行着色：按流与 llama.cpp 日志级别（I/W/E）分类

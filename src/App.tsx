@@ -163,6 +163,12 @@ export default function App() {
   };
   const duplicateProfile = (modelId: string, profile: Profile) =>
     upsertProfile(modelId, { ...profile, id: uid("profile"), name: profile.name + " 副本" }, "已复制同模型副本");
+  const setDefaultProfile = async (modelId: string, profileId: string) => {
+    const model = config.models.find((item) => item.id === modelId);
+    if (!model) return;
+    const makingDefault = model.defaultProfileId !== profileId;
+    await persist({ ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, defaultProfileId: makingDefault ? profileId : undefined } : item)) }, makingDefault ? "已设为默认预设" : "已取消默认预设");
+  };
   const renameModel = (modelId: string, displayName: string) => {
     const trimmed = displayName?.trim();
     void persist({ ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, displayName: trimmed ? trimmed : undefined } : item)) }, trimmed ? "已重命名" : "已恢复默认名称");
@@ -180,9 +186,9 @@ export default function App() {
 
   return <div className="app-shell">
     <Sidebar page={page} onPage={setPage} modelCount={config.models.length} theme={config.theme || "dark"} onSetTheme={(t) => void persist({ ...config, theme: t })} />
-    <div className="workspace"><Topbar query={query} onQuery={setQuery} running={status.running} busy={busy} onToggleService={status.running ? handleStop : startQuick} models={config.models} modelId={quickModelId || config.preferredModelId || config.models[0]?.id || ""} onSelectModel={setQuickModelId} /><main className="main-content">
-      {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onRenameModel={renameModel} onSetDefaultModel={setDefaultModelById} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} />}
-      {page === "profiles" && <ProfilesPage models={config.models} onEdit={(modelId, profile) => setProfileEditing({ modelId, profile })} onDelete={deleteProfile} onDuplicate={duplicateProfile} />}
+    <div className="workspace"><Topbar page={page} query={query} onQuery={setQuery} running={status.running} busy={busy} onToggleService={status.running ? handleStop : startQuick} models={config.models} modelId={quickModelId || config.preferredModelId || config.models[0]?.id || ""} onSelectModel={setQuickModelId} /><main className="main-content">
+      {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onRenameModel={renameModel} onSetDefaultModel={setDefaultModelById} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} />}
+      {page === "profiles" && <ProfilesPage models={config.models} onEdit={(modelId, profile) => setProfileEditing({ modelId, profile })} onDelete={deleteProfile} onDuplicate={duplicateProfile} onSetDefault={setDefaultProfile} />}
       {page === "playground" && <Playground status={status} baseUrl={baseUrl} modelName={activeModel ? modelTitle(activeModel) : undefined} messages={messages} setMessages={setMessages} onOpenWebUi={openWebUi} />}
       {page === "logs" && <LogsPage logs={logs} status={status} onClear={() => setLogs([])} />}
       {page === "settings" && <SettingsPage config={config} onPersist={persist} onLog={appendLog} />}
