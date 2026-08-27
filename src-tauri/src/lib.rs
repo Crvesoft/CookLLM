@@ -78,7 +78,6 @@ fn default_ubatch_size() -> u32 { 256 }
 fn default_cache_type() -> String { "f32".into() }
 fn default_reasoning() -> String { "auto".into() }
 fn default_load_mode() -> String { "mmap".into() }
-fn default_true() -> bool { true }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -114,7 +113,7 @@ struct AppConfig {
     /// 旧版全局预设池，仅兼容旧配置文件；新配置的预设已内置于每个模型。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     profiles: Vec<Profile>,
-    /// 界面主题：dark(默认) 或 light。
+    /// 界面主题：light(默认) 或 dark。
     #[serde(default)]
     theme: Option<String>,
     preferred_model_id: Option<String>,
@@ -226,20 +225,40 @@ fn load_config(app: AppHandle) -> Result<AppConfig, String> {
     read_config(&app)
 }
 
-/// 前端首帧渲染完成后调用：显示并聚焦主窗口。
-/// 配合 tauri.conf.json 中的 visible:false，避免 WebView2 冷启动时黑色空窗。
+/// Windows 沉浸式深色标题栏：DWMWA_USE_IMMERSIVE_DARK_MODE (20)。
+/// dark=true 时窗口标题栏变黑，false 恢复系统默认（亮色主题用）。
+#[cfg(target_os = "windows")]
+mod titlebar {
+    use std::ffi::c_void;
+
+    #[link(name = "dwmapi")]
+    extern "system" {
+        fn DwmSetWindowAttribute(hwnd: *const c_void, attr: u32, value: *const c_void) -> i32;
+    }
+
+    pub fn set_dark_mode(hwnd: *mut c_void, dark: bool) {
+        const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+        let value: i32 = if dark { 1 } else { 0 };
+        unsafe {
+            let _ = DwmSetWindowAttribute(
+                hwnd as *const c_void,
+                DWMWA_USE_IMMERSIVE_DARK_MODE,
+                &value as *const i32 as *const c_void,
+            );
+        }
+    }
+}
+
+/// 按应用主题同步系统标题栏：暗色主题时让 Windows 窗口标题栏变黑，亮色恢复默认。
 #[tauri::command]
-fn show_window(window: tauri::WebviewWindow) -> Result<(), String> {
-    window.show().map_err(|e| e.to_string())?;
-    // WebView2 渲染完成后再抢焦点，避免被其他应用压下去
-    window.set_focus().map_err(|e| e.to_string())?;
-    let _ = window.set_always_on_top(true);
-    let w = window.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(80));
-        let _ = w.set_always_on_top(false);
-        let _ = w.set_focus();
-    });
+fn set_window_theme(window: tauri::WebviewWindow, dark: bool) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        let hwnd = window.hwnd().map_err(|error| error.to_string())?;
+        // Tauri 的 HWND 是 *mut c_void 的透明 newtype（单指针字段），转成裸指针调用 DWM API。
+        let raw: *mut std::ffi::c_void = unsafe { std::mem::transmute(hwnd) };
+        titlebar::set_dark_mode(raw, dark);
+    }
     Ok(())
 }
 
@@ -564,7 +583,7 @@ pub fn run() {
             react_mounted_ms: None,
             reported: false,
         })))
-        .invoke_handler(tauri::generate_handler![load_config, save_config, start_server, stop_server, get_server_status, pick_files, pick_folder, expand_paths, open_url, show_main_window, report_startup_timing]);
+        .invoke_handler(tauri::generate_handler![load_config, save_config, start_server, stop_server, get_server_status, pick_files, pick_folder, expand_paths, open_url, set_window_theme, show_main_window, report_startup_timing]);
 
     let app = builder
         .build(tauri::generate_context!())

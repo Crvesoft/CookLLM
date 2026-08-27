@@ -56,3 +56,9 @@ export async function openExternal(url: string): Promise<void> {
   if (isTauri()) { await invoke("open_url", { url }); }
   else { window.open(url, "_blank"); }
 }
+
+/** 按应用主题同步系统标题栏：Windows 暗色主题显示黑色标题栏，亮色恢复默认。 */
+export async function setWindowTheme(dark: boolean): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("set_window_theme", { dark });
+}

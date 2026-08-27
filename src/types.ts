@@ -69,8 +69,3 @@ export interface LlamaLogPayload {
   line: string;
   timestamp: number;
 }
-
-export interface ChatMessage {
-  role: "user" | "assistant";
-  content: string;
-}
