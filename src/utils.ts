@@ -30,3 +30,21 @@ export function cn(...values: Array<string | false | null | undefined>) {
 export function newLog(line: string, stream: LlamaLogPayload["stream"] = "system"): LlamaLogPayload {
   return { line, stream, timestamp: Date.now() };
 }
+
+/** llama.cpp 日志行着色：按流与 llama.cpp 日志级别（I/W/E）分类 */
+export const lineKind = (stream: LlamaLogPayload["stream"], line: string): "system" | "err" | "warn" | "msg" => {
+  if (stream === "system") return "system";
+  if (stream === "stderr") {
+    // llama.cpp 日志格式：时间戳 + 级别字母（I/W/E），如 "0.00.105.500 I cmn  ..."
+    const tag = line.match(/^\S+\s+([IWE])\s/)?.at(1)?.toUpperCase();
+    if (tag === "E") return "err";
+    if (tag === "W") return "warn";
+  }
+  return "msg";
+};
+
+/** 从 llama.cpp 日志行提取生成吞吐（如 "43.2 tokens/sec"），未匹配返回 null */
+export function parseTokPerSec(line: string): number | null {
+  const match = line.match(/([0-9]+(?:\.[0-9]+)?)\s*(?:tokens?|toks?)\/sec/i);
+  return match ? Number(match[1]) : null;
+}

@@ -4,6 +4,7 @@ use std::{
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
+    sync::atomic::{AtomicBool, Ordering},
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -220,6 +221,36 @@ fn stream_reader<R: std::io::Read + Send + 'static>(app: AppHandle, stream: &'st
     });
 }
 
+/// 强制终止托管子进程（llama-server），三处出口共用：退出时 / 停止服务 / 重启服务。
+/// - Windows：taskkill /T /F（与"停止服务"按钮一致，最可靠，连带整棵进程树），
+///   此前退出路径用 in-process Child::kill 无法可靠杀掉 llama-server，导致它留在后台占显存。
+/// - 非 Windows：Child::kill。
+/// 之后带 5 秒超时轮询 wait：确保进程被回收，同时绝不无限阻塞调用线程（退出流程同样安全）。
+fn kill_managed_child(managed: &mut ManagedProcess) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW：避免拉起 taskkill 时闪出控制台窗口
+        let _ = Command::new("taskkill")
+            .args(["/PID", &managed.child.id().to_string(), "/T", "/F"])
+            .creation_flags(0x08000000)
+            .output();
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = managed.child.kill();
+    }
+    let deadline = now_ms() + 5000;
+    loop {
+        match managed.child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) if now_ms() >= deadline => break,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(_) => break,
+        }
+    }
+}
+
 #[tauri::command]
 fn load_config(app: AppHandle) -> Result<AppConfig, String> {
     read_config(&app)
@@ -293,8 +324,7 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
 
     let mut guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
     if let Some(mut running) = guard.take() {
-        let _ = running.child.kill();
-        let _ = running.child.wait();
+        kill_managed_child(&mut running);
     }
 
     let mut command = Command::new(&config.server_path);
@@ -360,29 +390,7 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
 fn stop_server(app: AppHandle, state: State<ProcessState>) -> Result<ServerStatus, String> {
     let mut guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
     if let Some(mut managed) = guard.take() {
-        #[cfg(windows)]
-        {
-            use std::os::windows::process::CommandExt;
-            // /F 强制结束整个进程树：llama-server 不响应 WM_CLOSE 时不再卡住显存
-            let _ = Command::new("taskkill")
-                .args(["/PID", &managed.child.id().to_string(), "/T", "/F"])
-                .creation_flags(0x08000000)
-                .output();
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = managed.child.kill();
-        }
-        // 带超时等待进程真正退出，避免主线程无限阻塞（此前“停止后无反应”的根因）
-        let deadline = now_ms() + 5000;
-        loop {
-            match managed.child.try_wait() {
-                Ok(Some(_)) => break,
-                Ok(None) if now_ms() >= deadline => break,
-                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
-                Err(_) => break,
-            }
-        }
+        kill_managed_child(&mut managed);
         emit_log(&app, "system", "llama-server 已停止");
     } else {
         emit_log(&app, "system", "llama-server 未在运行");
@@ -402,6 +410,107 @@ fn get_server_status(state: State<ProcessState>) -> Result<ServerStatus, String>
     } else {
         Ok(ServerStatus::default())
     }
+}
+
+/// GPU 实时指标（nvidia-smi）：显存 MiB / 核心负载 % / 功耗 W；驱动不支持的字段为 None。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GpuStats {
+    memory_used_mb: Option<f64>,
+    memory_total_mb: Option<f64>,
+    util_percent: Option<f64>,
+    power_watts: Option<f64>,
+}
+
+/// nvidia-smi 路径缓存（None = 本会话未找到，避免每轮重复拉起 cmd 搜索 PATH）。
+static SMI_PATH_CACHE: Mutex<Option<PathBuf>> = Mutex::new(None);
+/// 防止 GPU 查询堆积：上一轮还没返回时直接跳过本轮。
+static GPU_QUERY_BUSY: AtomicBool = AtomicBool::new(false);
+
+fn find_nvidia_smi() -> Option<PathBuf> {
+    let mut cache = SMI_PATH_CACHE.lock().ok()?;
+    if let Some(path) = cache.as_ref() {
+        return Some(path.clone());
+    }
+    // 1) NVIDIA 驱动把 nvidia-smi 随 System32 安装，优先直取（零额外进程）
+    let found = std::env::var("SystemRoot")
+        .ok()
+        .map(|root| PathBuf::from(root).join(r"system32\nvidia-smi.exe"))
+        .filter(|path| path.exists())
+        // 2) 兜底：PATH 搜索（Windows `where`）
+        .or_else(|| {
+            let mut command = std::process::Command::new("cmd");
+            command.args(["/C", "where", "nvidia-smi"]);
+            // CREATE_NO_WINDOW：GUI 进程拉起控制台程序 cmd 会新建一个可见控制台窗口
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                command.creation_flags(0x08000000);
+            }
+            let output = command.output().ok()?;
+            if !output.status.success() {
+                return None;
+            }
+            String::from_utf8(output.stdout)
+                .ok()?
+                .lines()
+                .map(|line| line.trim())
+                .find(|line| !line.is_empty())
+                .map(PathBuf::from)
+        });
+    *cache = found.clone();
+    found
+}
+
+/// 查询一次 GPU 指标（单位 MiB / % / W）；多卡取第一行即 GPU0。无 NVIDIA 驱动时返回 None。
+fn query_gpu_stats() -> Option<GpuStats> {
+    let path = find_nvidia_smi()?;
+    let mut command = std::process::Command::new(&path);
+    command
+        .args([
+            "--query-gpu=memory.total,memory.used,utilization.gpu,power.draw",
+            "--format=csv,noheader,nounits",
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    // CREATE_NO_WINDOW：nvidia-smi 是控制台程序，GUI 进程拉起时会闪出控制台窗口（每 2s 轮询一次）
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let line = text.lines().find(|line| !line.trim().is_empty())?;
+    let fields: Vec<&str> = line.split(',').map(|field| field.trim()).collect();
+    Some(GpuStats {
+        memory_total_mb: fields.get(0).and_then(|value| value.parse::<f64>().ok()),
+        memory_used_mb: fields.get(1).and_then(|value| value.parse::<f64>().ok()),
+        util_percent: fields.get(2).and_then(|value| value.parse::<f64>().ok()),
+        // 个别卡型不支持功耗读数（输出 "N/A"）→ None，前端回退为仅显示 Idle
+        power_watts: fields.get(3).and_then(|value| value.parse::<f64>().ok()),
+    })
+}
+
+#[tauri::command]
+async fn get_gpu_stats() -> Result<Option<GpuStats>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        // 上一轮查询仍在运行（驱动卡住）：跳过本轮，避免进程堆积
+        if GPU_QUERY_BUSY
+            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return None;
+        }
+        let stats = query_gpu_stats();
+        GPU_QUERY_BUSY.store(false, Ordering::Relaxed);
+        stats
+    })
+    .await
+    .map_err(|_| "GPU 查询任务已中断".into())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -583,7 +692,7 @@ pub fn run() {
             react_mounted_ms: None,
             reported: false,
         })))
-        .invoke_handler(tauri::generate_handler![load_config, save_config, start_server, stop_server, get_server_status, pick_files, pick_folder, expand_paths, open_url, set_window_theme, show_main_window, report_startup_timing]);
+        .invoke_handler(tauri::generate_handler![load_config, save_config, start_server, stop_server, get_server_status, get_gpu_stats, pick_files, pick_folder, expand_paths, open_url, set_window_theme, show_main_window, report_startup_timing]);
 
     let app = builder
         .build(tauri::generate_context!())
@@ -621,11 +730,12 @@ pub fn run() {
                 }
             }
             tauri::RunEvent::ExitRequested { .. } => {
+                // 关闭窗口（X 按钮）退出时，同样用 taskkill /T /F 杀掉 llama-server，
+                // 保证"关软件 = 关服务"，避免它留在后台继续占显存。
                 let state = app_handle.state::<ProcessState>();
                 if let Ok(mut guard) = state.0.lock() {
                     if let Some(mut managed) = guard.take() {
-                        let _ = managed.child.kill();
-                        let _ = managed.child.wait();
+                        kill_managed_child(&mut managed);
                     }
                 };
             }

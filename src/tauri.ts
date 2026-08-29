@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AppConfig, LlamaLogPayload, ServerStatus } from "./types";
+import type { AppConfig, GpuStats, LlamaLogPayload, ServerStatus } from "./types";
 
 export const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -27,6 +27,12 @@ export async function stopServer(): Promise<ServerStatus> {
 
 export async function getServerStatus(): Promise<ServerStatus> {
   return invoke<ServerStatus>("get_server_status");
+}
+
+/** GPU 实时指标（Rust 端 nvidia-smi）：浏览器 / 无 NVIDIA 驱动时返回 null */
+export async function getGpuStats(): Promise<GpuStats | null> {
+  if (!isTauri()) return null;
+  return invoke<GpuStats | null>("get_gpu_stats");
 }
 
 export interface PickedFile { path: string; sizeBytes: number; }

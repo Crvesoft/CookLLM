@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DEMO_CONFIG, DEFAULT_PROFILES, INITIAL_LOGS, migrateConfig, uid } from "./data";
-import { getServerStatus, isTauri, loadConfig, onLlamaLog, openExternal, saveConfig, setWindowTheme, startServer, stopServer } from "./tauri";
+import { getGpuStats, getServerStatus, isTauri, loadConfig, onLlamaLog, openExternal, saveConfig, setWindowTheme, startServer, stopServer } from "./tauri";
 import type { PickedFile } from "./tauri";
-import type { AppConfig, LlamaLogPayload, ModelAsset, Page, Profile, ServerStatus } from "./types";
-import { ACCENTS, EMPTY_STATUS, fileName, modelTitle, newLog } from "./utils";
-import { ConsoleDrawer, LogsPage, Sidebar, Toast, Topbar } from "./components/Layout";
+import { PAGE_LOG_MODE, type AppConfig, type GpuStats, type LlamaLogPayload, type ModelAsset, type Page, type Profile, type ServerStatus, type TokSample } from "./types";
+import { ACCENTS, EMPTY_STATUS, cn, fileName, modelTitle, newLog, parseTokPerSec } from "./utils";
+import LogDock from "./components/LogDock";
+import { LogsPage, Sidebar, Toast, Topbar } from "./components/Layout";
 import ImportModelModal from "./components/ImportModelModal";
 import ModelsPage from "./components/ModelsPage";
 import ProfilesPage from "./components/ProfilesPage";
@@ -20,13 +21,26 @@ export default function App() {
   const [query, setQuery] = useState("");
   const [selectedProfiles, setSelectedProfiles] = useState<Record<string, string>>({});
   const [profileEditing, setProfileEditing] = useState<{ modelId: string; profile: Profile } | null>(null);
-  const [consoleOpen, setConsoleOpen] = useState(true);
+  // ---- Dock 日志状态（除"日志"整页外的所有页面共用同一份展开/高度状态）----
+  /** Dock 默认收起：只显示底部状态栏，主区空间最大 */
+  const [logDockOpen, setLogDockOpen] = useState(false);
+  /** Dock 展开高度 px（120 ~ 60% 视口），持久化到 localStorage */
+  const [logDockHeight, setLogDockHeight] = useState(() => { const stored = Number(localStorage.getItem("cookllm.logDock.height")); return Number.isFinite(stored) ? Math.max(120, Math.min(window.innerHeight * 0.6, stored)) : 280; });
+  /** 服务异常：启动失败 / 进程意外退出；成功启动后清除 */
+  const [serviceAbnormal, setServiceAbnormal] = useState(false);
+  /** 最近一次从日志解析到的生成吞吐（带时间戳，微型状态卡据此判定"实时 / Idle"） */
+  const [tokSample, setTokSample] = useState<TokSample | null>(null);
+  /** GPU 实时指标（nvidia-smi，2s 轮询；浏览器模式恒为 null） */
+  const [gpuStats, setGpuStats] = useState<GpuStats | null>(null);
+  /** 已武装：本次启动期间收到就绪日志后自动收起 Dock（停止 / 失败时重置，避免误关用户手动打开的 Dock） */
+  const dockAutoCollapseRef = useRef(false);
+  /** 本次退出是主动停止（区别于崩溃），由状态轮询消费 */
+  const stopIntendedRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [menuModelId, setMenuModelId] = useState<string | null>(null);
   const [quickModelId, setQuickModelId] = useState("");
   const [importOpen, setImportOpen] = useState(false);
-  const logEndRef = useRef<HTMLDivElement>(null);
 
   const appendLog = (line: string, stream: LlamaLogPayload["stream"] = "system") => setLogs((previous) => [...previous.slice(-999), newLog(line, stream)]);
 
@@ -51,7 +65,13 @@ export default function App() {
           const loaded = await loadConfig();
           if (active && loaded) adopt(loaded);
           const current = await getServerStatus(); if (active) setStatus(current);
-          unlisten = await onLlamaLog((payload) => active && setLogs((previous) => [...previous.slice(-999), payload]));
+          unlisten = await onLlamaLog((payload) => {
+            if (!active) return;
+            setLogs((previous) => [...previous.slice(-999), payload]);
+            // 检测到服务就绪 → 自动收起 Dock（仅启动期间武装，避免误关用户手动打开的 Dock）
+            if (dockAutoCollapseRef.current && /is listening|listening on/i.test(payload.line)) { dockAutoCollapseRef.current = false; setLogDockOpen(false); }
+            const tps = parseTokPerSec(payload.line); if (tps !== null) setTokSample({ rate: tps, at: Date.now() });
+          });
         } else {
           const stored = localStorage.getItem("cookllm-config"); if (stored && active) { const parsed = JSON.parse(stored) as AppConfig; adopt(parsed); }
         }
@@ -62,14 +82,35 @@ export default function App() {
 
   useEffect(() => {
     if (!isTauri()) return;
-    const timer = window.setInterval(() => { void getServerStatus().then(setStatus).catch(() => undefined); }, 2000);
+    const timer = window.setInterval(() => {
+      void getServerStatus().then(setStatus).catch(() => undefined);
+      // GPU 指标独立轮询：查询失败 / 无 NVIDIA 驱动 → null，卡片显示 "--"
+      void getGpuStats().then(setGpuStats).catch(() => setGpuStats(null));
+    }, 2000);
     return () => window.clearInterval(timer);
   }, []);
+
+  /** Dock 高度持久化：下次进入会话页时恢复 */
+  useEffect(() => { localStorage.setItem("cookllm.logDock.height", String(logDockHeight)); }, [logDockHeight]);
+
+  /** 检测进程意外退出（运行中 → 停止，且不是主动停止）：标记服务异常并自动展开 Dock 显示 ERROR */
+  const prevRunningRef = useRef(false);
+  useEffect(() => {
+    const previous = prevRunningRef.current;
+    if (previous && !status.running) {
+      if (!stopIntendedRef.current) {
+        appendLog("llama-server 进程意外退出", "stderr");
+        setServiceAbnormal(true);
+        setLogDockOpen(true);
+      }
+      stopIntendedRef.current = false;
+    }
+    prevRunningRef.current = status.running;
+  }, [status.running]);
 
   /** 默认亮色主题；同时把标题栏同步给系统（Windows：暗色=黑，亮色=默认） */
   const theme = config.theme || "light";
   useEffect(() => { document.documentElement.setAttribute("data-theme", theme); void setWindowTheme(theme === "dark"); }, [theme]);
-  useEffect(() => { if (consoleOpen) logEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [logs, consoleOpen]);
   useEffect(() => { if (!toast) return; const timeout = window.setTimeout(() => setToast(null), 2200); return () => window.clearTimeout(timeout); }, [toast]);
 
   const persist = async (next: AppConfig, message?: string) => {
@@ -102,16 +143,22 @@ export default function App() {
         setStatus({ running: true, pid: 18420, port: profile.port, modelId: model.id, modelName: model.name, profileId: profile.id, profileName: profile.name, startedAt: Date.now() });
         [`llama_model_loader: loaded meta data with ${model.parameters} parameters`, `load_tensors: offloading ${profile.gpuLayers} repeating layers to GPU`, `llama_context: n_ctx = ${profile.contextSize}, n_batch = ${profile.batchSize}, n_ubatch = ${profile.ubatchSize}`, `server is listening on http://${profile.host}:${profile.port}`].forEach((line, index) => window.setTimeout(() => appendLog(line, "stdout"), 180 * index));
       }
+      setServiceAbnormal(false); // 启动成功 → 清除异常标记
+      setTokSample(null);
+      dockAutoCollapseRef.current = true; // 武装：本次启动期间收到就绪日志后自动收起 Dock
+      if (page !== "logs") setLogDockOpen(true); // 所有 Dock 页启动时自动展开，显示加载日志；就绪后自动收起（日志整页本身就在看日志）
       setToast(`${modelTitle(model)} 已启动`);
-    } catch (error) { appendLog(`启动失败：${String(error)}`, "stderr"); setToast("启动失败，请查看控制台"); }
+    } catch (error) { appendLog(`启动失败：${String(error)}`, "stderr"); setServiceAbnormal(true); dockAutoCollapseRef.current = false; if (page !== "logs") setLogDockOpen(true); setToast("启动失败，请查看控制台"); }
     finally { setBusy(false); }
   };
 
   const handleStop = async () => {
     setBusy(true); appendLog("正在停止 llama-server …");
+    stopIntendedRef.current = true; // 本次退出是主动停止 → 不判为服务异常
+    dockAutoCollapseRef.current = false;
     try { if (isTauri()) setStatus(await stopServer()); else { await new Promise((resolve) => window.setTimeout(resolve, 380)); setStatus(EMPTY_STATUS); appendLog("llama-server 已停止"); } setToast("服务已停止"); }
     catch (error) { appendLog(`停止失败：${String(error)}`, "stderr"); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setTokSample(null); }
   };
 
   const addModelFromPaths = async (paths: { path: string; sizeBytes: number }[]) => {
@@ -244,19 +291,24 @@ export default function App() {
     if (!model) return setToast("请先添加一个模型");
     await handleStart(model);
   };
-  const filteredModels = useMemo(() => { const q = query.trim().toLowerCase(); return q ? config.models.filter((model) => [model.name, model.architecture, model.quantization, model.path].join(" ").toLowerCase().includes(q)) : config.models; }, [config.models, query]);
+  const filteredModels = useMemo(() => { const q = query.trim().toLowerCase(); return q ? config.models.filter((model) => [modelTitle(model), model.architecture, model.quantization, model.path].join(" ").toLowerCase().includes(q)) : config.models; }, [config.models, query]);
+
+  /** 当前页是否使用 Dock 日志（除"日志"整页外所有页面）：Dock 参与布局，无悬浮遮挡 */
+  const isDockPage = PAGE_LOG_MODE[page] === "dock";
 
   return <div className="app-shell">
-    <Sidebar page={page} onPage={setPage} modelCount={config.models.length} theme={theme} onSetTheme={(t) => void persist({ ...config, theme: t })} />
-    <div className="workspace"><Topbar page={page} query={query} onQuery={setQuery} running={status.running} busy={busy} onToggleService={status.running ? handleStop : startQuick} models={config.models} modelId={quickModelId || config.preferredModelId || config.models[0]?.id || ""} onSelectModel={setQuickModelId} /><main className="main-content">
-      {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onRenameModel={renameModel} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} />}
+    <Sidebar page={page} onPage={setPage} modelCount={config.models.length} status={status} abnormal={serviceAbnormal} gpuStats={gpuStats} tokSample={tokSample} />
+    <div className={cn("workspace", isDockPage && "dock-mode")}><Topbar page={page} status={status} busy={busy} onToggleService={status.running ? handleStop : startQuick} models={config.models} modelId={quickModelId || config.preferredModelId || config.models[0]?.id || ""} onSelectModel={setQuickModelId} /><main className="main-content">
+      {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} query={query} onQuery={setQuery} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onRenameModel={renameModel} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} />}
       {page === "profiles" && <ProfilesPage models={config.models} onEdit={(modelId, profile) => setProfileEditing({ modelId, profile })} onDelete={deleteProfile} onDuplicate={duplicateProfile} onSetDefault={setDefaultProfile} onReorderProfile={reorderProfiles} onDeleteProfiles={deleteMultipleProfiles} />}
-      {/* 会话页保持常驻（隐藏而非卸载）：切换菜单不销毁内嵌 WebUI，回来时无需从聊天记录重新进入 */}
-      <div className="playground-pane" hidden={page !== "playground"}><Playground status={status} webUiUrl={webUiUrl} modelName={activeModel ? modelTitle(activeModel) : undefined} onOpenWebUi={openWebUi} /></div>
+      {/* 会话页保持常驻（隐藏而非卸载）：切换菜单不销毁内嵌 WebUI，回来时无需从聊天记录重新进入；WebUI 始终填满 Dock 下全部剩余高度 */}
+      <Playground visible={page === "playground"} status={status} webUiUrl={webUiUrl} modelName={activeModel ? modelTitle(activeModel) : undefined} onOpenWebUi={openWebUi} />
       {page === "logs" && <LogsPage logs={logs} status={status} onClear={() => setLogs([])} />}
       {page === "settings" && <SettingsPage config={config} onPersist={persist} onLog={appendLog} />}
-    </main></div>
-    <ConsoleDrawer logs={logs} open={consoleOpen} status={status} logEndRef={logEndRef} onToggle={() => setConsoleOpen((value) => !value)} onClear={() => setLogs([])} hidden={page === "logs"} />
+    </main>
+    {/* Dock 日志参与布局（收起=底部状态栏 / 展开=可调高度面板），各页面共用同一份状态，不遮挡内容；仅"日志"整页除外 */}
+    {isDockPage && <LogDock open={logDockOpen} height={logDockHeight} logs={logs} status={status} modelName={activeModel ? modelTitle(activeModel) : undefined} abnormal={serviceAbnormal} tokPerSec={tokSample ? tokSample.rate : null} onToggle={() => setLogDockOpen((value) => !value)} onHeightChange={setLogDockHeight} onClear={() => setLogs([])} />}
+    </div>
     {profileEditing && <ProfileEditor profile={profileEditing.profile} defaultProfileId={config.models.find((m) => m.id === profileEditing.modelId)?.defaultProfileId} onClose={() => setProfileEditing(null)} onSave={(profile, isDefault) => saveProfile(profileEditing.modelId, profile, isDefault)} />}
     {importOpen && <ImportModelModal existingPaths={new Set(config.models.map((model) => model.path.toLowerCase()))} onClose={() => setImportOpen(false)} onImport={handleImportModels} />}
     {toast && <Toast>{toast}</Toast>}
