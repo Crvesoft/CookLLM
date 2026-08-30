@@ -8,7 +8,7 @@ export const PAGE_LOG_MODE: Record<Page, LogMode> = {
   profiles: "dock", // 运行预设：Dock 日志（与会话页统一）
   playground: "dock", // 会话：Dock 日志（收起为底部状态栏，展开后 WebUI 自适应缩小）
   logs: "page", // 左菜单"日志"页：整页全屏视图，保持默认全屏显示
-  settings: "dock", // 偏好设置：Dock 日志（与会话页统一）
+  settings: "dock", // 设置：Dock 日志（与会话页统一）
 };
 
 export interface ModelAsset {

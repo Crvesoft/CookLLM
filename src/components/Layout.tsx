@@ -1,4 +1,4 @@
-import { Check, MessageSquareText, Play, SlidersHorizontal, Square, SquareTerminal, Boxes, type LucideIcon } from "lucide-react";
+import { Check, MessageSquareText, Play, Settings, SlidersHorizontal, Square, SquareTerminal, Boxes, type LucideIcon } from "lucide-react";
 import type React from "react";
 import { useEffect, useRef } from "react";
 import type { GpuStats, LlamaLogPayload, ModelAsset, Page, ServerStatus, TokSample } from "../types";
@@ -12,17 +12,18 @@ export function Sidebar({ page, onPage, modelCount, status, abnormal, gpuStats, 
     { id: "profiles", label: "运行预设", icon: SlidersHorizontal },
     { id: "playground", label: "会话", icon: MessageSquareText },
     { id: "logs", label: "日志", icon: SquareTerminal },
+    { id: "settings", label: "设置", icon: Settings },
   ];
   return <aside className="sidebar">
     <div className="brand"><div className="brand-mark"><LlamaMark size={36} /></div><div><strong>CookLLM</strong></div></div>
     <div className="side-section-label">工作区</div>
     <nav className="side-nav">{nav.map((item) => { const Icon = item.icon; return <button key={item.id} className={cn("side-link", page === item.id && "active")} onClick={() => onPage(item.id)}><Icon size={18} /><span>{item.label}</span>{item.badge && <em>{item.badge}</em>}</button>; })}</nav>
     <div className="sidebar-spacer" />
-    <MiniStatusBar page={page} onPage={onPage} status={status} abnormal={abnormal} gpuStats={gpuStats} tokSample={tokSample} />
+    <MiniStatusBar status={status} abnormal={abnormal} gpuStats={gpuStats} tokSample={tokSample} />
   </aside>;
 }
 
-const PAGE_LABELS: Record<Page, string> = { models: "模型仓库", profiles: "运行预设", playground: "会话", logs: "日志", settings: "偏好设置" };
+const PAGE_LABELS: Record<Page, string> = { models: "模型仓库", profiles: "运行预设", playground: "会话", logs: "日志", settings: "设置" };
 
 export function Topbar({ page, status, busy, onToggleService, models, modelId, onSelectModel }: { page: Page; status: ServerStatus; busy: boolean; onToggleService: () => void; models: ModelAsset[]; modelId: string; onSelectModel: (id: string) => void }) {
   /** 状态融入模型组件：运行中用只读胶囊替代下拉框（绿点 + 名称 · 量化），停止服务后自动还原为可选下拉框 */

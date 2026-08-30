@@ -313,7 +313,7 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
         .or_else(|| config.profiles.iter().find(|item| item.id == profile_id))
         .cloned().ok_or("未找到运行预设")?;
     if config.server_path.trim().is_empty() {
-        return Err("请先在偏好设置中选择 llama-server.exe".into());
+        return Err("请先在设置中选择 llama-server.exe".into());
     }
     if !PathBuf::from(&config.server_path).exists() {
         return Err(format!("llama-server 不存在：{}", config.server_path));

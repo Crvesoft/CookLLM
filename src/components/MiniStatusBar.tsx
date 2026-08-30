@@ -1,6 +1,6 @@
-import { Settings2, Zap } from "lucide-react";
+import { Zap } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { GpuStats, Page, ServerStatus, TokSample } from "../types";
+import type { GpuStats, ServerStatus, TokSample } from "../types";
 import { cn } from "../utils";
 
 const APP_VERSION = "0.1.0";
@@ -113,8 +113,6 @@ export function GpuMonitorStrip({ gpuStats, tokSample, running }: GpuMonitorStri
 }
 
 interface MiniStatusBarProps {
-  page: Page;
-  onPage: (page: Page) => void;
   status: ServerStatus;
   /** 服务异常（启动失败 / 进程意外退出）→ 红灯 */
   abnormal: boolean;
@@ -124,9 +122,9 @@ interface MiniStatusBarProps {
 
 /**
  * 左下角 GPU 性能监测 + 功耗合并卡片：GPU 指标区（VRAM / Core sparkline）在上，
- * 功耗行居中，健康灯 + 版本号 + 设置沉底至其右端。
+ * 功耗行居中，健康灯 + 版本号沉底至其右端。
  */
-export default function MiniStatusBar({ page, onPage, status, abnormal, gpuStats, tokSample }: MiniStatusBarProps) {
+export default function MiniStatusBar({ status, abnormal, gpuStats, tokSample }: MiniStatusBarProps) {
   const running = status.running;
   const powerText = gpuStats?.powerWatts != null ? `${Math.round(gpuStats.powerWatts)} W` : "--";
 
@@ -171,7 +169,7 @@ export default function MiniStatusBar({ page, onPage, status, abnormal, gpuStats
         <Spark history={coreHistory} tone="core" />
       </div>
       {/* 功耗行 */}
-      <div className="ms-power"><Zap size={11} aria-hidden="true" /><span>功耗</span><b>{powerText}</b><span className="ms-app-meta"><i className="ms-health" title={abnormal ? "服务异常" : running ? "运行中" : "未运行"} aria-hidden="true" /><span className="ms-version">v{APP_VERSION}</span><button className={cn("theme-icon-button", page === "settings" && "active")} title="偏好设置" onClick={() => onPage("settings")}><Settings2 size={13} /></button></span></div>
+      <div className="ms-power"><Zap size={11} aria-hidden="true" /><span>功耗</span><b>{powerText}</b><span className="ms-app-meta"><i className="ms-health" title={abnormal ? "服务异常" : running ? "运行中" : "未运行"} aria-hidden="true" /><span className="ms-version">v{APP_VERSION}</span></span></div>
     </div>
   );
 }
