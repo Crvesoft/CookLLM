@@ -66,6 +66,7 @@ function Spark({ history, tone }: { history: number[]; tone: "mem" | "core" }) {
  * 每格 = 左侧标题行 / 数值行纵排 + 右侧带网格迷你图；功耗与健康灯 / 版本号 / 设置仍留在左下角。
  */
 export function GpuMonitorStrip({ gpuStats, tokSample, running }: GpuMonitorStripProps) {
+  if (gpuStats == null) return null;
   // 1s tick：驱动"速率过期 → Idle"的翻转（仅重渲染本横条，不波及整树）
   const [, setTick] = useState(0);
   useEffect(() => {
@@ -126,6 +127,8 @@ interface MiniStatusBarProps {
  */
 export default function MiniStatusBar({ status, abnormal, gpuStats, tokSample }: MiniStatusBarProps) {
   const running = status.running;
+  // no GPU data (AMD / Intel / no dGPU): hide the monitoring section entirely
+  const hasGpu = gpuStats != null;
   const powerText = gpuStats?.powerWatts != null ? `${Math.round(gpuStats.powerWatts)} W` : "--";
 
   // ---- GPU 历史采样：每次轮询到达新读数即追加（仅前端保留，不落盘、不进 Rust）----
@@ -158,6 +161,7 @@ export default function MiniStatusBar({ status, abnormal, gpuStats, tokSample }:
 
   return (
     <div className={cn("mini-status", running && "running", abnormal && "abnormal")}>
+      {hasGpu ? (<>
       {/* GPU 性能监测区 */}
       <span className="ms-caption">GPU性能监测</span>
       <div className="gm-view" title="显存占用">
@@ -170,6 +174,10 @@ export default function MiniStatusBar({ status, abnormal, gpuStats, tokSample }:
       </div>
       {/* 功耗行 */}
       <div className="ms-power"><Zap size={11} aria-hidden="true" /><span>功耗</span><b>{powerText}</b><span className="ms-app-meta"><i className="ms-health" title={abnormal ? "服务异常" : running ? "运行中" : "未运行"} aria-hidden="true" /><span className="ms-version">v{APP_VERSION}</span></span></div>
+        </>
+      ) : (
+        <div className="ms-power"><span className="ms-app-meta"><i className="ms-health" title={abnormal ? "service abnormal" : running ? "running" : "stopped"} aria-hidden="true" /><span className="ms-version">v{APP_VERSION}</span></span></div>
+      )}
     </div>
   );
 }

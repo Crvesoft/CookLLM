@@ -32,7 +32,7 @@ export default function Playground({ visible, status, webUiUrl, modelName, onOpe
             <div><Bot size={18} /><span>{modelName || "Local model"}</span></div>
             <div className="playground-actions">
               {/* 状态与刷新合并为一个轻量标签：整块点击即刷新内嵌 WebUI；服务未运行时整体禁用 */}
-              <button type="button" className="connection-chip" title="刷新内嵌 WebUI" aria-label="刷新内嵌 WebUI" disabled={!status.running} onClick={() => setFrameKey((key) => key + 1)}><i /><span>{status.running ? "已连接" : "等待服务"}</span><em className="chip-divider" /><RefreshCw size={14} /></button>
+              <button type="button" className={status.running ? "connection-chip connected" : "connection-chip"} title="刷新内嵌 WebUI" aria-label="刷新内嵌 WebUI" disabled={!status.running} onClick={() => setFrameKey((key) => key + 1)}><i /><span>{status.running ? "已连接" : "等待服务"}</span><em className="chip-divider" /><RefreshCw size={14} /></button>
               <button type="button" className="webui-button" disabled={!status.running} onClick={onOpenWebUi}><Globe size={15} />WebUI</button>
             </div>
           </div>
