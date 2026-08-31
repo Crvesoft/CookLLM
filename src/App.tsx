@@ -45,6 +45,8 @@ export default function App() {
   const [importOpen, setImportOpen] = useState(false);
   /** 侧边菜单收起（图标轨），持久化到 localStorage */
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("cookllm.sidebar.collapsed") === "1");
+  /** 配置加载完成前不启用 GPU/状态轮询，避免「关闭监测」用户首次挂载闪现图表 */
+  const [configReady, setConfigReady] = useState(false);
 
   const appendLog = (line: string, stream: LlamaLogPayload["stream"] = "system") => setLogs((previous) => [...previous.slice(-999), newLog(line, stream)]);
 
@@ -80,17 +82,21 @@ export default function App() {
           const stored = localStorage.getItem("cookllm-config"); if (stored && active) { const parsed = JSON.parse(stored) as AppConfig; adopt(parsed); }
         }
       } catch (error) { appendLog(`初始化失败：${String(error)}`, "stderr"); }
+      // 无论成功失败，配置读取阶段结束 → 解锁轮询
+      if (active) setConfigReady(true);
     })();
     return () => { active = false; unlisten?.(); };
   }, []);
 
   useEffect(() => {
-    if (!isTauri()) return;
+    if (!isTauri() || !configReady) return;
+    let active = true;
     const refresh = () => {
-      void getServerStatus().then(setStatus).catch(() => undefined);
+      void getServerStatus().then((st) => { if (active) setStatus(st); }).catch(() => undefined);
       // GPU 指标独立轮询：查询失败 / 无 NVIDIA 驱动 → null，卡片显示 "--"
       if (gpuMonitorEnabled) {
-        void getGpuStats().then(setGpuStats).catch(() => setGpuStats(null));
+        // 响应到达时若已被关闭或 effect 已重跑（配置加载完成 / 用户切换），丢弃过期数据
+        void getGpuStats().then((stats) => { if (active && gpuMonitorEnabled) setGpuStats(stats); }).catch(() => { if (active) setGpuStats(null); });
       } else {
         setGpuStats(null);
       }
@@ -98,8 +104,8 @@ export default function App() {
     // 挂载立即刷新一次（避免第一帧只显示版本号、2 秒后才出卡片）
     refresh();
     const timer = window.setInterval(refresh, 2000);
-    return () => window.clearInterval(timer);
-  }, [gpuMonitorEnabled]);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [gpuMonitorEnabled, configReady]);
 
   /** Dock 高度持久化：下次进入会话页时恢复 */
   useEffect(() => { localStorage.setItem("cookllm.logDock.height", String(logDockHeight)); }, [logDockHeight]);
