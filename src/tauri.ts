@@ -64,6 +64,16 @@ export async function writeClipboard(text: string): Promise<void> {
   await invoke("clipboard_write", { text });
 }
 
+export interface GpuInfo {
+  vendor: string;
+  supported: boolean;
+}
+
+export async function getGpuInfo(): Promise<GpuInfo | null> {
+  if (!isTauri()) return null;
+  return invoke<GpuInfo>("get_gpu_info");
+}
+
 export async function openExternal(url: string): Promise<void> {
   if (isTauri()) { await invoke("open_url", { url }); }
   else { window.open(url, "_blank"); }

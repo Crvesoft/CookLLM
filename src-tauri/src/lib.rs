@@ -117,6 +117,9 @@ struct AppConfig {
     /// 界面主题：light(默认) 或 dark。
     #[serde(default)]
     theme: Option<String>,
+    /// GPU performance monitor toggle (default on; AMD/unsupported GPUs can disable).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gpu_monitor_enabled: Option<bool>,
     preferred_model_id: Option<String>,
     preferred_profile_id: Option<String>,
 }
@@ -152,6 +155,7 @@ impl Default for AppConfig {
                 extra_args: String::new(),
             }],
             theme: None,
+            gpu_monitor_enabled: None,
             preferred_model_id: None,
             preferred_profile_id: None,
         }
@@ -493,6 +497,31 @@ fn query_gpu_stats() -> Option<GpuStats> {
         // 个别卡型不支持功耗读数（输出 "N/A"）→ None，前端回退为仅显示 Idle
         power_watts: fields.get(3).and_then(|value| value.parse::<f64>().ok()),
     })
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GpuInfo {
+    vendor: String,
+    supported: bool,
+}
+
+/// Detect GPU vendor without spawning processes:
+/// NVIDIA via nvidia-smi.exe presence (System32), AMD via atiadlxx.dll (System32).
+#[tauri::command]
+fn get_gpu_info() -> GpuInfo {
+    if find_nvidia_smi().is_some() {
+        return GpuInfo { vendor: "nvidia".into(), supported: true };
+    }
+    let amd_present = std::env::var("SystemRoot")
+        .ok()
+        .map(|root| PathBuf::from(root).join(r"system32\atiadlxx.dll"))
+        .filter(|p| p.exists())
+        .is_some();
+    if amd_present {
+        return GpuInfo { vendor: "amd".into(), supported: false };
+    }
+    GpuInfo { vendor: "unknown".into(), supported: false }
 }
 
 #[tauri::command]
@@ -861,7 +890,7 @@ pub fn run() {
             react_mounted_ms: None,
             reported: false,
         })))
-        .invoke_handler(tauri::generate_handler![load_config, save_config, start_server, stop_server, get_server_status, get_gpu_stats, pick_files, pick_folder, expand_paths, open_url, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
+        .invoke_handler(tauri::generate_handler![load_config, save_config, start_server, stop_server, get_server_status, get_gpu_stats, get_gpu_info, pick_files, pick_folder, expand_paths, open_url, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
         .setup(|app| match configure_main_window(app) {
             Ok(()) => Ok(()),
             Err(error) => Err(error.into()),

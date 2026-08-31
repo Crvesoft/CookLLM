@@ -15,6 +15,8 @@ import ProfileEditor from "./components/ProfileEditor";
 
 export default function App() {
   const [config, setConfig] = useState<AppConfig>(DEMO_CONFIG);
+  /** GPU 性能监测开关（默认开启，设置页可关闭） */
+  const gpuMonitorEnabled = config.gpuMonitorEnabled !== false;
   const [page, setPage] = useState<Page>("models");
   const [status, setStatus] = useState<ServerStatus>(EMPTY_STATUS);
   const [logs, setLogs] = useState<LlamaLogPayload[]>(INITIAL_LOGS);
@@ -87,10 +89,14 @@ export default function App() {
     const timer = window.setInterval(() => {
       void getServerStatus().then(setStatus).catch(() => undefined);
       // GPU 指标独立轮询：查询失败 / 无 NVIDIA 驱动 → null，卡片显示 "--"
-      void getGpuStats().then(setGpuStats).catch(() => setGpuStats(null));
+      if (gpuMonitorEnabled) {
+        void getGpuStats().then(setGpuStats).catch(() => setGpuStats(null));
+      } else {
+        setGpuStats(null);
+      }
     }, 2000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [gpuMonitorEnabled]);
 
   /** Dock 高度持久化：下次进入会话页时恢复 */
   useEffect(() => { localStorage.setItem("cookllm.logDock.height", String(logDockHeight)); }, [logDockHeight]);

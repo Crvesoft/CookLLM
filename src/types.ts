@@ -60,6 +60,8 @@ export interface AppConfig {
   /** 旧版全局预设池，仅兼容旧配置读取；新配置预设已归入每个模型的 ModelAsset.profiles */
   profiles?: Profile[];
   theme?: "dark" | "light";
+  /** GPU performance monitor toggle (default on). */
+  gpuMonitorEnabled?: boolean;
   preferredModelId?: string;
   preferredProfileId?: string;
 }
