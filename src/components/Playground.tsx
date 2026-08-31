@@ -1,10 +1,27 @@
 import { Bot, Globe, RefreshCw } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ServerStatus } from "../types";
+import { openExternal, writeClipboard } from "../tauri";
 
 export default function Playground({ visible, status, webUiUrl, modelName, onOpenWebUi }: { visible: boolean; status: ServerStatus; webUiUrl: string; modelName?: string; onOpenWebUi: () => void }) {
   /** 刷新内嵌 WebUI：key 变化时重建 iframe（服务重启后旧页面状态失效时用） */
   const [frameKey, setFrameKey] = useState(0);
+
+  const frameRef = useRef<HTMLIFrameElement | null>(null);
+  useEffect(() => {
+    const onMessage = (event: MessageEvent) => {
+      if (!frameRef.current || event.source !== frameRef.current.contentWindow) return;
+      const data = event.data as { type?: string; text?: string; url?: string } | null;
+      if (!data || typeof data !== "object") return;
+      if (data.type === "cookllm:copy" && typeof data.text === "string") {
+        void writeClipboard(data.text).catch(() => {});
+      } else if (data.type === "cookllm:open" && typeof data.url === "string") {
+        void openExternal(data.url);
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
 
   return (
     <div className="playground-pane" hidden={!visible}>
@@ -22,7 +39,7 @@ export default function Playground({ visible, status, webUiUrl, modelName, onOpe
           {status.running
             ? (
               <div className="native-frame-wrap">
-                <iframe key={`${webUiUrl}:${frameKey}`} src={webUiUrl} title="llama.cpp Web UI" />
+                <iframe ref={frameRef} key={`${webUiUrl}:${frameKey}`} src={webUiUrl} title="llama.cpp Web UI" allow="clipboard-read; clipboard-write" />
               </div>
             )
             : <div className="messages-empty"><Globe size={30} /><p>服务未运行，请先在模型仓库启动</p></div>}

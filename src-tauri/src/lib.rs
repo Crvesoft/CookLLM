@@ -8,7 +8,7 @@ use std::{
     sync::Mutex,
     time::{SystemTime, UNIX_EPOCH},
 };
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{webview::NewWindowResponse, AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -678,6 +678,175 @@ fn report_startup_timing(
     Ok(())
 }
 
+
+/// Bridge script injected into ALL frames (main app frame skips itself).
+/// 1. Wrap navigator.clipboard.writeText: when the native API fails, post a
+///    message to the top page so it can fall back to the Tauri clipboard.
+/// 2. Intercept clicks on external links inside the iframe and ask the top
+///    page to open them in the system browser.
+const IFRAME_BRIDGE_SCRIPT: &str = r##"
+(function () {
+  if (window.top === window) return;
+  function send(payload) {
+    try { window.top.postMessage(payload, "*"); } catch (e) {}
+  }
+  try {
+    var nav = window.navigator;
+    var originals = nav.clipboard && nav.clipboard.writeText;
+    if (originals) {
+      nav.clipboard.writeText = function (text) {
+        try {
+          return originals.call(nav.clipboard, text).catch(function () {
+            send({ type: "cookllm:copy", text: String(text) });
+            return true;
+          });
+        } catch (e) {
+          send({ type: "cookllm:copy", text: String(text) });
+          return Promise.resolve(true);
+        }
+      };
+    }
+  } catch (e) {}
+  document.addEventListener("click", function (event) {
+    var anchor = event.target && event.target.closest ? event.target.closest("a[href]") : null;
+    if (!anchor) return;
+    var href = anchor.getAttribute("href") || "";
+    if (!href || href.charAt(0) === "#" || /^javascript:/i.test(href)) return;
+    var url;
+    try { url = new URL(href, window.location.href); } catch (e) { return; }
+    var host = url.hostname;
+    var local = host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1" || host === window.location.hostname;
+    if ((url.protocol === "http:" || url.protocol === "https:") && !local) {
+      event.preventDefault();
+      event.stopPropagation();
+      send({ type: "cookllm:open", url: url.href });
+    }
+  });
+})();
+"##;
+
+/// Allow navigation to the app itself and local llama services
+/// (localhost / loopback / private network). Any other http/https navigation
+/// is cancelled and handed to the system browser instead, so an external page
+/// can never replace the Tauri main window.
+fn should_allow_navigation(url: &tauri::Url) -> bool {
+    let scheme = url.scheme();
+    if scheme != "http" && scheme != "https" {
+        return true; // tauri:// app page, about:blank, data:, etc.
+    }
+    let host = url.host_str().unwrap_or("");
+    if host == "localhost" || host.ends_with(".localhost") || host.ends_with(".tauri.localhost") || host == "tauri.localhost" {
+        return true;
+    }
+    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+        if ip.is_loopback() || ip.is_unspecified() || ip.is_private() || ip.is_link_local() {
+            return true;
+        }
+    }
+    if let Ok(ip) = host.parse::<std::net::Ipv6Addr>() {
+        if ip.is_loopback() || ip.is_unspecified() || ip.is_unique_local() || ip.is_unicast_link_local() {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(windows)]
+fn set_system_clipboard(text: &str) -> Result<(), String> {
+    use windows_sys::Win32::Foundation::GlobalFree;
+    use windows_sys::Win32::System::DataExchange::{
+        CloseClipboard, EmptyClipboard, OpenClipboard, SetClipboardData,
+    };
+    use windows_sys::Win32::System::Memory::{
+        GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE,
+    };
+    use windows_sys::Win32::System::Ole::CF_UNICODETEXT;
+
+    let mut utf16: Vec<u16> = text.encode_utf16().collect();
+    utf16.push(0);
+    let bytes = utf16.len() * 2;
+
+    unsafe {
+        if OpenClipboard(std::ptr::null_mut()) == 0 {
+            return Err("OpenClipboard failed".into());
+        }
+        let handle = GlobalAlloc(GMEM_MOVEABLE, bytes);
+        if handle.is_null() {
+            let _ = CloseClipboard();
+            return Err("GlobalAlloc failed".into());
+        }
+        let target = GlobalLock(handle);
+        if target.is_null() {
+            let _ = GlobalFree(handle);
+            let _ = CloseClipboard();
+            return Err("GlobalLock failed".into());
+        }
+        std::ptr::copy_nonoverlapping(utf16.as_ptr(), target as *mut u16, utf16.len());
+        let _ = GlobalUnlock(handle);
+        let _ = EmptyClipboard();
+        let set = SetClipboardData(CF_UNICODETEXT as u32, handle);
+        let _ = CloseClipboard();
+        if set.is_null() {
+            let _ = GlobalFree(handle);
+            return Err("SetClipboardData failed".into());
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn set_system_clipboard(text: &str) -> Result<(), String> {
+    let mut child = std::process::Command::new("pbcopy")
+        .stdin(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|error| error.to_string())?;
+    if let Some(stdin) = child.stdin.as_mut() {
+        use std::io::Write;
+        stdin.write_all(text.as_bytes()).map_err(|error| error.to_string())?;
+    }
+    child.wait().map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+/// Called by the top page when the iframe native Clipboard API failed.
+#[tauri::command]
+fn clipboard_write(text: String) -> Result<(), String> {
+    set_system_clipboard(&text)
+}
+
+/// Create the main window manually (tauri.conf.json has create:false) so we can
+/// register navigation / new-window interception, enable WebView2 clipboard
+/// permissions and inject the iframe bridge script.
+fn configure_main_window(app: &mut tauri::App) -> tauri::Result<()> {
+    let navigation_handle = app.handle().clone();
+    let new_window_handle = app.handle().clone();
+    let window_config = app
+        .config()
+        .app
+        .windows
+        .first()
+        .cloned()
+        .ok_or_else(|| tauri::Error::WindowNotFound)?;
+    tauri::WebviewWindowBuilder::from_config(app.handle(), &window_config)?
+        .enable_clipboard_access()
+        .initialization_script_for_all_frames(IFRAME_BRIDGE_SCRIPT)
+        .on_navigation(move |url| {
+            if should_allow_navigation(url) {
+                return true;
+            }
+            let _ = open_url(navigation_handle.clone(), url.as_str().to_string());
+            false
+        })
+        .on_new_window(move |url, _features| {
+            if !should_allow_navigation(&url) {
+                let _ = open_url(new_window_handle.clone(), url.as_str().to_string());
+            }
+            NewWindowResponse::Deny
+        })
+        .build()?;
+    Ok(())
+}
+
 pub fn run() {
     let app_start_ms = now_ms();
     let builder = tauri::Builder::default()
@@ -692,7 +861,11 @@ pub fn run() {
             react_mounted_ms: None,
             reported: false,
         })))
-        .invoke_handler(tauri::generate_handler![load_config, save_config, start_server, stop_server, get_server_status, get_gpu_stats, pick_files, pick_folder, expand_paths, open_url, set_window_theme, show_main_window, report_startup_timing]);
+        .invoke_handler(tauri::generate_handler![load_config, save_config, start_server, stop_server, get_server_status, get_gpu_stats, pick_files, pick_folder, expand_paths, open_url, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
+        .setup(|app| match configure_main_window(app) {
+            Ok(()) => Ok(()),
+            Err(error) => Err(error.into()),
+        });
 
     let app = builder
         .build(tauri::generate_context!())

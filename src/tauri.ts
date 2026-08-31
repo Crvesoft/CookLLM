@@ -58,6 +58,12 @@ export async function onLlamaLog(handler: (payload: LlamaLogPayload) => void): P
   return listen<LlamaLogPayload>("llama-log", (event) => handler(event.payload));
 }
 
+/** Write to the system clipboard (Tauri fallback when the iframe Clipboard API fails). */
+export async function writeClipboard(text: string): Promise<void> {
+  if (!isTauri()) throw new Error("clipboard write is only available in Tauri");
+  await invoke("clipboard_write", { text });
+}
+
 export async function openExternal(url: string): Promise<void> {
   if (isTauri()) { await invoke("open_url", { url }); }
   else { window.open(url, "_blank"); }
