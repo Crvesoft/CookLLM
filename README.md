@@ -1,6 +1,6 @@
 # 🦙 CookLLM
 
-> **q** —— 专为 `llama.cpp` / `GGUF` 打造的现代化 Windows 桌面管理工具。
+> **llama.cpp轻量启动器** —— 专为 `llama.cpp` / `GGUF` 打造的现代化 Windows 桌面管理工具。
 > 模型仓库、运行预设、一键启停、GPU 监控、实时日志与内嵌 WebUI 会话，一站式解决本地推理的日常管理。
 
 ---
