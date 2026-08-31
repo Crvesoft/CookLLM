@@ -9,7 +9,7 @@
 
 ### 🏠 主界面 · 模型仓库
 
-导入并管理所有本地 GGUF 模型：拖拽即可收录，自动解析架构 / 参数量 / 量化格式，支持搜索、重命名、排序与批量管理。
+导入并管理所有本地 GGUF 模型：拖拽即可收录，支持搜索、重命名、排序与批量管理。
 
 ![主界面 · 模型仓库](docs/light.png)
 
@@ -21,13 +21,13 @@
 
 ### 📟 实时日志
 
-实时捕获 `llama-server` 的 `stdout` / `stderr`，按 ERR / WRN / SYS / OUT 分级染色，支持底部 Dock 抽屉与整页日志两种视图。
+实时捕获 `llama-server` 的 `stdout` / `stderr`，支持底部 Dock 抽屉与整页日志两种视图。
 
 ![日志](docs/log.png)
 
 ### 💬 会话 · 内嵌 WebUI
 
-服务启动后内嵌 llama.cpp 官方 WebUI，开箱即聊；同时本地暴露 OpenAI 兼容的 `/v1` 接口，可无缝对接任意第三方客户端。
+内嵌 llama.cpp 官方 WebUI，开箱即聊；同时本地暴露 OpenAI 兼容的 `/v1` 接口，可无缝对接任意第三方客户端。
 
 ![会话 · WebUI](docs/webui.png)
 
