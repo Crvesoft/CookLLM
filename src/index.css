@@ -83,6 +83,8 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
 .ms-grid line { stroke:rgba(255,255,255,.08); }
 /* 功耗行：GPU 指标区下方，健康灯 + 版本号 + 设置沉底至其右端 */
 .ms-power { display:flex; align-items:center; gap:6px; min-width:0; color:#5f6a7c; font:500 11px JetBrains Mono,monospace; white-space:nowrap; }
+.ms-power-only { padding:8px 10px; border:1px solid #232b38; border-radius:9px; background:#0c121a; font-size:12px; gap:8px; }
+.ms-state-text { min-width:0; overflow:hidden; text-overflow:ellipsis; color:#a7b0c0; font-weight:600; }
 .ms-power b { min-width:0; overflow:hidden; text-overflow:ellipsis; font-weight:600; color:#8b95a7; }
 /* 健康灯（功耗行右端）：灰 = 未启动，绿 = 运行中，玫红闪烁 = 服务异常 */
 .ms-health { flex:none; width:7px; height:7px; border-radius:50%; background:#4a5468; }
@@ -90,6 +92,8 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
 .mini-status.abnormal .ms-health { background:#e26f91; box-shadow:0 0 8px rgba(226,111,145,.7); animation:dock-pulse 1.4s ease infinite; }
 /* 健康灯 + 版本号沉底至功耗行右端，auto margin 推右 */
 .ms-app-meta { display:flex; align-items:center; gap:4px; flex:none; margin-left:auto; }
+.ms-theme-toggle { flex:none; display:flex; align-items:center; justify-content:center; width:22px; height:22px; padding:0; border:1px solid #293342; border-radius:6px; color:#8b95a7; background:#0c121a; cursor:pointer; transition:.15s ease; }
+.ms-theme-toggle:hover { color:#ffd9ad; border-color:#4a5a70; background:#131b26; }
 .ms-version { color:#677184; font:500 10.5px JetBrains Mono,monospace; white-space:nowrap; }
 .ms-spark.mem polygon { fill:rgba(90,167,247,.26); }
 .ms-spark.mem polyline { stroke:#5aa7f7; stroke-width:1; fill:none; }
@@ -192,6 +196,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
 [data-theme="light"] .runtime-card p { color:#5b6474; }
 /* 紧凑状态卡亮色套：白卡 + 浅边框，绿点 / 玫红对齐 service-toggle 语义 */
 [data-theme="light"] .mini-status { border-color:#e3e7ef; background:linear-gradient(145deg,#ffffff,#f3f5fa); }
+[data-theme="light"] .ms-power-only { border-color:#e3e7ef; background:#f3f5fa; }
 [data-theme="light"] .mini-status.running .ms-health { background:#1e9e63; box-shadow:0 0 6px rgba(30,158,99,.4); }
 [data-theme="light"] .mini-status.abnormal .ms-health { background:#d34f78; box-shadow:0 0 6px rgba(211,79,120,.4); }
 /* 紧凑卡亮色套：状态后缀 / 版本号淡灰，视图数值加深一档，迷你图蓝绿 + 网格适配白卡 */
@@ -201,6 +206,9 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
 [data-theme="light"] .ms-view-title { color:#6b7384; }
 [data-theme="light"] .ms-val { color:#414a58; }
 [data-theme="light"] .ms-power { color:#8a93a3; }
+[data-theme="light"] .ms-theme-toggle { color:#6b7384; border-color:#dde3ec; background:#ffffff; }
+[data-theme="light"] .ms-theme-toggle:hover { color:#bd5c16; border-color:#efd3a6; background:#fdf1dd; }
+[data-theme="light"] .ms-state-text { color:#414a58; }
 [data-theme="light"] .ms-power b { color:#6b7384; }
 [data-theme="light"] .gm-view.live .gm-state { color:#bd5c16; }
 [data-theme="light"] .ms-grid line { stroke:rgba(15,35,70,.09); }

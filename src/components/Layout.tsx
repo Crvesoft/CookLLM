@@ -6,7 +6,7 @@ import { cn, lineKind, modelTitle, timeLabel } from "../utils";
 import { LlamaMark } from "./LlamaMark";
 import MiniStatusBar from "./MiniStatusBar";
 
-export function Sidebar({ page, onPage, modelCount, status, abnormal, gpuStats, tokSample, collapsed, onToggleCollapsed }: { page: Page; onPage: (page: Page) => void; modelCount: number; status: ServerStatus; abnormal: boolean; gpuStats: GpuStats | null; tokSample: TokSample | null; collapsed: boolean; onToggleCollapsed: () => void }) {
+export function Sidebar({ page, onPage, modelCount, status, abnormal, gpuStats, tokSample, collapsed, onToggleCollapsed, theme, onToggleTheme }: { page: Page; onPage: (page: Page) => void; modelCount: number; status: ServerStatus; abnormal: boolean; gpuStats: GpuStats | null; tokSample: TokSample | null; collapsed: boolean; onToggleCollapsed: () => void; theme: string; onToggleTheme: () => void }) {
   const nav: Array<{ id: Page; label: string; icon: LucideIcon; badge?: string }> = [
     { id: "models", label: "模型仓库", icon: Boxes, badge: String(modelCount) },
     { id: "profiles", label: "运行预设", icon: SlidersHorizontal },
@@ -20,7 +20,7 @@ export function Sidebar({ page, onPage, modelCount, status, abnormal, gpuStats, 
     <nav className="side-nav">{nav.map((item) => { const Icon = item.icon; return <button key={item.id} title={collapsed ? item.label : undefined} className={cn("side-link", page === item.id && "active")} onClick={() => onPage(item.id)}><Icon size={18} /><span>{item.label}</span>{item.badge && <em>{item.badge}</em>}</button>; })}</nav>
     <div className="sidebar-spacer" />
     {/* 收起时仅用 CSS 隐藏（保持挂载）：迷你图的采样历史在收放之间不丢失 */}
-    <MiniStatusBar status={status} abnormal={abnormal} gpuStats={gpuStats} tokSample={tokSample} />
+    <MiniStatusBar status={status} abnormal={abnormal} gpuStats={gpuStats} tokSample={tokSample} theme={theme} onToggleTheme={onToggleTheme} />
   </aside>;
 }
 

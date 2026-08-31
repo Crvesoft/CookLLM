@@ -1,4 +1,4 @@
-import { Zap } from "lucide-react";
+import { Moon, Sun, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { GpuStats, ServerStatus, TokSample } from "../types";
 import { cn } from "../utils";
@@ -119,13 +119,16 @@ interface MiniStatusBarProps {
   abnormal: boolean;
   gpuStats: GpuStats | null;
   tokSample: TokSample | null;
+  /** 当前主题与切换回调（左下角快捷切换） */
+  theme: string;
+  onToggleTheme: () => void;
 }
 
 /**
  * 左下角 GPU 性能监测 + 功耗合并卡片：GPU 指标区（VRAM / Core sparkline）在上，
  * 功耗行居中，健康灯 + 版本号沉底至其右端。
  */
-export default function MiniStatusBar({ status, abnormal, gpuStats, tokSample }: MiniStatusBarProps) {
+export default function MiniStatusBar({ status, abnormal, gpuStats, tokSample, theme, onToggleTheme }: MiniStatusBarProps) {
   const running = status.running;
   // no GPU data (AMD / Intel / no dGPU): hide the monitoring section entirely
   const hasGpu = gpuStats != null;
@@ -159,6 +162,12 @@ export default function MiniStatusBar({ status, abnormal, gpuStats, tokSample }:
   const coreText = utilPct !== null ? `${Math.round(utilPct)}%` : "--";
   const coreState = liveRate !== null ? `${liveRate.toFixed(1)} t/s` : running && (utilPct ?? 0) < IDLE_UTIL_MAX ? "Idle" : null;
 
+  const themeToggle = (
+    <button className="ms-theme-toggle" title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"} aria-label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"} onClick={onToggleTheme}>
+      {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
+    </button>
+  );
+
   return (
     <div className={cn("mini-status", running && "running", abnormal && "abnormal")}>
       {hasGpu ? (<>
@@ -173,10 +182,10 @@ export default function MiniStatusBar({ status, abnormal, gpuStats, tokSample }:
         <Spark history={coreHistory} tone="core" />
       </div>
       {/* 功耗行 */}
-      <div className="ms-power"><Zap size={11} aria-hidden="true" /><span>功耗</span><b>{powerText}</b><span className="ms-app-meta"><i className="ms-health" title={abnormal ? "服务异常" : running ? "运行中" : "未运行"} aria-hidden="true" /><span className="ms-version">v{APP_VERSION}</span></span></div>
+      <div className="ms-power"><Zap size={11} aria-hidden="true" /><span>功耗</span><b>{powerText}</b><span className="ms-app-meta"><i className="ms-health" title={abnormal ? "服务异常" : running ? "运行中" : "未运行"} aria-hidden="true" /><span className="ms-version">v{APP_VERSION}</span>{themeToggle}</span></div>
         </>
       ) : (
-        <div className="ms-power"><span className="ms-app-meta"><i className="ms-health" title={abnormal ? "service abnormal" : running ? "running" : "stopped"} aria-hidden="true" /><span className="ms-version">v{APP_VERSION}</span></span></div>
+        <div className="ms-power ms-power-only"><i className="ms-health" title={abnormal ? "服务异常" : running ? "运行中" : "未运行"} aria-hidden="true" /><span className="ms-state-text">{running ? (abnormal ? "服务异常" : "服务运行中") : "服务未启动"}</span><span className="ms-app-meta"><span className="ms-version">v{APP_VERSION}</span>{themeToggle}</span></div>
       )}
     </div>
   );
