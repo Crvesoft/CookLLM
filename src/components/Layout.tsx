@@ -1,4 +1,4 @@
-import { Check, MessageSquareText, Play, Settings, SlidersHorizontal, Square, SquareTerminal, Boxes, type LucideIcon } from "lucide-react";
+import { Check, MessageSquareText, PanelLeftClose, PanelLeftOpen, Play, Settings, SlidersHorizontal, Square, SquareTerminal, Boxes, type LucideIcon } from "lucide-react";
 import type React from "react";
 import { useEffect, useRef } from "react";
 import type { GpuStats, LlamaLogPayload, ModelAsset, Page, ServerStatus, TokSample } from "../types";
@@ -6,7 +6,7 @@ import { cn, lineKind, modelTitle, timeLabel } from "../utils";
 import { LlamaMark } from "./LlamaMark";
 import MiniStatusBar from "./MiniStatusBar";
 
-export function Sidebar({ page, onPage, modelCount, status, abnormal, gpuStats, tokSample }: { page: Page; onPage: (page: Page) => void; modelCount: number; status: ServerStatus; abnormal: boolean; gpuStats: GpuStats | null; tokSample: TokSample | null }) {
+export function Sidebar({ page, onPage, modelCount, status, abnormal, gpuStats, tokSample, collapsed, onToggleCollapsed }: { page: Page; onPage: (page: Page) => void; modelCount: number; status: ServerStatus; abnormal: boolean; gpuStats: GpuStats | null; tokSample: TokSample | null; collapsed: boolean; onToggleCollapsed: () => void }) {
   const nav: Array<{ id: Page; label: string; icon: LucideIcon; badge?: string }> = [
     { id: "models", label: "模型仓库", icon: Boxes, badge: String(modelCount) },
     { id: "profiles", label: "运行预设", icon: SlidersHorizontal },
@@ -14,11 +14,12 @@ export function Sidebar({ page, onPage, modelCount, status, abnormal, gpuStats, 
     { id: "logs", label: "日志", icon: SquareTerminal },
     { id: "settings", label: "设置", icon: Settings },
   ];
-  return <aside className="sidebar">
-    <div className="brand"><div className="brand-mark"><LlamaMark size={36} /></div><div><strong>CookLLM</strong></div></div>
+  return <aside className={cn("sidebar", collapsed && "collapsed")}>
+    <div className="brand"><div className="brand-mark"><LlamaMark size={36} /></div><div className="brand-name"><strong>CookLLM</strong></div><button className="sidebar-toggle" title={collapsed ? "展开菜单" : "收起菜单"} aria-label={collapsed ? "展开菜单" : "收起菜单"} onClick={onToggleCollapsed}>{collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}</button></div>
     <div className="side-section-label">工作区</div>
-    <nav className="side-nav">{nav.map((item) => { const Icon = item.icon; return <button key={item.id} className={cn("side-link", page === item.id && "active")} onClick={() => onPage(item.id)}><Icon size={18} /><span>{item.label}</span>{item.badge && <em>{item.badge}</em>}</button>; })}</nav>
+    <nav className="side-nav">{nav.map((item) => { const Icon = item.icon; return <button key={item.id} title={collapsed ? item.label : undefined} className={cn("side-link", page === item.id && "active")} onClick={() => onPage(item.id)}><Icon size={18} /><span>{item.label}</span>{item.badge && <em>{item.badge}</em>}</button>; })}</nav>
     <div className="sidebar-spacer" />
+    {/* 收起时仅用 CSS 隐藏（保持挂载）：迷你图的采样历史在收放之间不丢失 */}
     <MiniStatusBar status={status} abnormal={abnormal} gpuStats={gpuStats} tokSample={tokSample} />
   </aside>;
 }

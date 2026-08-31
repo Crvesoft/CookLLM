@@ -30,8 +30,10 @@ button, input, textarea, select { font: inherit; }
 button { color: inherit; }
 button, select { cursor: pointer; }
 button:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
-.app-shell { display: grid; grid-template-columns: 250px 1fr; height: 100vh; background: radial-gradient(circle at 72% 0%, rgba(255,107,40,.12), transparent 29%), var(--bg); }
-.sidebar { position: relative; display: flex; flex-direction: column; padding: 24px 14px 14px; border-right: 1px solid #1b2230; background: linear-gradient(180deg,#0b0f15 0%,#090d12 100%); z-index: 3; }
+/* 可伸缩侧边菜单：宽度由 --sidebar-w 驱动，收起态为 64px 图标轨；收放平滑过渡 */
+.app-shell { display: grid; grid-template-columns: var(--sidebar-w, 250px) 1fr; height: 100vh; background: radial-gradient(circle at 72% 0%, rgba(255,107,40,.12), transparent 29%), var(--bg); transition: grid-template-columns .18s ease; }
+.app-shell.sidebar-collapsed { --sidebar-w: 64px; }
+.sidebar { position: relative; display: flex; flex-direction: column; padding: 24px 14px 14px; border-right: 1px solid #1b2230; background: linear-gradient(180deg,#0b0f15 0%,#090d12 100%); z-index: 3; transition: padding .18s ease; }
 .brand { display: flex; align-items: center; gap: 8px; padding: 0 8px 28px; }
 .brand-mark { display: grid; place-items: center; transform: translateY(-7px); }
 .brand strong { display: block; font-size: 20px; letter-spacing: -.02em; }
@@ -45,6 +47,19 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
 .side-link em { min-width: 21px; padding: 2px 5px; border-radius: 10px; color: #bd9469; background: #261f17; font-style: normal; font-size: 14px; text-align: center; }
 .side-divider { height: 1px; margin: 17px 8px; background: #1a212d; }
 .sidebar-spacer { flex: 1; }
+/* 收起态（图标轨）：仅保留导航图标，文字 / 徽标 / 章节标签隐藏；GPU 监测卡保持挂载仅视觉隐藏（迷你图历史不丢），品牌行只留幽灵收放按钮居中作展开入口 */
+.sidebar.collapsed { padding: 24px 10px 14px; }
+.sidebar.collapsed .brand { justify-content:center; gap:0; }
+.sidebar.collapsed .brand-mark, .sidebar.collapsed .brand-name { display:none; }
+.sidebar.collapsed .sidebar-toggle { margin-left:0; }
+.sidebar.collapsed .side-section-label { display:none; }
+.sidebar.collapsed .side-link { grid-template-columns:1fr; justify-items:center; padding:10px 0; }
+.sidebar.collapsed .side-link span, .sidebar.collapsed .side-link em { display:none; }
+.sidebar.collapsed .side-link.active:before { display:none; }
+.sidebar.collapsed .mini-status { display:none; }
+/* 收起 / 展开按钮：品牌行右对齐的无边框幽灵图标按钮，默认仅淡灰图标融入背景，悬停圆角淡底作轻量反馈 */
+.sidebar-toggle { flex:none; margin-left:auto; display:flex; align-items:center; justify-content:center; width:28px; height:28px; border:0; border-radius:7px; color:#7f8a9d; background:transparent; transition:.18s ease; }
+.sidebar-toggle:hover { color:#ffd9ad; background:rgba(255,255,255,.07); }
 .runtime-card { margin: 0 2px 12px; padding: 13px; border: 1px solid #232b38; border-radius: 12px; background: linear-gradient(145deg,#101620,#0c1017); }
 .runtime-head { display: flex; align-items: center; gap: 8px; color:#8e98a9; font-size:15px; }
 .runtime-head i { margin-left:auto; width:7px; height:7px; border-radius:50%; background:#36d38b; box-shadow:0 0 9px #36d38b; }
@@ -168,6 +183,9 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
 [data-theme="light"] .side-link:hover { color:#1f2937; background:#eef1f6; }
 [data-theme="light"] .side-link.active { color:#bd5c16; border-color:#eed8b0; background:linear-gradient(90deg,rgba(255,107,40,.14),rgba(255,107,40,.05)); }
 [data-theme="light"] .side-link em { color:#9c5a1e; background:#fcf2df; }
+/* 收放按钮亮色套：默认仅 #9ca3af 淡灰图标融入背景，悬停圆角浅灰底（rgba(0,0,0,.05)）轻量反馈 */
+[data-theme="light"] .sidebar-toggle { color:#9ca3af; background:transparent; }
+[data-theme="light"] .sidebar-toggle:hover { background:rgba(0,0,0,.05); }
 [data-theme="light"] .side-section-label { color:#8a93a3; }
 [data-theme="light"] .brand span, [data-theme="light"] .breadcrumbs { color:#8a93a3; }
 [data-theme="light"] .runtime-card { border-color:#e3e7ef; background:linear-gradient(145deg,#ffffff,#f3f5fa); }
