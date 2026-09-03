@@ -1,6 +1,6 @@
 # 🦙 CookLLM
 
-> **llama.cpp 简易启动工具** —— 面向 `llama.cpp` / GGUF 模型打造的 Windows 桌面管理程序。
+> **llama.cpp 轻量管理器** —— 面向 `llama.cpp` / GGUF 模型打造的 Windows 桌面管理程序。
 > 内置模型库、运行参数模板、一键启停、显卡状态监控、实时运行日志以及内置对话网页，本地大模型日常调试管理一套搞定。
 
 ---
