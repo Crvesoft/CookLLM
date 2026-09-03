@@ -144,12 +144,12 @@ npm run tauri build
 
 ---
 
-## � 社区与支持
+## 👥 社区与支持
 
 访问 [LINUX DO](https://linux.do)，与开发者和技术爱好者交流。
 
 ---
 
-## �📄 开源许可
+## 📄 开源许可
 
 本项目遵循 [MIT License](LICENSE) 开源协议分发。
