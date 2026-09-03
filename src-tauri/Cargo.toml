@@ -1,6 +1,6 @@
 [package]
 name = "cookllm"
-version = "0.1.1"
+version = "0.1.2"
 description = "A lightweight desktop launcher for local llama.cpp models"
 authors = ["CookLLM"]
 edition = "2021"

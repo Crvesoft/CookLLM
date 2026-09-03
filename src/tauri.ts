@@ -50,6 +50,12 @@ export async function pickFolder(): Promise<PickedFile[]> {
   return invoke<PickedFile[]>("pick_folder");
 }
 
+/** 选择本机 llama.cpp 构建目录，自动定位该目录（或其子目录）中的 llama-server.exe；取消时返回空串 */
+export async function pickServerDir(): Promise<string> {
+  if (!isTauri()) return "";
+  return invoke<string>("pick_server_dir");
+}
+
 /** 把拖入/选中的路径展开为 GGUF 文件列表：目录递归收集，文件按后缀过滤。 */
 export async function expandPaths(paths: string[]): Promise<PickedFile[]> {
   if (!isTauri()) return [];

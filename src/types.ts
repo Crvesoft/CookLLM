@@ -52,6 +52,8 @@ export interface Profile {
   minP: number;
   repeatPenalty: number;
   extraArgs: string;
+  /** 该预设挂载的图像识别视觉模型（mmproj）路径；非空时以 --mmproj 附加启动 */
+  mmprojPath?: string;
 }
 
 export interface AppConfig {

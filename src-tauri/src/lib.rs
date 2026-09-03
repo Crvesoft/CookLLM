@@ -71,6 +71,9 @@ struct Profile {
     min_p: f64,
     repeat_penalty: f64,
     extra_args: String,
+    /// 该预设挂载的图像识别视觉模型（mmproj）；非空时以 --mmproj 附加启动。
+    #[serde(default)]
+    mmproj_path: Option<String>,
 }
 
 fn default_host() -> String { "0.0.0.0".into() }
@@ -134,7 +137,7 @@ impl Default for AppConfig {
                 name: "均衡模式".into(),
                 description: "日常对话与编码的推荐配置".into(),
                 host: default_host(),
-                port: 8080,
+                port: 9931,
                 gpu_layers: 35,
                 context_size: 8192,
                 threads: 8,
@@ -153,6 +156,7 @@ impl Default for AppConfig {
                 min_p: 0.05,
                 repeat_penalty: 1.1,
                 extra_args: String::new(),
+                mmproj_path: None,
             }],
             theme: None,
             gpu_monitor_enabled: None,
@@ -325,6 +329,12 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
     if !PathBuf::from(&model.path).exists() {
         return Err(format!("模型文件不存在：{}", model.path));
     }
+    let mmproj_path = profile.mmproj_path.as_deref().filter(|p| !p.trim().is_empty());
+    if let Some(mmproj) = mmproj_path {
+        if !PathBuf::from(mmproj).exists() {
+            return Err(format!("图像识别模型（mmproj）不存在：{}", mmproj));
+        }
+    }
 
     let mut guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
     if let Some(mut running) = guard.take() {
@@ -333,7 +343,11 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
 
     let mut command = Command::new(&config.server_path);
     command
-        .arg("-m").arg(&model.path)
+        .arg("-m").arg(&model.path);
+    if let Some(mmproj) = mmproj_path {
+        command.arg("--mmproj").arg(mmproj);
+    }
+    command
         .arg("--host").arg(&profile.host)
         .arg("--port").arg(profile.port.to_string())
         .arg("-ngl").arg(profile.gpu_layers.to_string())
@@ -612,6 +626,52 @@ fn pick_folder(app: AppHandle) -> Vec<PickedFile> {
     out
 }
 
+/// 在目录树中查找可执行文件：当前目录优先，其次按子目录就近递归，深度上限 6。
+fn find_executable(dir: &Path, exe_name: &str, depth: usize) -> Option<PathBuf> {
+    let entries: Vec<_> = fs::read_dir(dir).ok()?.flatten().collect();
+    let current = entries.iter().find(|entry| {
+        let file_name = entry.file_name();
+        let name = file_name.to_string_lossy();
+        if cfg!(windows) {
+            name.eq_ignore_ascii_case(exe_name)
+        } else {
+            name == exe_name
+        }
+    }).map(|entry| entry.path());
+    if let Some(found) = current {
+        return Some(found);
+    }
+    if depth >= 6 {
+        return None;
+    }
+    for entry in entries {
+        let path = entry.path();
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            if let Some(found) = find_executable(&path, exe_name, depth + 1) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+/// 选择本机 llama.cpp 构建目录，自动定位其中的 llama-server.exe（当前目录优先，子目录就近递归）。
+/// 用户取消时返回空串；目录内未找到可执行文件时返回错误。
+#[tauri::command]
+fn pick_server_dir(app: AppHandle) -> Result<String, String> {
+    let Some(file_path) = app.dialog().file().blocking_pick_folder() else {
+        return Ok(String::new());
+    };
+    let Some(folder) = file_path.as_path() else {
+        return Ok(String::new());
+    };
+    let exe_name = if cfg!(windows) { "llama-server.exe" } else { "llama-server" };
+    match find_executable(folder, exe_name, 0) {
+        Some(path) => Ok(path.to_string_lossy().to_string()),
+        None => Err("所选文件夹中未找到 llama-server.exe".into()),
+    }
+}
+
 /// 把前端拖入/选中的路径展开为 GGUF 文件列表：目录递归收集，文件按 .gguf 后缀过滤，最后按路径去重。
 /// 供“拖拽上传区”使用——拖入的文件/文件夹路径直接来自 Tauri 的 drag-drop 事件。
 #[tauri::command]
@@ -876,6 +936,48 @@ fn configure_main_window(app: &mut tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::find_executable;
+    use std::fs;
+
+    fn make_tree(base: &std::path::Path) {
+        fs::create_dir_all(base.join("build").join("bin")).unwrap();
+        fs::write(base.join("build").join("bin").join("llama-server.exe"), "dummy").unwrap();
+        fs::create_dir_all(base.join("empty")).unwrap();
+    }
+
+    #[test]
+    fn find_executable_recurses_subdirectories() {
+        let base = std::env::temp_dir().join("cookllm_find_test");
+        let _ = fs::remove_dir_all(&base);
+        make_tree(&base);
+        let found = find_executable(&base, "llama-server.exe", 0).expect("should find exe");
+        assert!(found == base.join("build").join("bin").join("llama-server.exe"), "found: {found:?}");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn find_executable_prefers_current_directory() {
+        let base = std::env::temp_dir().join("cookllm_find_test_current");
+        let _ = fs::remove_dir_all(&base);
+        make_tree(&base);
+        fs::write(base.join("llama-server.exe"), "dummy-current").unwrap();
+        let found = find_executable(&base, "llama-server.exe", 0).expect("should find exe");
+        assert!(found == base.join("llama-server.exe"), "found: {found:?}");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn find_executable_returns_none_when_missing() {
+        let base = std::env::temp_dir().join("cookllm_find_test_none");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        assert!(find_executable(&base, "llama-server.exe", 0).is_none());
+        let _ = fs::remove_dir_all(&base);
+    }
+}
+
 pub fn run() {
     let app_start_ms = now_ms();
     let builder = tauri::Builder::default()
@@ -890,7 +992,7 @@ pub fn run() {
             react_mounted_ms: None,
             reported: false,
         })))
-        .invoke_handler(tauri::generate_handler![load_config, save_config, start_server, stop_server, get_server_status, get_gpu_stats, get_gpu_info, pick_files, pick_folder, expand_paths, open_url, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
+        .invoke_handler(tauri::generate_handler![load_config, save_config, start_server, stop_server, get_server_status, get_gpu_stats, get_gpu_info, pick_files, pick_folder, pick_server_dir, expand_paths, open_url, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
         .setup(|app| match configure_main_window(app) {
             Ok(()) => Ok(()),
             Err(error) => Err(error.into()),

@@ -148,7 +148,7 @@ export default function App() {
   const activeProfile = activeModel?.profiles.find((profile) => profile.id === status.profileId);
   /** 浏览器/iframe 无法导航到 0.0.0.0，统一替换为 127.0.0.1（用户显式配置的局域网 IP 保留原样） */
   const browserHost = (() => { const host = activeProfile?.host || "0.0.0.0"; return host === "0.0.0.0" ? "127.0.0.1" : host; })();
-  const port = status.port || activeProfile?.port || 8080;
+  const port = status.port || activeProfile?.port || 9931;
   const webUiUrl = `http://${browserHost}:${port}`;
   const openWebUi = async () => {
     if (!status.running) return;
@@ -171,6 +171,7 @@ export default function App() {
       setServiceAbnormal(false); // 启动成功 → 清除异常标记
       setTokSample(null);
       dockAutoCollapseRef.current = true; // 武装：本次启动期间收到就绪日志后自动收起 Dock
+      if (profile.mmprojPath) appendLog(`--mmproj ${profile.mmprojPath}`, "stdout");
       if (page !== "logs") setLogDockOpen(true); // 所有 Dock 页启动时自动展开，显示加载日志；就绪后自动收起（日志整页本身就在看日志）
       setToast(t("toast.started", { model: modelTitle(model) }));
     } catch (error) { appendLog(t("log.startFailed", { error: String(error) }), "stderr"); setServiceAbnormal(true); dockAutoCollapseRef.current = false; if (page !== "logs") setLogDockOpen(true); setToast(t("toast.startFailedToast")); }
@@ -334,7 +335,7 @@ export default function App() {
     {/* Dock 日志参与布局（收起=底部状态栏 / 展开=可调高度面板），各页面共用同一份状态，不遮挡内容；仅"日志"整页除外 */}
     {isDockPage && <LogDock open={logDockOpen} height={logDockHeight} logs={logs} status={status} modelName={activeModel ? modelTitle(activeModel) : undefined} abnormal={serviceAbnormal} tokPerSec={tokSample ? tokSample.rate : null} onToggle={() => setLogDockOpen((value) => !value)} onHeightChange={setLogDockHeight} onClear={() => setLogs([])} />}
     </div>
-    {profileEditing && <ProfileEditor profile={profileEditing.profile} defaultProfileId={config.models.find((m) => m.id === profileEditing.modelId)?.defaultProfileId} onClose={() => setProfileEditing(null)} onSave={(profile, isDefault) => saveProfile(profileEditing.modelId, profile, isDefault)} />}
+    {profileEditing && <ProfileEditor model={config.models.find((m) => m.id === profileEditing.modelId)} profile={profileEditing.profile} defaultProfileId={config.models.find((m) => m.id === profileEditing.modelId)?.defaultProfileId} onClose={() => setProfileEditing(null)} onSave={(profile, isDefault) => saveProfile(profileEditing.modelId, profile, isDefault)} />}
     {importOpen && <ImportModelModal existingPaths={new Set(config.models.map((model) => model.path.toLowerCase()))} onClose={() => setImportOpen(false)} onImport={handleImportModels} />}
     {toast && <Toast>{toast}</Toast>}
   </div>;

@@ -1,28 +1,45 @@
-import { Save, SlidersHorizontal, X, Zap } from "lucide-react";
+import { Check, FolderOpen, ImageIcon, Save, SlidersHorizontal, X, Zap } from "lucide-react";
 import { useI18n } from "../i18n";
 import { useState, type ChangeEvent, type ReactNode } from "react";
-import type { Profile } from "../types";
-import { cn } from "../utils";
+import { pickFiles } from "../tauri";
+import type { ModelAsset, Profile } from "../types";
+import { fileName, cn } from "../utils";
 
 const CACHE_TYPES = ["f32", "f16", "q8_0", "q4_0"];
 const LOAD_MODES = ["mmap", "mlock", "ragged", "row", "direct"];
 const REASONING_MODES = ["auto", "on", "off"];
 const REASONING_EFFORTS = ["auto", "low", "medium", "high", "xhigh"];
 
-export default function ProfileEditor({ profile, defaultProfileId, onClose, onSave }: { profile: Profile; defaultProfileId?: string; onClose: () => void; onSave: (profile: Profile, isDefault: boolean) => void }) {
+export default function ProfileEditor({ model, profile, defaultProfileId, onClose, onSave }: { model?: ModelAsset; profile: Profile; defaultProfileId?: string; onClose: () => void; onSave: (profile: Profile, isDefault: boolean) => void }) {
   const { t } = useI18n();
   const [draft, setDraft] = useState(profile);
   const [isDefault, setIsDefault] = useState(profile.id === defaultProfileId);
+  const [visionMessage, setVisionMessage] = useState<string | null>(null);
+  const [visionError, setVisionError] = useState<string | null>(null);
   const update = <K extends keyof Profile>(key: K, value: Profile[K]) => setDraft((current) => ({ ...current, [key]: value }));
   const number = (key: keyof Profile) => (event: ChangeEvent<HTMLInputElement>) => update(key, Number(event.target.value) as never);
   const select = (key: keyof Profile) => (event: ChangeEvent<HTMLSelectElement>) => update(key, event.target.value as never);
-  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="profile-editor"><header><div><div className="editor-icon"><SlidersHorizontal size={19} /></div><div><span>RUNTIME PROFILE</span><h2>{t("editorTitle")}</h2></div></div><button className="ghost-icon" onClick={onClose}><X size={19} /></button></header><div className="editor-body">
+  /** 导入一个极细粒度视觉模型（mmproj）：路径存进预设，随模型一起用 --mmproj 启动 */
+  const attachMmproj = async () => {
+    setVisionMessage(null); setVisionError(null);
+    try {
+      const picked = await pickFiles(["gguf"]);
+      const file = picked[0];
+      if (!file) return;
+      update("mmprojPath", file.path);
+      setVisionMessage(t("mmproj.found", { name: fileName(file.path) }));
+    } catch (error) {
+      setVisionError(error instanceof Error ? error.message : String(error));
+    }
+  };
+  return <div className="modal-backdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className="profile-editor"><header><div><div className="editor-icon"><SlidersHorizontal size={19} /></div><div><span>RUNTIME PROFILE</span><h2>{t("editorTitle")}{model ? ` · ${fileName(model.path)}` : ""}</h2></div></div><button className="ghost-icon" onClick={onClose}><X size={19} /></button></header><div className="editor-body">
     <div className="form-section"><div className="form-section-title"><span>01</span><div><h3>{t("ed.s1Title")}</h3><p>{t("ed.s1Desc")}</p></div></div><div className="form-grid three"><Field label={t("f.name")}><input value={draft.name} onChange={(e) => update("name", e.target.value)} /></Field><Field label={t("f.host")} hint="--host"><input value={draft.host} onChange={(e) => update("host", e.target.value)} /></Field><Field label={t("f.port")} hint="--port"><input type="number" value={draft.port} onChange={number("port")} /></Field><Field label={t("f.description")} wide><input value={draft.description} onChange={(e) => update("description", e.target.value)} /></Field><Field label={t("f.defaultConfig")} wide><button type="button" className={cn("toggle-row", isDefault && "enabled")} onClick={() => setIsDefault((value) => !value)}><span>{t("f.defaultToggle")}</span><i><b /></i></button></Field></div></div>
     <div className="form-section"><div className="form-section-title"><span>02</span><div><h3>{t("ed.s2Title")}</h3><p>{t("ed.s2Desc")}</p></div></div><div className="form-grid three"><Field label={t("f.gpuLayers")} hint="-ngl"><input type="number" min="0" value={draft.gpuLayers} onChange={number("gpuLayers")} /></Field><Field label={t("f.contextLength")} hint="-c"><input type="number" min="512" step="512" value={draft.contextSize} onChange={number("contextSize")} /></Field><Field label={t("f.cpuThreads")} hint="-t"><input type="number" min="1" value={draft.threads} onChange={number("threads")} /></Field><Field label={t("f.parallelSlots")} hint="-np"><input type="number" min="1" value={draft.parallel} onChange={number("parallel")} /></Field><Field label="Batch Size" hint="-b"><input type="number" min="32" step="32" value={draft.batchSize} onChange={number("batchSize")} /></Field><Field label="Ubatch Size" hint="-ub"><input type="number" min="32" step="32" value={draft.ubatchSize} onChange={number("ubatchSize")} /></Field></div></div>
     <div className="form-section"><div className="form-section-title"><span>03</span><div><h3>{t("ed.s3Title")}</h3><p>{t("ed.s3Desc")}</p></div></div><div className="form-grid three"><Field label="Flash Attention" wide><button type="button" className={cn("toggle-row", draft.flashAttention && "enabled")} onClick={() => update("flashAttention", !draft.flashAttention)}><span><Zap size={15} />{t("f.faToggle")}</span><i><b /></i></button></Field><Field label={t("f.kvCacheK")} hint="--cache-type-k"><select value={draft.cacheTypeK} onChange={select("cacheTypeK")}>{CACHE_TYPES.map((value) => <option key={value} value={value}>{value}</option>)}</select></Field><Field label={t("f.kvCacheV")} hint="--cache-type-v"><select value={draft.cacheTypeV} onChange={select("cacheTypeV")}>{CACHE_TYPES.map((value) => <option key={value} value={value}>{value}</option>)}</select></Field><Field label={t("f.loadMode")} hint="--load-mode"><select value={draft.loadMode} onChange={select("loadMode")}>{LOAD_MODES.map((value) => <option key={value} value={value}>{value}</option>)}</select></Field><Field label="Jinja 模板" wide><button type="button" className={cn("toggle-row", draft.jinja && "enabled")} onClick={() => update("jinja", !draft.jinja)}><span>{t("f.jinjaToggle")}</span><i><b /></i></button></Field></div></div>
     <div className="form-section"><div className="form-section-title"><span>04</span><div><h3>{t("ed.s4Title")}</h3><p>{t("ed.s4Desc")}</p></div></div><div className="form-grid two"><Field label={t("f.reasoningMode")} hint="--reasoning"><select value={draft.reasoning} onChange={select("reasoning")}>{REASONING_MODES.map((value) => <option key={value} value={value}>{value}</option>)}</select></Field><Field label={t("f.reasoningEffort")} hint="--reasoning-effort"><select value={draft.reasoningEffort} onChange={select("reasoningEffort")}>{REASONING_EFFORTS.map((value) => <option key={value} value={value}>{value}</option>)}</select></Field></div></div>
     <div className="form-section"><div className="form-section-title"><span>05</span><div><h3>{t("ed.s5Title")}</h3><p>{t("ed.s5Desc")}</p></div></div><div className="form-grid four"><Field label="Temperature"><input type="number" min="0" max="2" step="0.05" value={draft.temperature} onChange={number("temperature")} /></Field><Field label="Top-P"><input type="number" min="0" max="1" step="0.01" value={draft.topP} onChange={number("topP")} /></Field><Field label="Min-P"><input type="number" min="0" max="1" step="0.01" value={draft.minP} onChange={number("minP")} /></Field><Field label="Repeat Penalty"><input type="number" min="0" step="0.01" value={draft.repeatPenalty} onChange={number("repeatPenalty")} /></Field></div></div>
-    <div className="form-section"><div className="form-section-title"><span>06</span><div><h3>{t("ed.s6Title")}</h3><p>{t("ed.s6Desc")}</p></div></div><Field label="Extra Arguments" hint={t("f.extraHint")}><textarea value={draft.extraArgs} onChange={(e) => update("extraArgs", e.target.value)} placeholder="--no-warmup --cont-batching" /></Field></div>
+    <div className="form-section"><div className="form-section-title"><span>06</span><div><h3>{t("ed.s6Title")}</h3><p>{t("ed.s6Desc")}</p></div></div><div className="form-grid"><Field label={t("f.mmprojToggle")} hint="--mmproj" wide><button type="button" className={cn("toggle-row", draft.mmprojPath && "enabled")} onClick={() => { if (draft.mmprojPath) { update("mmprojPath", undefined); setVisionMessage(t("mmproj.detached")); setVisionError(null); } else void attachMmproj(); }}><span><ImageIcon size={15} />{draft.mmprojPath ? t("mmproj.found", { name: fileName(draft.mmprojPath) }) : t("f.mmprojToggle")}</span><i><b /></i></button></Field>{draft.mmprojPath && <Field label={t("f.mmprojPath")} hint=".gguf" wide><div className="path-field"><input readOnly value={draft.mmprojPath} placeholder="xx_model_mmproj-f16.gguf" /><button onClick={() => void attachMmproj()}><FolderOpen size={15} />{t("browse")}</button></div></Field>}{visionMessage && <p className="storage-note"><Check size={15} />{visionMessage}</p>}{visionError && <p className="import-error">{visionError}</p>}</div></div>
+    <div className="form-section"><div className="form-section-title"><span>07</span><div><h3>{t("ed.s7Title")}</h3><p>{t("ed.s7Desc")}</p></div></div><Field label="Extra Arguments" hint={t("f.extraHint")}><textarea value={draft.extraArgs} onChange={(e) => update("extraArgs", e.target.value)} placeholder="--no-warmup --cont-batching" /></Field></div>
   </div><footer><button className="secondary-button" onClick={onClose}>{t("cancel")}</button><button className="primary-button" onClick={() => onSave(draft, isDefault)}><Save size={16} />{t("saveProfile")}</button></footer></section></div>;
 }
 function Field({ label, hint, wide, children }: { label: string; hint?: string; wide?: boolean; children: ReactNode }) { return <label className={cn("field", wide && "wide")}><span>{label}{hint && <em>{hint}</em>}</span>{children}</label>; }
