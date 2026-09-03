@@ -1,9 +1,9 @@
 import { Moon, Sun, Zap } from "lucide-react";
+import { useI18n } from "../i18n";
 import { useEffect, useState } from "react";
+import { APP_VERSION } from "../data";
 import type { GpuStats, ServerStatus, TokSample } from "../types";
 import { cn } from "../utils";
-
-const APP_VERSION = "0.1.0";
 /** Token 速率采样在此窗口内视为"实时推理中"，过期回退 Idle（避免生成结束后仍显示旧速率） */
 const TPS_FRESH_MS = 8000;
 /** GPU 历史迷你图保留的采样数：90 × 2s 轮询 ≈ 3 分钟滚动窗口 */
@@ -66,6 +66,7 @@ function Spark({ history, tone }: { history: number[]; tone: "mem" | "core" }) {
  * 每格 = 左侧标题行 / 数值行纵排 + 右侧带网格迷你图；功耗与健康灯 / 版本号 / 设置仍留在左下角。
  */
 export function GpuMonitorStrip({ gpuStats, tokSample, running }: GpuMonitorStripProps) {
+  const { t } = useI18n();
   if (gpuStats == null) return null;
   // 1s tick：驱动"速率过期 → Idle"的翻转（仅重渲染本横条，不波及整树）
   const [, setTick] = useState(0);
@@ -100,12 +101,12 @@ export function GpuMonitorStrip({ gpuStats, tokSample, running }: GpuMonitorStri
 
   return (
     <div className="gpu-monitor">
-      <span className="gm-caption">GPU性能监测</span>
-      <div className="gm-view" title="显存占用">
+      <span className="gm-caption">{t("gpuCaption")}</span>
+      <div className="gm-view" title={t("tooltipVram")}>
         <div className="gm-meta"><span className="ms-view-title">VRAM</span><span className="ms-val">{vramText}</span></div>
         <Spark history={memHistory} tone="mem" />
       </div>
-      <div className={cn("gm-view", liveRate !== null && "live")} title="GPU 核心利用率">
+      <div className={cn("gm-view", liveRate !== null && "live")} title={t("tooltipCore")}>
         <div className="gm-meta"><span className="ms-view-title">3D(GPU)</span><span className="ms-val">{coreText}{coreState !== null && <em className="gm-state">{coreState}</em>}</span></div>
         <Spark history={coreHistory} tone="core" />
       </div>
@@ -129,6 +130,7 @@ interface MiniStatusBarProps {
  * 功耗行居中，健康灯 + 版本号沉底至其右端。
  */
 export default function MiniStatusBar({ status, abnormal, gpuStats, tokSample, theme, onToggleTheme }: MiniStatusBarProps) {
+  const { t } = useI18n();
   const running = status.running;
   // no GPU data (AMD / Intel / no dGPU): hide the monitoring section entirely
   const hasGpu = gpuStats != null;
@@ -172,20 +174,20 @@ export default function MiniStatusBar({ status, abnormal, gpuStats, tokSample, t
     <div className={cn("mini-status", running && "running", abnormal && "abnormal")}>
       {hasGpu ? (<>
       {/* GPU 性能监测区 */}
-      <span className="ms-caption">GPU性能监测</span>
-      <div className="gm-view" title="显存占用">
+      <span className="ms-caption">{t("gpuCaption")}</span>
+      <div className="gm-view" title={t("tooltipVram")}>
         <div className="gm-meta"><span className="ms-view-title">VRAM</span><span className="ms-val">{vramText}</span></div>
         <Spark history={memHistory} tone="mem" />
       </div>
-      <div className={cn("gm-view", liveRate !== null && "live")} title="GPU 核心利用率">
+      <div className={cn("gm-view", liveRate !== null && "live")} title={t("tooltipCore")}>
         <div className="gm-meta"><span className="ms-view-title">3D(GPU)</span><span className="ms-val">{coreText}{coreState !== null && <em className="gm-state">{coreState}</em>}</span></div>
         <Spark history={coreHistory} tone="core" />
       </div>
       {/* 功耗行 */}
-      <div className="ms-power"><Zap size={11} aria-hidden="true" /><span>功耗</span><b>{powerText}</b><span className="ms-app-meta"><i className="ms-health" title={abnormal ? "服务异常" : running ? "运行中" : "未运行"} aria-hidden="true" /><span className="ms-version">v{APP_VERSION}</span>{themeToggle}</span></div>
+      <div className="ms-power"><Zap size={11} aria-hidden="true" /><span>{t("powerLabel")}</span><b>{powerText}</b><span className="ms-app-meta"><i className="ms-health" title={abnormal ? t("serviceAbnormal") : running ? t("statusRunning") : t("statusStopped")} aria-hidden="true" /><span className="ms-version">v{APP_VERSION}</span>{themeToggle}</span></div>
         </>
       ) : (
-        <div className="ms-power ms-power-only"><i className="ms-health" title={abnormal ? "服务异常" : running ? "运行中" : "未运行"} aria-hidden="true" /><span className="ms-state-text">{running ? (abnormal ? "服务异常" : "服务运行中") : "服务未启动"}</span><span className="ms-app-meta"><span className="ms-version">v{APP_VERSION}</span>{themeToggle}</span></div>
+        <div className="ms-power ms-power-only"><i className="ms-health" title={abnormal ? t("serviceAbnormal") : running ? t("statusRunning") : t("statusStopped")} aria-hidden="true" /><span className="ms-state-text">{running ? (abnormal ? t("serviceAbnormal") : t("serviceRunning")) : t("notStarted")}</span><span className="ms-app-meta"><span className="ms-version">v{APP_VERSION}</span>{themeToggle}</span></div>
       )}
     </div>
   );

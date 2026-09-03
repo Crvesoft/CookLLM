@@ -1,0 +1,65 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build Tauri app (release)
+        run: npx tauri build
+
+      - name: Create GitHub Release & Upload artifacts
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          VERSION=$(grep -m1 '^version' src-tauri/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          TAG="v$VERSION"
+
+          # Collect bundle artifacts (MSI + NSIS installers)
+          ARTIFACTS=()
+          for f in $(find src-tauri/target/release/bundle -type f \( -name '*.msi' -o -name '*.exe' \)); do
+            ARTIFACTS+=("$f")
+          done
+
+          if [ ${#ARTIFACTS[@]} -eq 0 ]; then
+            echo "::error::No bundle artifacts found in src-tauri/target/release/bundle/"
+            exit 1
+          fi
+
+          echo "Creating release $TAG with ${#ARTIFACTS[@]} artifact(s):"
+          for f in "${ARTIFACTS[@]}"; do echo "  - $(basename "$f")"; done
+
+          # If triggered by tag push, the tag already exists on remote.
+          # For manual dispatch, create a new tag first.
+          if [ "${{ github.event_name }}" != "push" ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "actions@github.com"
+            git tag "$TAG" -m "$TAG"
+            git push origin "$TAG"
+          fi
+
+          gh release create "$TAG" \
+            --title "CookLLM $TAG" \
+            --target master \
+            "${ARTIFACTS[@]}"

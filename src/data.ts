@@ -1,4 +1,12 @@
 import type { AppConfig, LlamaLogPayload, ModelAsset, Profile } from "./types";
+import { formatMessage, getLocale } from "./i18n";
+
+/** 当前应用版本（与 tauri.conf.json / package.json 保持一致）：浏览器模式回退值，检测更新的比较基线 */
+export const APP_VERSION = "0.1.0";
+/** 项目信息：GitHub 仓库（owner/repo）与主页地址 */
+export const APP_REPO = "Crvesoft/CookLLM";
+export const PROJECT_URL = `https://github.com/${APP_REPO}`;
+
 export const uid = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 export const DEFAULT_PROFILES: Profile[] = [
   { id: "balanced", name: "均衡模式", description: "日常对话与编码的推荐配置", host: "0.0.0.0", port: 8080, gpuLayers: 35, contextSize: 8192, threads: 8, parallel: 1, batchSize: 512, ubatchSize: 256, flashAttention: true, cacheTypeK: "f32", cacheTypeV: "f32", jinja: true, reasoning: "auto", reasoningEffort: "auto", loadMode: "mmap", temperature: 0.7, topP: 0.9, minP: 0.05, repeatPenalty: 1.1, extraArgs: "" },
@@ -32,5 +40,6 @@ export function migrateConfig(config: AppConfig): AppConfig {
 }
 export const INITIAL_LOGS: LlamaLogPayload[] = [
   { stream: "system", line: "CookLLM runtime initialized · waiting for a model", timestamp: Date.now() - 1800 },
-  { stream: "stdout", line: "界面与事件桥已就绪 · Local only", timestamp: Date.now() - 900 },
+  // 模块加载时按当前语言生成（一次性日志行，切换语言后不重译）
+  { stream: "stdout", line: formatMessage(getLocale(), "log.readyLine"), timestamp: Date.now() - 900 },
 ];

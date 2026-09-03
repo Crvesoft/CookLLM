@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DEMO_CONFIG, DEFAULT_PROFILES, INITIAL_LOGS, migrateConfig, uid } from "./data";
+import { setLocale, useI18n } from "./i18n";
 import { getGpuStats, getServerStatus, isTauri, loadConfig, onLlamaLog, openExternal, saveConfig, setWindowTheme, startServer, stopServer } from "./tauri";
 import type { PickedFile } from "./tauri";
 import { PAGE_LOG_MODE, type AppConfig, type GpuStats, type LlamaLogPayload, type ModelAsset, type Page, type Profile, type ServerStatus, type TokSample } from "./types";
@@ -14,6 +15,8 @@ import SettingsPage from "./components/SettingsPage";
 import ProfileEditor from "./components/ProfileEditor";
 
 export default function App() {
+  /** 界面语言：文案经 t() 查当前 locale；locale 由 AppConfig.language 驱动（adopt/persist 时同步） */
+  const { t } = useI18n();
   const [config, setConfig] = useState<AppConfig>(DEMO_CONFIG);
   /** GPU 性能监测开关（默认开启，设置页可关闭） */
   const gpuMonitorEnabled = config.gpuMonitorEnabled !== false;
@@ -53,6 +56,8 @@ export default function App() {
   const adopt = (cfg: AppConfig) => {
     const usable = migrateConfig(cfg);
     setConfig(usable);
+    /** 从磁盘配置同步界面语言（未设置过则回退中文） */
+    setLocale(usable.language ?? "zh");
     setSelectedProfiles((previous) => {
       const next: Record<string, string> = {};
       for (const model of usable.models) {
@@ -81,7 +86,7 @@ export default function App() {
         } else {
           const stored = localStorage.getItem("cookllm-config"); if (stored && active) { const parsed = JSON.parse(stored) as AppConfig; adopt(parsed); }
         }
-      } catch (error) { appendLog(`初始化失败：${String(error)}`, "stderr"); }
+      } catch (error) { appendLog(t("log.initFailed", { error: String(error) }), "stderr"); }
       // 无论成功失败，配置读取阶段结束 → 解锁轮询
       if (active) setConfigReady(true);
     })();
@@ -117,7 +122,7 @@ export default function App() {
     const previous = prevRunningRef.current;
     if (previous && !status.running) {
       if (!stopIntendedRef.current) {
-        appendLog("llama-server 进程意外退出", "stderr");
+        appendLog(t("log.unexpectedExit"), "stderr");
         setServiceAbnormal(true);
         setLogDockOpen(true);
       }
@@ -133,8 +138,10 @@ export default function App() {
 
   const persist = async (next: AppConfig, message?: string) => {
     setConfig(next);
+    /** 语言随本次保存立即生效（值未变时为空操作） */
+    setLocale(next.language ?? "zh");
     try { await saveConfig(next); if (message) setToast(message); }
-    catch (error) { appendLog(`配置保存失败：${String(error)}`, "stderr"); }
+    catch (error) { appendLog(t("log.saveConfigFailed", { error: String(error) }), "stderr"); }
   };
 
   const activeModel = config.models.find((model) => model.id === status.modelId);
@@ -146,14 +153,14 @@ export default function App() {
   const openWebUi = async () => {
     if (!status.running) return;
     await openExternal(webUiUrl);
-    setToast("已打开 Web UI");
+    setToast(t("toast.webUiOpened"));
   };
 
   const handleStart = async (model: ModelAsset) => {
     const profileId = selectedProfiles[model.id] || model.defaultProfileId || model.profiles[0]?.id || '';
     const profile = model.profiles.find((item) => item.id === profileId);
-    if (!profile) return setToast("请先为模型添加运行预设");
-    setBusy(true); setMenuModelId(null); appendLog(`正在启动 ${modelTitle(model)} · ${profile.name} …`);
+    if (!profile) return setToast(t("toast.addProfileFirst"));
+    setBusy(true); setMenuModelId(null); appendLog(t("toast.starting", { model: modelTitle(model), profile: profile.name }));
     try {
       if (isTauri()) setStatus(await startServer(model.id, profile.id));
       else {
@@ -165,17 +172,17 @@ export default function App() {
       setTokSample(null);
       dockAutoCollapseRef.current = true; // 武装：本次启动期间收到就绪日志后自动收起 Dock
       if (page !== "logs") setLogDockOpen(true); // 所有 Dock 页启动时自动展开，显示加载日志；就绪后自动收起（日志整页本身就在看日志）
-      setToast(`${modelTitle(model)} 已启动`);
-    } catch (error) { appendLog(`启动失败：${String(error)}`, "stderr"); setServiceAbnormal(true); dockAutoCollapseRef.current = false; if (page !== "logs") setLogDockOpen(true); setToast("启动失败，请查看控制台"); }
+      setToast(t("toast.started", { model: modelTitle(model) }));
+    } catch (error) { appendLog(t("log.startFailed", { error: String(error) }), "stderr"); setServiceAbnormal(true); dockAutoCollapseRef.current = false; if (page !== "logs") setLogDockOpen(true); setToast(t("toast.startFailedToast")); }
     finally { setBusy(false); }
   };
 
   const handleStop = async () => {
-    setBusy(true); appendLog("正在停止 llama-server …");
+    setBusy(true); appendLog(t("log.stopping"));
     stopIntendedRef.current = true; // 本次退出是主动停止 → 不判为服务异常
     dockAutoCollapseRef.current = false;
-    try { if (isTauri()) setStatus(await stopServer()); else { await new Promise((resolve) => window.setTimeout(resolve, 380)); setStatus(EMPTY_STATUS); appendLog("llama-server 已停止"); } setToast("服务已停止"); }
-    catch (error) { appendLog(`停止失败：${String(error)}`, "stderr"); }
+    try { if (isTauri()) setStatus(await stopServer()); else { await new Promise((resolve) => window.setTimeout(resolve, 380)); setStatus(EMPTY_STATUS); appendLog(t("log.stopSuccess")); } setToast(t("toast.stopped")); }
+    catch (error) { appendLog(t("log.stopFailed", { error: String(error) }), "stderr"); }
     finally { setBusy(false); setTokSample(null); }
   };
 
@@ -183,13 +190,13 @@ export default function App() {
     if (!paths.length) return;
     const existing = new Set(config.models.map((model) => model.path));
     const fresh = paths.filter((item) => !existing.has(item.path));
-    if (!fresh.length) return setToast("所选模型已在仓库中");
+    if (!fresh.length) return setToast(t("toast.alreadyInLibrary"));
     const additions: ModelAsset[] = fresh.map((item, index) => {
       const path = item.path;
-      return { id: uid("model"), name: fileName(path).replace(/\.gguf$/i, "").replace(/[-_]/g, " "), path, sizeBytes: item.sizeBytes, architecture: "GGUF", quantization: path.match(/Q\d(?:_[A-Z0-9]+)+/i)?.[0]?.toUpperCase() || "未知量化", parameters: path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase() || "—", profiles: [{ ...DEFAULT_PROFILES[0], id: uid("profile") }], accent: ACCENTS[(config.models.length + index) % ACCENTS.length] };
+      return { id: uid("model"), name: fileName(path).replace(/\.gguf$/i, "").replace(/[-_]/g, " "), path, sizeBytes: item.sizeBytes, architecture: "GGUF", quantization: path.match(/Q\d(?:_[A-Z0-9]+)+/i)?.[0]?.toUpperCase() || t("model.unknownQuant"), parameters: path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase() || "—", profiles: [{ ...DEFAULT_PROFILES[0], id: uid("profile") }], accent: ACCENTS[(config.models.length + index) % ACCENTS.length] };
     });
     setSelectedProfiles((previous) => { const next = { ...previous }; for (const model of additions) next[model.id] = model.profiles[0].id; return next; });
-    await persist({ ...config, models: [...config.models, ...additions] }, additions.length === 1 ? "模型已加入仓库" : `已添加 ${additions.length} 个模型`);
+    await persist({ ...config, models: [...config.models, ...additions] }, t(additions.length === 1 ? "toast.modelAdded" : "toast.modelsAdded", { count: additions.length }));
   };
   /** 统一入口：打开导入弹窗（拖拽 / 选文件 / 选文件夹都在弹窗内完成） */
   const openImport = () => setImportOpen(true);
@@ -198,8 +205,8 @@ export default function App() {
     finally { setImportOpen(false); }
   };
   const removeModel = async (id: string) => {
-    if (status.modelId === id) return setToast("请先停止正在运行的模型");
-    setMenuModelId(null); await persist({ ...config, models: config.models.filter((model) => model.id !== id) }, "模型已移出仓库");
+    if (status.modelId === id) return setToast(t("toast.stopFirst"));
+    setMenuModelId(null); await persist({ ...config, models: config.models.filter((model) => model.id !== id) }, t("toast.modelRemoved"));
   };
   /** 拖拽排序提交（最终可见顺序）：拖动中页面只改本地预览，松手后一次性写盘。搜索过滤下的稳定交织——可见模型按新顺序填入原槽位，被过滤隐藏的保持原位 */
   const reorderModels = (visibleOrder: string[]) => {
@@ -209,15 +216,15 @@ export default function App() {
     let cursor = 0;
     const list = config.models.map((item) => (visible.has(item.id) ? byId.get(visibleOrder[cursor++]) ?? item : item));
     if (list.every((item, index) => item.id === config.models[index].id)) return; // 顺序未变 → 不写盘、不打扰
-    void persist({ ...config, models: list }, "已调整模型顺序");
+    void persist({ ...config, models: list }, t("toast.orderUpdated"));
   };
   /** 批量移出：运行中的模型不可删除，整批拦截 */
   const removeMultipleModels = async (ids: string[]) => {
     if (!ids.length) return;
     const idSet = new Set(ids);
     const running = config.models.find((item) => status.modelId === item.id && idSet.has(item.id));
-    if (running) return setToast("所选模型中有正在运行的，请先停止服务");
-    await persist({ ...config, models: config.models.filter((model) => !idSet.has(model.id)) }, `已移出 ${ids.length} 个模型`);
+    if (running) return setToast(t("toast.runningSelectedModels"));
+    await persist({ ...config, models: config.models.filter((model) => !idSet.has(model.id)) }, t("toast.modelsRemoved", { count: ids.length }));
   };
   const upsertProfile = (modelId: string, profile: Profile, message?: string) => {
     const model = config.models.find((item) => item.id === modelId);
@@ -236,16 +243,16 @@ export default function App() {
     const defaultProfileId = isDefault ? profile.id : (model.defaultProfileId === profile.id ? undefined : model.defaultProfileId);
     /** 编辑器里新开启「默认预设」时，同步模型仓库里的当前选择 */
     if (isDefault && model.defaultProfileId !== profile.id) setSelectedProfiles((previous) => ({ ...previous, [modelId]: profile.id }));
-    await persist({ ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, profiles, defaultProfileId } : item)) }, "预设已保存");
+    await persist({ ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, profiles, defaultProfileId } : item)) }, t("toast.profileSaved"));
     setProfileEditing(null);
   };
   const deleteProfile = async (modelId: string, id: string) => {
-    if (status.modelId === modelId && status.profileId === id) return setToast("运行中的预设不可删除");
+    if (status.modelId === modelId && status.profileId === id) return setToast(t("toast.runningProfileLocked"));
     const model = config.models.find((item) => item.id === modelId);
     const profiles = model ? model.profiles.filter((item) => item.id !== id) : [];
     setSelectedProfiles((previous) => (previous[modelId] === id ? { ...previous, [modelId]: profiles[0]?.id ?? "" } : previous));
     /** 删掉的若是默认预设，清掉悬空的 defaultProfileId */
-    await persist({ ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, profiles, defaultProfileId: item.defaultProfileId === id ? undefined : item.defaultProfileId } : item)) }, "预设已删除");
+    await persist({ ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, profiles, defaultProfileId: item.defaultProfileId === id ? undefined : item.defaultProfileId } : item)) }, t("toast.profileDeleted"));
   };
   /** 拖拽排序提交（同一模型内预设的最终顺序）：拖动中页面只改本地预览，松手后一次性写盘 */
   const reorderProfiles = (modelId: string, profileIds: string[]) => {
@@ -255,13 +262,13 @@ export default function App() {
     const byId = new Map(owner.profiles.map((profile) => [profile.id, profile]));
     const ordered = profileIds.flatMap((id) => { const profile = byId.get(id); return profile ? [profile] : []; });
     if (ordered.length !== owner.profiles.length) return; // 出现未知 id 不提交
-    void persist({ ...config, models: config.models.map((item) => item.id === modelId ? { ...item, profiles: ordered } : item) }, "已调整预设顺序");
+    void persist({ ...config, models: config.models.map((item) => item.id === modelId ? { ...item, profiles: ordered } : item) }, t("toast.profilesOrderUpdated"));
   };
   /** 批量删除：运行中的预设不可删除，整批拦截；同时清掉悬空的默认预设与当前选择 */
   const deleteMultipleProfiles = async (items: { modelId: string; profileId: string }[]) => {
     if (!items.length) return;
     const running = items.find((item) => status.modelId === item.modelId && status.profileId === item.profileId);
-    if (running) return setToast("所选预设中有正在运行的，请先停止服务");
+    if (running) return setToast(t("toast.runningSelectedProfiles"));
     const byModel = new Map<string, Set<string>>();
     for (const item of items) {
       const ids = byModel.get(item.modelId) ?? new Set<string>();
@@ -282,31 +289,31 @@ export default function App() {
       if (!drop || !drop.size) return owner;
       const profiles = owner.profiles.filter((profile) => !drop.has(profile.id));
       return { ...owner, profiles, defaultProfileId: owner.defaultProfileId && drop.has(owner.defaultProfileId) ? undefined : owner.defaultProfileId };
-    }) }, `已删除 ${items.length} 组预设`);
+    }) }, t("toast.profilesDeleted", { count: items.length }));
   };
   const duplicateProfile = (modelId: string, profile: Profile) =>
-    upsertProfile(modelId, { ...profile, id: uid("profile"), name: profile.name + " 副本" }, "已复制同模型副本");
+    upsertProfile(modelId, { ...profile, id: uid("profile"), name: profile.name + t("profile.copySuffix") }, t("toast.profileCopied"));
   const setDefaultProfile = async (modelId: string, profileId: string) => {
     const model = config.models.find((item) => item.id === modelId);
     if (!model) return;
     const makingDefault = model.defaultProfileId !== profileId;
     /** 设为默认即视为指定该预设启动，同步模型仓库里的当前选择 */
     if (makingDefault) setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }));
-    await persist({ ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, defaultProfileId: makingDefault ? profileId : undefined } : item)) }, makingDefault ? "已设为默认预设" : "已取消默认预设");
+    await persist({ ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, defaultProfileId: makingDefault ? profileId : undefined } : item)) }, t(makingDefault ? "toast.defaultSet" : "toast.defaultUnset"));
   };
   const renameModel = (modelId: string, displayName: string) => {
     const trimmed = displayName?.trim();
-    void persist({ ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, displayName: trimmed ? trimmed : undefined } : item)) }, trimmed ? "已重命名" : "已恢复默认名称");
+    void persist({ ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, displayName: trimmed ? trimmed : undefined } : item)) }, t(trimmed ? "toast.renamed" : "toast.nameRestored"));
     setMenuModelId(null);
   };
   const setDefaultModel = (modelId: string) => {
     const makingDefault = config.preferredModelId !== modelId;
-    void persist({ ...config, preferredModelId: makingDefault ? modelId : undefined }, makingDefault ? "已设为默认启动模型" : "已取消默认启动模型");
+    void persist({ ...config, preferredModelId: makingDefault ? modelId : undefined }, t(makingDefault ? "toast.launchModelSet" : "toast.launchModelUnset"));
   };
   const startQuick = async () => {
     const id = quickModelId || config.preferredModelId || config.models[0]?.id || "";
     const model = config.models.find((item) => item.id === id) || config.models[0];
-    if (!model) return setToast("请先添加一个模型");
+    if (!model) return setToast(t("toast.addFirst"));
     await handleStart(model);
   };
   const filteredModels = useMemo(() => { const q = query.trim().toLowerCase(); return q ? config.models.filter((model) => [modelTitle(model), model.architecture, model.quantization, model.path].join(" ").toLowerCase().includes(q)) : config.models; }, [config.models, query]);

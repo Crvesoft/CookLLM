@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { FileBox, FolderOpen, Loader2, Upload, X } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useI18n } from "../i18n";
 import { expandPaths, isTauri, pickFiles, pickFolder } from "../tauri";
 import type { PickedFile } from "../tauri";
 import { cn, fileName, formatBytes } from "../utils";
@@ -38,6 +39,7 @@ async function walkEntry(entry: Record<string, any>, base: string): Promise<Pick
 }
 
 export default function ImportModelModal({ existingPaths, onImport, onClose }: Props) {
+  const { t } = useI18n();
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -76,7 +78,7 @@ export default function ImportModelModal({ existingPaths, onImport, onClose }: P
     try {
       const items = await expandPaths(paths);
       if (!items.length) {
-        setError("所选位置中没有 GGUF 文件");
+        setError(t("err.noGgufAtPath"));
         return;
       }
       merge(items);
@@ -109,7 +111,7 @@ export default function ImportModelModal({ existingPaths, onImport, onClose }: P
     try {
       const items = await pickFolder();
       if (!items.length) {
-        setError("文件夹内未找到 GGUF 模型文件");
+        setError(t("err.folderEmpty"));
         return;
       }
       merge(items);
@@ -182,7 +184,7 @@ export default function ImportModelModal({ existingPaths, onImport, onClose }: P
       for (const entry of entries) items.push(...(await walkEntry(entry, "")));
     }
     if (!items.length) {
-      setError("拖入的内容中没有 GGUF 文件");
+      setError(t("err.dropNoGguf"));
       return;
     }
     merge(items);
@@ -219,8 +221,8 @@ export default function ImportModelModal({ existingPaths, onImport, onClose }: P
     <div className="import-modal-backdrop" onClick={(event) => event.target === event.currentTarget && onClose()}>
       <div className="import-modal">
         <header>
-          <div><span>MODEL IMPORT</span><h2>导入模型</h2></div>
-          <button className="ghost-icon" aria-label="关闭" onClick={onClose}><X size={18} /></button>
+          <div><span>MODEL IMPORT</span><h2>{t("importTitleH2")}</h2></div>
+          <button className="ghost-icon" aria-label={t("ariaClose")} onClick={onClose}><X size={18} /></button>
         </header>
         <div className="import-body">
           <div
@@ -232,11 +234,11 @@ export default function ImportModelModal({ existingPaths, onImport, onClose }: P
             onDrop={handleBrowserDrop}
           >
             <div className="import-dropzone-icon">{busy ? <Loader2 size={30} className="spin" /> : <Upload size={30} />}</div>
-            <h3>{busy ? "正在读取所选内容…" : "拖拽 GGUF 文件 / 文件夹到此处"}</h3>
-            <p>支持同时拖入多个文件或整个文件夹，仅识别 .gguf</p>
+            <h3>{busy ? t("readingContent") : t("dropHint")}</h3>
+            <p>{t("dropSub")}</p>
             <div className="import-dropzone-actions">
-              <button className="import-link" disabled={busy} onClick={handlePickFiles}><FileBox size={15} />选择模型文件</button>
-              <button className="import-link" disabled={busy} onClick={handlePickFolder}><FolderOpen size={15} />选择文件夹</button>
+              <button className="import-link" disabled={busy} onClick={handlePickFiles}><FileBox size={15} />{t("pickFilesLabel")}</button>
+              <button className="import-link" disabled={busy} onClick={handlePickFolder}><FolderOpen size={15} />{t("pickFolderLabel")}</button>
             </div>
           </div>
           {error && <p className="import-error">{error}</p>}
@@ -259,11 +261,11 @@ export default function ImportModelModal({ existingPaths, onImport, onClose }: P
                     <strong>{fileName(item.path)}</strong>
                     <code>{item.path}</code>
                   </div>
-                  {isDup(item.path) && <span className="import-dup-tag">已在仓库</span>}
+                  {isDup(item.path) && <span className="import-dup-tag">{t("dupTag")}</span>}
                   <span className="import-row-size">{formatBytes(item.sizeBytes)}</span>
                   <button
                     className="import-row-remove"
-                    aria-label="移除"
+                    aria-label={t("ariaRemove")}
                     onClick={(event) => {
                       event.stopPropagation();
                       removeCandidate(item.path);
@@ -277,10 +279,10 @@ export default function ImportModelModal({ existingPaths, onImport, onClose }: P
           )}
         </div>
         <footer>
-          <span className="import-summary">{candidates.length ? `${selected.length} / ${candidates.length} 已选` : "尚未选择文件"}</span>
-          <button className="secondary-button" onClick={onClose}>取消</button>
+          <span className="import-summary">{candidates.length ? t("summarySelected", { a: selected.length, b: candidates.length }) : t("summaryNone")}</span>
+          <button className="secondary-button" onClick={onClose}>{t("cancel")}</button>
           <button className="primary-button" disabled={!selected.length || importing} onClick={handleConfirm}>
-            {importing && <Loader2 size={15} className="spin" />}导入选中（{selected.length}）
+            {importing && <Loader2 size={15} className="spin" />}{t("importSelectedBtn", { count: selected.length })}
           </button>
         </footer>
       </div>

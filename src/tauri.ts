@@ -1,5 +1,8 @@
+import { getVersion as appVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { APP_REPO, APP_VERSION, PROJECT_URL } from "./data";
+import { isNewerVersion } from "./utils";
 import type { AppConfig, GpuStats, LlamaLogPayload, ServerStatus } from "./types";
 
 export const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
@@ -83,4 +86,29 @@ export async function openExternal(url: string): Promise<void> {
 export async function setWindowTheme(dark: boolean): Promise<void> {
   if (!isTauri()) return;
   await invoke("set_window_theme", { dark });
+}
+
+/** 当前应用版本：Tauri 读打包版本（tauri.conf.json），浏览器模式回退到源码常量 */
+export async function getAppVersion(): Promise<string> {
+  if (isTauri()) return appVersion();
+  return APP_VERSION;
+}
+
+/** 检测结果：latest=已是最新 / available=发现新版本 */
+export interface UpdateCheckResult {
+  status: "latest" | "available";
+  /** 最新发布 tag（如 v0.2.0） */
+  latestTag: string;
+  /** 该版本的发布页地址 */
+  releaseUrl: string;
+}
+
+/** 通过 GitHub Releases 检查新版本（匿名访问，无需密钥）；仓库无已发布版本时抛 Error("no-releases") */
+export async function checkForUpdate(currentVersion: string): Promise<UpdateCheckResult> {
+  const response = await fetch(`https://api.github.com/repos/${APP_REPO}/releases/latest`, { headers: { accept: "application/vnd.github+json" } });
+  if (!response.ok) throw new Error(response.status === 404 ? "no-releases" : `HTTP ${response.status}`);
+  const data = (await response.json()) as { tag_name?: string; html_url?: string };
+  const latestTag = typeof data.tag_name === "string" ? data.tag_name.trim() : "";
+  if (!latestTag) throw new Error("bad-response");
+  return { status: isNewerVersion(latestTag, currentVersion) ? "available" : "latest", latestTag, releaseUrl: typeof data.html_url === "string" ? data.html_url : `${PROJECT_URL}/releases` };
 }

@@ -1,9 +1,11 @@
 import { Bot, Globe, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useI18n } from "../i18n";
 import type { ServerStatus } from "../types";
 import { openExternal, writeClipboard } from "../tauri";
 
 export default function Playground({ visible, status, webUiUrl, modelName, onOpenWebUi }: { visible: boolean; status: ServerStatus; webUiUrl: string; modelName?: string; onOpenWebUi: () => void }) {
+  const { t } = useI18n();
   /** 刷新内嵌 WebUI：key 变化时重建 iframe（服务重启后旧页面状态失效时用） */
   const [frameKey, setFrameKey] = useState(0);
 
@@ -32,7 +34,7 @@ export default function Playground({ visible, status, webUiUrl, modelName, onOpe
             <div><Bot size={18} /><span>{modelName || "Local model"}</span></div>
             <div className="playground-actions">
               {/* 状态与刷新合并为一个轻量标签：整块点击即刷新内嵌 WebUI；服务未运行时整体禁用 */}
-              <button type="button" className={status.running ? "connection-chip connected" : "connection-chip"} title="刷新内嵌 WebUI" aria-label="刷新内嵌 WebUI" disabled={!status.running} onClick={() => setFrameKey((key) => key + 1)}><i /><span>{status.running ? "已连接" : "等待服务"}</span><em className="chip-divider" /><RefreshCw size={14} /></button>
+              <button type="button" className={status.running ? "connection-chip connected" : "connection-chip"} title={t("refreshWebUi")} aria-label={t("refreshWebUi")} disabled={!status.running} onClick={() => setFrameKey((key) => key + 1)}><i /><span>{status.running ? t("connected") : t("waitingService")}</span><em className="chip-divider" /><RefreshCw size={14} /></button>
               <button type="button" className="webui-button" disabled={!status.running} onClick={onOpenWebUi}><Globe size={15} />WebUI</button>
             </div>
           </div>
@@ -42,7 +44,7 @@ export default function Playground({ visible, status, webUiUrl, modelName, onOpe
                 <iframe ref={frameRef} key={`${webUiUrl}:${frameKey}`} src={webUiUrl} title="llama.cpp Web UI" allow="clipboard-read; clipboard-write" />
               </div>
             )
-            : <div className="messages-empty"><Globe size={30} /><p>服务未运行，请先在模型仓库启动</p></div>}
+            : <div className="messages-empty"><Globe size={30} /><p>{t("pgNotRunning")}</p></div>}
         </div>
       </section>
     </div>

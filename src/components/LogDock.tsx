@@ -1,5 +1,6 @@
 import { ChevronDown, SquareTerminal } from "lucide-react";
 import type React from "react";
+import { useI18n } from "../i18n";
 import { useEffect, useRef } from "react";
 import type { LlamaLogPayload, ServerStatus } from "../types";
 import { cn, lineKind, timeLabel } from "../utils";
@@ -27,6 +28,7 @@ interface LogDockProps {
  * 仅负责显示 / 隐藏；Rust 端日志监听与缓冲始终持续，关闭后再打开仍能看到之前的日志。
  */
 export default function LogDock({ open, height, logs, status, modelName, abnormal, tokPerSec, onToggle, onHeightChange, onClear }: LogDockProps) {
+  const { t } = useI18n();
   const endRef = useRef<HTMLDivElement>(null);
   // 展开后 / 新日志到达时立即跳到最后一行（无平滑动画：切页重新挂载时不会从首行可见地滑到底；与悬浮抽屉行为一致）
   useEffect(() => { if (open) endRef.current?.scrollIntoView(); }, [logs, open]);
@@ -78,33 +80,33 @@ export default function LogDock({ open, height, logs, status, modelName, abnorma
   };
 
   // 状态栏文案：异常 > 运行中（含吞吐）> 未启动
-  const statusText = abnormal ? "服务异常" : status.running ? `${modelName || "模型"} · Running${tokPerSec != null ? ` ${tokPerSec} tok/s` : ""}` : "服务未启动";
+  const statusText = abnormal ? t("serviceAbnormal") : status.running ? `${modelName || t("modelFallback")} · Running${tokPerSec != null ? ` ${tokPerSec} tok/s` : ""}` : t("notStarted");
 
   if (!open) {
     return (
       <div className={cn("log-dock-bar", !abnormal && status.running && "running", abnormal && "abnormal")}>
         <span className="log-dock-status"><i aria-hidden="true" />{statusText}</span>
-        <button className="log-dock-toggle" onClick={onToggle}><SquareTerminal size={14} /><span>{abnormal ? "查看日志" : "运行日志"}</span></button>
+        <button className="log-dock-toggle" onClick={onToggle}><SquareTerminal size={14} /><span>{abnormal ? t("viewLogs") : t("runLogs")}</span></button>
       </div>
     );
   }
 
   return (
     <div className="log-dock-panel" style={{ height }}>
-      <div className="log-dock-resize" title="拖动调整日志 Dock 高度" onPointerDown={startDrag} />
+      <div className="log-dock-resize" title={t("resizeDockHint")} onPointerDown={startDrag} />
       <div className="console-toolbar">
         <div>
           <span className="dot red" /><span className="dot yellow" /><span className="dot green" />
-          {abnormal && <em className="dock-error-badge">服务异常</em>}
+          {abnormal && <em className="dock-error-badge">{t("serviceAbnormal")}</em>}
           <strong>llama-server · output</strong>
         </div>
         <div>
-          <button onClick={onClear}>清空</button>
-          <button onClick={onToggle} title="收起日志"><ChevronDown size={15} /></button>
+          <button onClick={onClear}>{t("clearLogs")}</button>
+          <button onClick={onToggle} title={t("collapseDock")}><ChevronDown size={15} /></button>
         </div>
       </div>
       <div className="console-lines">
-        {logs.length ? logs.map((log, index) => { const kind = lineKind(log.stream, log.line); return <div className={cn("log-line", kind)} key={`${log.timestamp}-${index}`}><span>{timeLabel(log.timestamp)}</span><em>{kind === "err" ? "ERR" : kind === "warn" ? "WRN" : kind === "system" ? "SYS" : "OUT"}</em><code>{log.line}</code></div>; }) : <div className="console-empty">暂无日志输出</div>}
+        {logs.length ? logs.map((log, index) => { const kind = lineKind(log.stream, log.line); return <div className={cn("log-line", kind)} key={`${log.timestamp}-${index}`}><span>{timeLabel(log.timestamp)}</span><em>{kind === "err" ? "ERR" : kind === "warn" ? "WRN" : kind === "system" ? "SYS" : "OUT"}</em><code>{log.line}</code></div>; }) : <div className="console-empty">{t("noLogs")}</div>}
         <div ref={endRef} />
       </div>
     </div>
