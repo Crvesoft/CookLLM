@@ -2,6 +2,7 @@ import { Moon, Sun, Zap } from "lucide-react";
 import { useI18n } from "../i18n";
 import { useEffect, useState } from "react";
 import { APP_VERSION } from "../data";
+import { getAppVersion } from "../tauri";
 import type { GpuStats, ServerStatus, TokSample } from "../types";
 import { cn } from "../utils";
 /** Token 速率采样在此窗口内视为"实时推理中"，过期回退 Idle（避免生成结束后仍显示旧速率） */
@@ -136,6 +137,10 @@ export default function MiniStatusBar({ status, abnormal, gpuStats, tokSample, t
   const hasGpu = gpuStats != null;
   const powerText = gpuStats?.powerWatts != null ? `${Math.round(gpuStats.powerWatts)} W` : "--";
 
+  // ---- 版本号：Tauri 模式读 tauri.conf.json，浏览器回退到常量 ----
+  const [appVersion, setAppVersion] = useState(APP_VERSION);
+  useEffect(() => { getAppVersion().then(setAppVersion); }, []);
+
   // ---- GPU 历史采样：每次轮询到达新读数即追加（仅前端保留，不落盘、不进 Rust）----
   const [memHistory, setMemHistory] = useState<number[]>([]);
   const [coreHistory, setCoreHistory] = useState<number[]>([]);
@@ -184,10 +189,10 @@ export default function MiniStatusBar({ status, abnormal, gpuStats, tokSample, t
         <Spark history={coreHistory} tone="core" />
       </div>
       {/* 功耗行 */}
-      <div className="ms-power"><Zap size={11} aria-hidden="true" /><span>{t("powerLabel")}</span><b>{powerText}</b><span className="ms-app-meta"><i className="ms-health" title={abnormal ? t("serviceAbnormal") : running ? t("statusRunning") : t("statusStopped")} aria-hidden="true" /><span className="ms-version">v{APP_VERSION}</span>{themeToggle}</span></div>
+      <div className="ms-power"><Zap size={11} aria-hidden="true" /><span>{t("powerLabel")}</span><b>{powerText}</b><span className="ms-app-meta"><i className="ms-health" title={abnormal ? t("serviceAbnormal") : running ? t("statusRunning") : t("statusStopped")} aria-hidden="true" /><span className="ms-version">v{appVersion}</span>{themeToggle}</span></div>
         </>
       ) : (
-        <div className="ms-power ms-power-only"><i className="ms-health" title={abnormal ? t("serviceAbnormal") : running ? t("statusRunning") : t("statusStopped")} aria-hidden="true" /><span className="ms-state-text">{running ? (abnormal ? t("serviceAbnormal") : t("serviceRunning")) : t("notStarted")}</span><span className="ms-app-meta"><span className="ms-version">v{APP_VERSION}</span>{themeToggle}</span></div>
+        <div className="ms-power ms-power-only"><i className="ms-health" title={abnormal ? t("serviceAbnormal") : running ? t("statusRunning") : t("statusStopped")} aria-hidden="true" /><span className="ms-state-text">{running ? (abnormal ? t("serviceAbnormal") : t("serviceRunning")) : t("notStarted")}</span><span className="ms-app-meta"><span className="ms-version">v{appVersion}</span>{themeToggle}</span></div>
       )}
     </div>
   );
