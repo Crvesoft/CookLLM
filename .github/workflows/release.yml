@@ -59,7 +59,11 @@ jobs:
             git push origin "$TAG"
           fi
 
-          gh release create "$TAG" \
-            --title "CookLLM $TAG" \
-            --target master \
-            "${ARTIFACTS[@]}"
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" "${ARTIFACTS[@]}" --clobber
+          else
+            gh release create "$TAG" \
+              --title "CookLLM $TAG" \
+              --target master \
+              "${ARTIFACTS[@]}"
+          fi

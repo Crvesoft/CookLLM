@@ -8,7 +8,7 @@ import type { AppConfig, DiskUsage, LlamaLogPayload } from "../types";
 
 type ProxyMode = "system" | "manual" | "direct";
 
-export default function SettingsPage({ visible, config, appUpdate, checkingUpdate, onCheckUpdate, onOpenUpdate, onPersist, onLog }: { visible: boolean; config: AppConfig; appUpdate: UpdateCheckResult | null; checkingUpdate: boolean; onCheckUpdate: (openWhenAvailable?: boolean) => Promise<UpdateCheckResult>; onOpenUpdate: () => void; onPersist: (config: AppConfig, message?: string) => Promise<void>; onLog: (line: string, stream?: LlamaLogPayload["stream"]) => void }) {
+export default function SettingsPage({ visible, config, appUpdate, checkingUpdate, onCheckUpdate, onPersist, onLog }: { visible: boolean; config: AppConfig; appUpdate: UpdateCheckResult | null; checkingUpdate: boolean; onCheckUpdate: (openWhenAvailable?: boolean) => Promise<UpdateCheckResult>; onPersist: (config: AppConfig, message?: string) => Promise<void>; onLog: (line: string, stream?: LlamaLogPayload["stream"]) => void }) {
   const { t } = useI18n();
   const [serverPath, setServerPath] = useState(config.serverPath);
   const [serverPicking, setServerPicking] = useState(false);
@@ -443,20 +443,12 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
                   </button>
                   <span>{t("st.autoUpdate")}</span>
                 </label>
-                {updateAvailable ? (
-                  <button className="secondary-button compact update-ready-button" onClick={onOpenUpdate}>
-                    <i className="update-button-dot" aria-hidden="true" />
-                    {t("st.updateTo", { tag: appUpdate?.latestTag || "" })}
-                  </button>
-                ) : (
-                  <button className="secondary-button compact" disabled={checkingUpdate} onClick={() => void runUpdateCheck()}>
-                    {checkingUpdate ? <Loader2 size={14} className="spin" /> : updateCheckDone ? <Check size={14} /> : <RefreshCw size={14} />}
-                    {checkingUpdate ? t("st.checkingUpdate") : updateCheckDone ? t("st.checkDoneShort") : t("st.checkUpdate")}
-                  </button>
-                )}
+                <button className="secondary-button compact" disabled={checkingUpdate} onClick={() => void runUpdateCheck()}>
+                  {checkingUpdate ? <Loader2 size={14} className="spin" /> : updateCheckDone ? <Check size={14} /> : <RefreshCw size={14} />}
+                  {checkingUpdate ? t("st.checkingUpdate") : updateCheckDone ? t("st.checkDoneShort") : t("st.checkUpdate")}
+                </button>
               </div>
             </div>
-            {update.phase === "done" && update.result.status === "available" && <div className="about-result"><span className="storage-note warn"><Download size={15} />{t("st.updateAvailable", { tag: update.result.latestTag })}</span><button className="secondary-button compact" onClick={() => void openExternal(update.result.releaseUrl)}>{t("st.openRelease")}</button></div>}
             {update.phase === "error" && <div className="about-result"><span className="storage-note err"><AlertTriangle size={15} />{update.message}</span></div>}
           </div>
         </div>

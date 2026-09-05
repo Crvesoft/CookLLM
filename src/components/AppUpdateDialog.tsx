@@ -93,7 +93,7 @@ export default function AppUpdateDialog({ open, update, onClose }: { open: boole
             <p className="update-summary">{t("update.available", { tag: update.latestTag })}</p>
             <div className="update-changelog">
               <strong>{t("update.changelog")}</strong>
-              <pre>{update.releaseNotes || t("update.noChangelog")}</pre>
+              <pre>{update.releaseNotes?.trim() || t("update.noChangelog")}</pre>
             </div>
             {phase === "ready" && <p className="update-ready-message">{t("update.ready")}</p>}
             {phase === "launch" && <p className="update-ready-message"><Loader2 size={14} className="spin" />{t("update.launching")}</p>}

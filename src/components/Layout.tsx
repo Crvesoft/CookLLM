@@ -7,16 +7,16 @@ import { cn, lineKind, modelTitle, timeLabel } from "../utils";
 import { LlamaMark } from "./LlamaMark";
 import MiniStatusBar from "./MiniStatusBar";
 
-export function Sidebar({ page, onPage, modelCount, downloadBadge, updateAvailable, status, abnormal, gpuStats, tokSample, collapsed, onToggleCollapsed, theme, onToggleTheme }: { page: Page; onPage: (page: Page) => void; modelCount: number; downloadBadge?: string; updateAvailable?: boolean; status: ServerStatus; abnormal: boolean; gpuStats: GpuStats | null; tokSample: TokSample | null; collapsed: boolean; onToggleCollapsed: () => void; theme: string; onToggleTheme: () => void }) {
+export function Sidebar({ page, onPage, downloadBadge, updateAvailable, status, abnormal, gpuStats, tokSample, collapsed, onToggleCollapsed, theme, onToggleTheme }: { page: Page; onPage: (page: Page) => void; downloadBadge?: string; updateAvailable?: boolean; status: ServerStatus; abnormal: boolean; gpuStats: GpuStats | null; tokSample: TokSample | null; collapsed: boolean; onToggleCollapsed: () => void; theme: string; onToggleTheme: () => void }) {
   const { t } = useI18n();
   const nav: Array<{ id: Page; label: string; icon: LucideIcon; badge?: string; badgeClass?: string; dot?: boolean }> = [
-    { id: "models", label: t("nav.models"), icon: Boxes, badge: String(modelCount) },
+    { id: "models", label: t("nav.models"), icon: Boxes },
     { id: "profiles", label: t("nav.profiles"), icon: SlidersHorizontal },
     { id: "explore", label: t("nav.explore"), icon: Globe, badge: downloadBadge, badgeClass: "download-badge" },
 
     { id: "playground", label: t("nav.playground"), icon: MessageSquareText },
     { id: "logs", label: t("nav.logs"), icon: SquareTerminal },
-    { id: "settings", label: t("nav.settings"), icon: Settings, dot: updateAvailable },
+    { id: "settings", label: t("nav.settings"), icon: Settings },
   ];
   return <aside className={cn("sidebar", collapsed && "collapsed")}>
     <div className="brand"><div className="brand-mark"><LlamaMark size={36} /></div><div className="brand-name"><strong>CookLLM</strong></div><button className="sidebar-toggle" title={collapsed ? t("expandMenu") : t("collapseMenu")} aria-label={collapsed ? t("expandMenu") : t("collapseMenu")} onClick={onToggleCollapsed}>{collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}</button></div>
