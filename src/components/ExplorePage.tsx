@@ -1,4 +1,4 @@
-import { AlertCircle, Boxes, Check, ChevronDown, ChevronLeft, Database, Download, ExternalLink, FolderOpen, Globe, Loader2, PauseCircle, PlayCircle, RefreshCw, Search, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
+import { AlertCircle, Boxes, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Database, Download, ExternalLink, FolderOpen, Globe, Loader2, PauseCircle, PlayCircle, RefreshCw, Search, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { hfListFiles, hfSearch, hfTrending, openExternal } from "../tauri";
@@ -238,13 +238,16 @@ function ModelRow({ model, preferredQuant, onViewFiles }: ModelRowProps) {
             {preferredQuant && <span className="hf-quant-badge preferred" title={t("explore.quantPreferred", { quant: quant || "" })}><Star size={10} fill="currentColor" />{quant}</span>}
             {parameter && <span className="hf-param-badge" title={t("explore.facetParams")}>{parameter}</span>}
             {quant && !preferredQuant && <span className="hf-quant-badge" title={t("explore.facetQuant")}>{quant}</span>}
+            <button className="hf-model-link" type="button" title={t("explore.openOnHf")} aria-label={t("explore.openOnHf")} onClick={(event) => { event.stopPropagation(); openHf(model.id); }}>
+              <ExternalLink size={14} />
+            </button>
           </div>
           <span className="hf-model-desc">{metaBits.join(" · ")}</span>
         </div>
         <div className="hf-model-side-col">
           <div className="hf-model-meta">
-            <span className="likes" title={t("explore.likes", { count: model.likes })}><Star size={12} fill="currentColor" />{model.likes.toLocaleString()}</span>
-            <span title={t("explore.downloads", { count: model.downloads })}><Download size={12} />{model.downloads.toLocaleString()}</span>
+            <span className="likes" title={model.likes.toLocaleString()}><Star size={12} fill="currentColor" />{formatCount(model.likes)}</span>
+            <span title={model.downloads.toLocaleString()}><Download size={12} />{formatCount(model.downloads)}</span>
           </div>
           <div className="hf-model-actions">
             <button className="secondary-button compact" onClick={onViewFiles}><Download size={13} />{t("explore.viewFilesShort")}</button>
@@ -358,8 +361,8 @@ function FacetSidebar({ mobileOpen, collapsed, family, quantBits, tasks, paramMi
       <div className="facet-sidebar-head">
         <strong className="facet-sidebar-title"><SlidersHorizontal size={14} />{t("explore.facetSidebar")}</strong>
         <div className="facet-sidebar-actions">
-          <button className="facet-collapse-btn" onClick={onToggleCollapsed} title={t("explore.facetCollapse")}>
-            <ChevronLeft size={16} />
+          <button className="facet-collapse-btn" onClick={onToggleCollapsed} title={collapsed ? t("explore.facetExpand") : t("explore.facetCollapse")} aria-label={collapsed ? t("explore.facetExpand") : t("explore.facetCollapse")}>
+            <ChevronLeft size={16} className={cn("facet-collapse-icon", collapsed && "rotated")} />
           </button>
           <button className="facet-reset-all" onClick={onResetAll}>{t("explore.facetReset")}</button>
         </div>
@@ -386,6 +389,8 @@ function FacetSidebar({ mobileOpen, collapsed, family, quantBits, tasks, paramMi
         <div className="facet-range-wrap">
           <div className="facet-range-stack">
             <div className="facet-range-track"><span style={{ left: pctLeft + "%", width: Math.max(pctWidth, 0) + "%" }} /></div>
+            <span className="facet-range-thumb-label" style={{ left: `calc(6px + ${pctLeft}% - ${pctLeft * 0.12}px)` }}>{PARAM_SLIDER_LABELS[paramMin]}</span>
+            <span className="facet-range-thumb-label" style={{ left: `calc(6px + ${(pctLeft + pctWidth)}% - ${(pctLeft + pctWidth) * 0.12}px)` }}>{PARAM_SLIDER_LABELS[paramMax]}</span>
             <input type="range" className="facet-range facet-range-min" min={0} max={PARAM_LAST_INDEX} step={1} value={paramMin} onChange={(event) => onParamMin(Number(event.target.value))} />
             <input type="range" className="facet-range facet-range-max" min={0} max={PARAM_LAST_INDEX} step={1} value={paramMax} onChange={(event) => onParamMax(Number(event.target.value))} />
           </div>
@@ -521,8 +526,10 @@ export default function ExplorePage(props: Props) {
     try {
       const result = await hfTrending(8, true);
       setTrending(result);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally { setTrendingLoading(false); }
   };
 
@@ -530,7 +537,6 @@ export default function ExplorePage(props: Props) {
     const seq = ++searchSeq.current;
     const keyword = effectiveKeyword;
     setLoading(true); setError(null);
-    setRefreshing(true);
     let ok = false;
     let failMessage = "";
     try {
@@ -550,11 +556,18 @@ export default function ExplorePage(props: Props) {
     } finally {
       if (seq === searchSeq.current) {
         setLoading(false);
-        setRefreshing(false);
         if (notify) showToast(ok ? t("explore.refreshed") : failMessage);
       }
     }
     return ok;
+  };
+
+  const refreshAll = async (notify = false) => {
+    setRefreshing(true);
+    setError(null);
+    const [listOk, trendingOk] = await Promise.all([runSearch(false), refreshTrending()]);
+    setRefreshing(false);
+    if (notify) showToast(listOk && trendingOk ? t("explore.refreshed") : t("explore.refreshFailed"));
   };
 
   // 搜索防抖 300ms：文本 / 刻面 / 量化偏好 / 参数档位变化时向服务端重查并重置列表
@@ -742,7 +755,7 @@ export default function ExplorePage(props: Props) {
           <div className="explore-searchzone">
             {sidebarHidden && (
               <button className={"facet-search-toggle"} onClick={toggleCollapsed} title={t("explore.facetExpand")}>
-                <SlidersHorizontal size={14} />{t("explore.facetToggle")}{facetCount > 0 && <em>{facetCount}</em>}
+                <ChevronRight size={14} />{t("explore.facetToggle")}{facetCount > 0 && <em>{facetCount}</em>}
               </button>
             )}
             <label className="search-box explore-search">
@@ -758,36 +771,49 @@ export default function ExplorePage(props: Props) {
                 <option value="updated">{t("explore.sortUpdated")}</option>
                 <option value="hot">{t("explore.sortHot")}</option>
               </select>
-              <button className="ghost-icon facet-refresh-btn" onClick={() => void runSearch(true)} disabled={refreshing} title={t("explore.refreshList")} aria-label={t("explore.refreshList")}><RefreshCw size={15} className={cn("facet-refresh-icon", refreshing && "spin")} /></button>
+              <button className="ghost-icon hf-icon-button" onClick={() => void refreshAll(true)} disabled={refreshing} title={t("explore.refreshList")} aria-label={t("explore.refreshList")}><RefreshCw size={15} className={cn("facet-refresh-icon", refreshing && "spin")} /></button>
               <label className="hf-gguf-toggle"><input type="checkbox" checked={ggufOnly} onChange={(e) => setGgufOnly(e.target.checked)} />{t("explore.ggufOnly")}</label>
             </div>
           </div>
 
           <div className="facet-scroll-area">
+          <div className={cn("hf-list-refresh-veil", loading && "visible")} aria-hidden={!loading}>{loading ? <Loader2 size={20} className="spin" /> : null}</div>
           {!searching && facetCount === 0 && (
             <div className="section-title-row">
               <div><h2>🔥 {t("explore.trendingTitle")}</h2></div>
               <div className="library-tools">
                 <span className="explore-updated">2026.09</span>
-                <button className="text-button" onClick={() => setTrendCollapsed((v) => !v)}>{trendCollapsed ? t("explore.trendingExpand") : t("explore.trendingCollapse")}</button>
-                <button className="text-button" onClick={() => void refreshTrending()} disabled={trendingLoading}>{trendingLoading ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}{t("explore.refresh")}</button>
+                <button className="ghost-icon hf-icon-button" title={trendCollapsed ? t("explore.trendingExpand") : t("explore.trendingCollapse")} aria-label={trendCollapsed ? t("explore.trendingExpand") : t("explore.trendingCollapse")} onClick={() => setTrendCollapsed((v) => !v)}>
+                  {trendCollapsed ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                </button>
               </div>
             </div>
           )}
-          {!searching && facetCount === 0 && !trendCollapsed && (trendingLoading && trending.length === 0 ? <div className="hf-trending-row"><span className="hf-files-hint"><Loader2 size={13} className="spin" />{t("explore.loading")}</span></div> : (
+          {!searching && facetCount === 0 && !trendCollapsed && (trendingLoading && trending.length === 0 ? (
+            <div className="hf-trending">
+              {Array.from({ length: 4 }, (_, index) => (
+                <div className="hf-trend-card hf-skeleton-card" key={index}>
+                  <div className="hf-skeleton-line title" />
+                  <div className="hf-skeleton-line text" />
+                  <div className="hf-skeleton-line short" />
+                </div>
+              ))}
+            </div>
+          ) : (
             <div className="hf-trending">
               {trending.map((model) => (
                 <div className="hf-trend-card" key={model.id}>
-                  <div className="hf-trend-head">
+                  <div className="hf-model-title-row">
+                    <span className="hf-model-icon">HF</span>
                     <strong>{model.id}</strong>
-                    <button className="ghost-icon" title={t("explore.openOnHf")} onClick={() => void openHf(model.id)}><ExternalLink size={14} /></button>
+                    <button className="ghost-icon hf-icon-button" title={t("explore.openOnHf")} onClick={() => void openHf(model.id)}><ExternalLink size={14} /></button>
                   </div>
-                  <p>{model.name}</p>
+                  <span className="hf-model-desc">{model.name}</span>
                   <div className="hf-trend-meta">
-                    <span>⭐ {model.likes.toLocaleString()}</span>
-                    <span>⬇ {model.downloads.toLocaleString()}</span>
+                    <span title={model.likes.toLocaleString()}><Star size={12} fill="currentColor" />{formatCount(model.likes)}</span>
+                    <span title={model.downloads.toLocaleString()}><Download size={12} />{formatCount(model.downloads)}</span>
                   </div>
-                  {model.sampleQuant ? <span className="hf-trend-quant">{model.sampleQuant}</span> : null}
+                  {model.sampleQuant ? <span className="hf-quant-badge hf-trend-quant">{model.sampleQuant}</span> : null}
                   <div className="hf-trend-actions">
                     <button className="secondary-button compact" onClick={() => openFiles(model)}><Download size={13} />{t("explore.viewFilesShort")}</button>
                   </div>
@@ -803,8 +829,21 @@ export default function ExplorePage(props: Props) {
               {facetCount > 0 && <span className="explore-updated">{t("explore.facetSidebar")} × {facetCount}</span>}
             </div>
           </div>
-          {loading && models.length === 0 ? <div className="hf-empty"><Loader2 size={20} className="spin" />{t("explore.loading")}</div> : null}
-          {loading && models.length > 0 ? <div className="hf-list-loading"><Loader2 size={15} className="spin" />{t("explore.loading")}</div> : null}
+          {loading && models.length === 0 ? (
+            <div className="hf-skeleton-list">
+              {Array.from({ length: 5 }, (_, index) => (
+                <div className="hf-model-row hf-skeleton-row" key={index}>
+                  <div className="hf-model-row-body">
+                    <span className="hf-model-icon hf-skeleton-block" />
+                    <div className="hf-model-main-col">
+                      <div className="hf-skeleton-line title" />
+                      <div className="hf-skeleton-line text" />
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : null}
           {error && !loading && <div className="hf-empty err"><p>{error}</p><span className="hf-net-hint">{t("explore.netErrorHint")}</span></div>}
           {!loading && !error && sorted.length === 0 && <div className="hf-empty"><h3>{t("explore.noResults")}</h3><p>{t("explore.noResultsDesc")}</p></div>}
           {sorted.map((model) => (
@@ -939,4 +978,14 @@ export default function ExplorePage(props: Props) {
 
 function openHf(id: string) {
   void openExternal("https://huggingface.co/" + id);
+}
+
+function formatCount(value: number) {
+  const compact = (divisor: number, suffix: string) => {
+    const scaled = Math.floor(value / divisor * 10) / 10;
+    return scaled % 1 === 0 ? `${scaled}${suffix}` : `${scaled.toFixed(1)}${suffix}`;
+  };
+  if (value >= 1_000_000) return compact(1_000_000, "M");
+  if (value >= 1_000) return compact(1_000, "k");
+  return value.toLocaleString();
 }

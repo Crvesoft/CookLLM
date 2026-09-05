@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DEMO_CONFIG, DEFAULT_PROFILES, INITIAL_LOGS, migrateConfig, uid } from "./data";
 import { setLocale, useI18n } from "./i18n";
-import { getGpuStats, getModelsDir, getServerStatus, hfCancelDownload, hfDownload, hfDownloadUrl, hfPauseDownloads, isTauri, loadConfig, onLlamaLog, openExternal, pickModelsDir, removeLocalFile, revealInFolder, saveConfig, setWindowTheme, startServer, stopServer } from "./tauri";
+import { checkForUpdate, getGpuStats, getModelsDir, getServerStatus, hfCancelDownload, hfDownload, hfDownloadUrl, hfPauseDownloads, isTauri, loadConfig, onLlamaLog, openExternal, pickModelsDir, removeLocalFile, revealInFolder, saveConfig, setWindowTheme, startServer, stopServer, type UpdateCheckResult } from "./tauri";
 import type { ActiveDownload } from "./components/ExplorePage";
 import type { PickedFile } from "./tauri";
 import { onModelDownloadProgress } from "./tauri";
@@ -17,6 +17,8 @@ import Playground from "./components/Playground";
 import SettingsPage from "./components/SettingsPage";
 import ExplorePage from "./components/ExplorePage";
 import ProfileEditor from "./components/ProfileEditor";
+import AppUpdateDialog from "./components/AppUpdateDialog";
+import { APP_VERSION } from "./data";
 
 /** 下载任务持久化 key：重开程序后恢复任务列表（含未完成的断点续传） */
 const DOWNLOADS_STORAGE_KEY = "cookllm.downloads";
@@ -68,6 +70,10 @@ export default function App() {
   /** 社区探索：模型下载实时进度（仓库文件名 -> 进度） */
   const [modelProgress, setModelProgress] = useState<Record<string, ModelDownloadProgress>>({});
   const [diskUsage, setDiskUsage] = useState<DiskUsage | null>(null);
+  const [appUpdate, setAppUpdate] = useState<UpdateCheckResult | null>(null);
+  const [appUpdateDialogOpen, setAppUpdateDialogOpen] = useState(false);
+  const [appUpdateChecking, setAppUpdateChecking] = useState(false);
+  const startupUpdateCheckedRef = useRef(false);
   /** 社区探索下载完成后刚导入的模型 id（卡片显示「刚刚导入」绿色 Badge，一定时间后消失） */
   const [justImportedIds, setJustImportedIds] = useState<Set<string>>(new Set());
   /** 下载任务镜像（供进度回调读取，避免闭包过期） */
@@ -172,6 +178,26 @@ export default function App() {
     if (!isTauri()) return;
     void getModelsDir().then((usage) => setDiskUsage(usage)).catch(() => undefined);
   }, [config.modelsDir]);
+
+  const checkAppUpdate = async (openWhenAvailable = true) => {
+    setAppUpdateChecking(true);
+    try {
+      const result = await checkForUpdate(APP_VERSION);
+      setAppUpdate(result);
+      if (result.status === "available" && openWhenAvailable) setAppUpdateDialogOpen(true);
+      return result;
+    } finally {
+      setAppUpdateChecking(false);
+    }
+  };
+
+  useEffect(() => {
+    if (!configReady || config.autoUpdateEnabled === false || startupUpdateCheckedRef.current) return;
+    startupUpdateCheckedRef.current = true;
+    const timer = window.setTimeout(() => { void checkAppUpdate().catch(() => undefined); }, 1200);
+    return () => window.clearTimeout(timer);
+  }, [configReady, config.autoUpdateEnabled]);
+
   // 持久化任务列表：任何变更自动写盘（localStorage），重开程序后恢复
   useEffect(() => {
     try { localStorage.setItem(DOWNLOADS_STORAGE_KEY, JSON.stringify(downloads)); } catch { /* 忽略写入失败 */ }
@@ -570,7 +596,7 @@ export default function App() {
   const exploreBadge = exploreActive > 0 ? String(exploreActive) : undefined;
 
   return <div className={cn("app-shell", sidebarCollapsed && "sidebar-collapsed")}>
-    <Sidebar page={page} onPage={setPage} modelCount={config.models.length} downloadBadge={exploreBadge} status={status} abnormal={serviceAbnormal} gpuStats={gpuStats} tokSample={tokSample} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed((value) => !value)} theme={theme} onToggleTheme={() => void persist({ ...config, theme: theme === "dark" ? "light" : "dark" })} />
+    <Sidebar page={page} onPage={setPage} modelCount={config.models.length} downloadBadge={exploreBadge} updateAvailable={appUpdate?.status === "available"} status={status} abnormal={serviceAbnormal} gpuStats={gpuStats} tokSample={tokSample} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed((value) => !value)} theme={theme} onToggleTheme={() => void persist({ ...config, theme: theme === "dark" ? "light" : "dark" })} />
     <div className={cn("workspace", isDockPage && "dock-mode")}><Topbar page={page} status={status} busy={busy} onToggleService={status.running ? handleStop : startQuick} models={config.models} modelId={quickModelId || config.preferredModelId || config.models[0]?.id || ""} onSelectModel={setQuickModelId} /><main className="main-content">
       {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} query={query} onQuery={setQuery} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onAddProfile={(model) => setProfileEditing({ modelId: model.id, profile: { ...DEFAULT_PROFILES[0], id: uid("profile"), name: t("newProfile") } })} onRenameModel={renameModel} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} downloads={downloads} modelProgress={modelProgress} justImportedIds={justImportedIds} />}
       <ExplorePage visible={page === "explore"} config={config} onPersist={persist} onToast={setToast} onLog={appendLog} diskUsage={diskUsage} onPickModelsDir={pickModelsDirFlow} onDownload={handleModelDownload} activeDownloads={downloads} progressMap={modelProgress} onPauseAll={handlePauseAll} onResumeFailed={handleResumeFailed} onClearDone={handleClearDone} onCancelTask={handleCancelTask} onRetry={handleRetry} onReveal={handleReveal} onGoModels={goModels} />
@@ -578,7 +604,7 @@ export default function App() {
       {/* 会话页保持常驻（隐藏而非卸载）：切换菜单不销毁内嵌 WebUI，回来时无需从聊天记录重新进入；WebUI 始终填满 Dock 下全部剩余高度 */}
       <Playground visible={page === "playground"} status={status} webUiUrl={webUiUrl} modelName={activeModel ? modelTitle(activeModel) : undefined} onOpenWebUi={openWebUi} />
       {page === "logs" && <LogsPage logs={logs} status={status} onClear={() => setLogs([])} />}
-      <SettingsPage visible={page === "settings"} config={config} onPersist={persist} onLog={appendLog} />
+      <SettingsPage visible={page === "settings"} config={config} appUpdate={appUpdate} checkingUpdate={appUpdateChecking} onCheckUpdate={checkAppUpdate} onOpenUpdate={() => setAppUpdateDialogOpen(true)} onPersist={persist} onLog={appendLog} />
     </main>
     {/* Dock 日志参与布局（收起=底部状态栏 / 展开=可调高度面板），各页面共用同一份状态，不遮挡内容；仅"日志"整页除外 */}
     {isDockPage && <LogDock open={logDockOpen} height={logDockHeight} logs={logs} status={status} modelName={activeModel ? modelTitle(activeModel) : undefined} abnormal={serviceAbnormal} tokPerSec={tokSample ? tokSample.rate : null} onToggle={() => setLogDockOpen((value) => !value)} onHeightChange={setLogDockHeight} onClear={() => setLogs([])} />}
@@ -586,5 +612,6 @@ export default function App() {
     {profileEditing && <ProfileEditor model={config.models.find((m) => m.id === profileEditing.modelId)} profile={profileEditing.profile} defaultProfileId={config.models.find((m) => m.id === profileEditing.modelId)?.defaultProfileId} onClose={() => setProfileEditing(null)} onSave={(profile, isDefault) => saveProfile(profileEditing.modelId, profile, isDefault)} />}
     {importOpen && <ImportModelModal existingPaths={new Set(config.models.map((model) => model.path.toLowerCase()))} onClose={() => setImportOpen(false)} onImport={handleImportModels} />}
     {toast && <Toast>{toast}</Toast>}
+    <AppUpdateDialog open={appUpdateDialogOpen} update={appUpdate} onClose={() => setAppUpdateDialogOpen(false)} />
   </div>;
 }

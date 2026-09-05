@@ -127,16 +127,52 @@ export interface UpdateCheckResult {
   latestTag: string;
   /** 该版本的发布页地址 */
   releaseUrl: string;
+  releaseNotes?: string | null;
+  assetUrl?: string | null;
+  assetName?: string | null;
+  assetSize?: number | null;
+  assetSha256?: string | null;
 }
 
 /** 通过 GitHub Releases 检查新版本（匿名访问，无需密钥）；仓库无已发布版本时抛 Error("no-releases") */
 export async function checkForUpdate(currentVersion: string): Promise<UpdateCheckResult> {
+  if (isTauri()) return invoke<UpdateCheckResult>("check_app_update");
   const response = await fetch(`https://api.github.com/repos/${APP_REPO}/releases/latest`, { headers: { accept: "application/vnd.github+json" } });
   if (!response.ok) throw new Error(response.status === 404 ? "no-releases" : `HTTP ${response.status}`);
-  const data = (await response.json()) as { tag_name?: string; html_url?: string };
+  const data = (await response.json()) as { tag_name?: string; html_url?: string; body?: string };
   const latestTag = typeof data.tag_name === "string" ? data.tag_name.trim() : "";
   if (!latestTag) throw new Error("bad-response");
-  return { status: isNewerVersion(latestTag, currentVersion) ? "available" : "latest", latestTag, releaseUrl: typeof data.html_url === "string" ? data.html_url : `${PROJECT_URL}/releases` };
+  return {
+    status: isNewerVersion(latestTag, currentVersion) ? "available" : "latest",
+    latestTag,
+    releaseUrl: typeof data.html_url === "string" ? data.html_url : `${PROJECT_URL}/releases`,
+    releaseNotes: typeof data.body === "string" ? data.body : null,
+    assetUrl: null,
+    assetName: null,
+    assetSize: null,
+    assetSha256: null,
+  };
+}
+
+export async function downloadAppUpdate(update: UpdateCheckResult): Promise<string> {
+  if (!isTauri()) throw new Error("仅 Tauri 桌面端可用");
+  if (!update.assetUrl || !update.assetName) throw new Error("未找到 Windows 安装包");
+  return invoke<string>("download_app_update", {
+    url: update.assetUrl,
+    fileName: update.assetName,
+    size: update.assetSize ?? null,
+    sha256: update.assetSha256 ?? null,
+  });
+}
+
+export async function cancelAppUpdate(): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("cancel_app_update");
+}
+
+export async function installAppUpdate(path: string): Promise<void> {
+  if (!isTauri()) throw new Error("仅 Tauri 桌面端可用");
+  await invoke("install_app_update", { path });
 }
 
 /* ==================== 硬件探测（阶段一） ==================== */

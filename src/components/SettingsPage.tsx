@@ -1,20 +1,24 @@
 import { Activity, AlertTriangle, ArrowRight, Check, Database, Download, FolderOpen, Gauge, Github, Languages, Loader2, Moon, RefreshCw, RotateCw, SlidersHorizontal, SquareTerminal, Sun, Wifi, Wrench, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { APP_REPO, APP_VERSION, PROJECT_URL } from "../data";
+import { APP_REPO, PROJECT_URL } from "../data";
 import { useI18n } from "../i18n";
-import { formatBytes } from "../utils";
-import { cancelLlamaCppUpdate, checkForUpdate, checkLlamaCppUpdate, detectHardware, downloadLlamaCpp, getAppVersion, getGpuInfo, getLlamaCppStatus, getModelsDir, getSystemProxy, onDownloadProgress, openConfigDir, openExternal, pickModelsDir, pickServerDir, testProxyConnection, type DownloadProgress, type GpuInfo, type HardwareSuggestion, type LlamaCppLocalStatus, type LlamaCppRelease, type ProxyTestResult, type UpdateCheckResult } from "../tauri";
+import { cn, formatBytes } from "../utils";
+import { cancelLlamaCppUpdate, checkLlamaCppUpdate, detectHardware, downloadLlamaCpp, getAppVersion, getGpuInfo, getLlamaCppStatus, getModelsDir, getSystemProxy, onDownloadProgress, openConfigDir, openExternal, pickModelsDir, pickServerDir, testProxyConnection, type DownloadProgress, type GpuInfo, type HardwareSuggestion, type LlamaCppLocalStatus, type LlamaCppRelease, type ProxyTestResult, type UpdateCheckResult } from "../tauri";
 import type { AppConfig, DiskUsage, LlamaLogPayload } from "../types";
 
 type ProxyMode = "system" | "manual" | "direct";
 
-export default function SettingsPage({ visible, config, onPersist, onLog }: { visible: boolean; config: AppConfig; onPersist: (config: AppConfig, message?: string) => Promise<void>; onLog: (line: string, stream?: LlamaLogPayload["stream"]) => void }) {
+export default function SettingsPage({ visible, config, appUpdate, checkingUpdate, onCheckUpdate, onOpenUpdate, onPersist, onLog }: { visible: boolean; config: AppConfig; appUpdate: UpdateCheckResult | null; checkingUpdate: boolean; onCheckUpdate: (openWhenAvailable?: boolean) => Promise<UpdateCheckResult>; onOpenUpdate: () => void; onPersist: (config: AppConfig, message?: string) => Promise<void>; onLog: (line: string, stream?: LlamaLogPayload["stream"]) => void }) {
   const { t } = useI18n();
   const [serverPath, setServerPath] = useState(config.serverPath);
   const [serverPicking, setServerPicking] = useState(false);
   const [serverBrowseError, setServerBrowseError] = useState<string | null>(null);
   const [gpuInfo, setGpuInfo] = useState<GpuInfo | null>(null);
   const [modelsDisk, setModelsDisk] = useState<DiskUsage | null>(null);
+
+  useEffect(() => {
+    setServerPath(config.serverPath);
+  }, [config.serverPath]);
 
   useEffect(() => { void getGpuInfo().then(setGpuInfo).catch(() => undefined); }, []);
   useEffect(() => { void getModelsDir().then(setModelsDisk).catch(() => undefined); }, [config.modelsDir]);
@@ -56,11 +60,13 @@ export default function SettingsPage({ visible, config, onPersist, onLog }: { vi
   const [update, setUpdate] = useState<UpdateState>({ phase: "idle" });
   const [updateCheckDone, setUpdateCheckDone] = useState(false);
   const updateCheckTimer = useRef<number | null>(null);
+  const updateAvailable = appUpdate?.status === "available";
+  const autoUpdateEnabled = config.autoUpdateEnabled !== false;
   const runUpdateCheck = async () => {
-    if (update.phase === "checking") return;
+    if (checkingUpdate) return;
     setUpdate({ phase: "checking" });
     try {
-      const result = await checkForUpdate(appVersion || APP_VERSION);
+      const result = await onCheckUpdate(true);
       setUpdate({ phase: "done", result });
       setUpdateCheckDone(true);
       if (updateCheckTimer.current) window.clearTimeout(updateCheckTimer.current);
@@ -426,14 +432,29 @@ export default function SettingsPage({ visible, config, onPersist, onLog }: { vi
             <p className="about-desc">{t("st.aboutDesc")}</p>
             <div className="about-layout">
               <div className="about-info">
-                <span className="app-version-badge">{appVersion ? "v" + appVersion : "--"}</span>
+                <span className="app-version-badge">{appVersion ? "v" + appVersion : "--"}{updateAvailable && <em className="version-new-badge">NEW</em>}</span>
                 <button className="repo-link" title={PROJECT_URL} onClick={() => void openExternal(PROJECT_URL)}><Github size={13} />{APP_REPO}</button>
                 <button className="ghost-link" onClick={() => onLog("diagnostics: UI event bridge is working", "system")}><Activity size={12} />{t("sendTestLog")}</button>
               </div>
-              <button className="secondary-button compact" disabled={update.phase === "checking"} onClick={() => void runUpdateCheck()}>
-                {update.phase === "checking" ? <Loader2 size={14} className="spin" /> : updateCheckDone ? <Check size={14} /> : <RefreshCw size={14} />}
-                {update.phase === "checking" ? t("st.checkingUpdate") : updateCheckDone ? t("st.checkDoneShort") : t("st.checkUpdate")}
-              </button>
+              <div className="about-update-control">
+                <label className="auto-update-toggle">
+                  <button className={cn("switch", autoUpdateEnabled && "on")} role="switch" aria-checked={autoUpdateEnabled} aria-label={t("st.autoUpdate")} onClick={() => void onPersist({ ...config, autoUpdateEnabled: !autoUpdateEnabled }, t("toast.settingsSaved"))}>
+                    <span className="switch-knob" />
+                  </button>
+                  <span>{t("st.autoUpdate")}</span>
+                </label>
+                {updateAvailable ? (
+                  <button className="secondary-button compact update-ready-button" onClick={onOpenUpdate}>
+                    <i className="update-button-dot" aria-hidden="true" />
+                    {t("st.updateTo", { tag: appUpdate?.latestTag || "" })}
+                  </button>
+                ) : (
+                  <button className="secondary-button compact" disabled={checkingUpdate} onClick={() => void runUpdateCheck()}>
+                    {checkingUpdate ? <Loader2 size={14} className="spin" /> : updateCheckDone ? <Check size={14} /> : <RefreshCw size={14} />}
+                    {checkingUpdate ? t("st.checkingUpdate") : updateCheckDone ? t("st.checkDoneShort") : t("st.checkUpdate")}
+                  </button>
+                )}
+              </div>
             </div>
             {update.phase === "done" && update.result.status === "available" && <div className="about-result"><span className="storage-note warn"><Download size={15} />{t("st.updateAvailable", { tag: update.result.latestTag })}</span><button className="secondary-button compact" onClick={() => void openExternal(update.result.releaseUrl)}>{t("st.openRelease")}</button></div>}
             {update.phase === "error" && <div className="about-result"><span className="storage-note err"><AlertTriangle size={15} />{update.message}</span></div>}

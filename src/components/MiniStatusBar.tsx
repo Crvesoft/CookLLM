@@ -123,6 +123,7 @@ interface MiniStatusBarProps {
   tokSample: TokSample | null;
   /** 当前主题与切换回调（左下角快捷切换） */
   theme: string;
+  updateAvailable?: boolean;
   onToggleTheme: () => void;
 }
 
@@ -130,7 +131,7 @@ interface MiniStatusBarProps {
  * 左下角 GPU 性能监测 + 功耗合并卡片：GPU 指标区（VRAM / Core sparkline）在上，
  * 功耗行居中，健康灯 + 版本号沉底至其右端。
  */
-export default function MiniStatusBar({ status, abnormal, gpuStats, tokSample, theme, onToggleTheme }: MiniStatusBarProps) {
+export default function MiniStatusBar({ status, abnormal, gpuStats, tokSample, theme, updateAvailable, onToggleTheme }: MiniStatusBarProps) {
   const { t } = useI18n();
   const running = status.running;
   // no GPU data (AMD / Intel / no dGPU): hide the monitoring section entirely
@@ -189,10 +190,10 @@ export default function MiniStatusBar({ status, abnormal, gpuStats, tokSample, t
         <Spark history={coreHistory} tone="core" />
       </div>
       {/* 功耗行 */}
-      <div className="ms-power"><Zap size={11} aria-hidden="true" /><span>{t("powerLabel")}</span><b>{powerText}</b><span className="ms-app-meta"><i className="ms-health" title={abnormal ? t("serviceAbnormal") : running ? t("statusRunning") : t("statusStopped")} aria-hidden="true" /><span className="ms-version">v{appVersion}</span>{themeToggle}</span></div>
+      <div className="ms-power"><Zap size={11} aria-hidden="true" /><span>{t("powerLabel")}</span><b>{powerText}</b><span className="ms-app-meta"><i className="ms-health" title={abnormal ? t("serviceAbnormal") : running ? t("statusRunning") : t("statusStopped")} aria-hidden="true" /><span className="ms-version">v{appVersion}</span>{updateAvailable && <em className="ms-new-badge">NEW</em>}{themeToggle}</span></div>
         </>
       ) : (
-        <div className="ms-power ms-power-only"><i className="ms-health" title={abnormal ? t("serviceAbnormal") : running ? t("statusRunning") : t("statusStopped")} aria-hidden="true" /><span className="ms-state-text">{running ? (abnormal ? t("serviceAbnormal") : t("serviceRunning")) : t("notStarted")}</span><span className="ms-app-meta"><span className="ms-version">v{appVersion}</span>{themeToggle}</span></div>
+        <div className="ms-power ms-power-only"><i className="ms-health" title={abnormal ? t("serviceAbnormal") : running ? t("statusRunning") : t("statusStopped")} aria-hidden="true" /><span className="ms-state-text">{running ? (abnormal ? t("serviceAbnormal") : t("serviceRunning")) : t("notStarted")}</span><span className="ms-app-meta"><span className="ms-version">v{appVersion}</span>{updateAvailable && <em className="ms-new-badge">NEW</em>}{themeToggle}</span></div>
       )}
     </div>
   );

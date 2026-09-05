@@ -2,7 +2,7 @@ import type { AppConfig, LlamaLogPayload, ModelAsset, Profile } from "./types";
 import { formatMessage, getLocale } from "./i18n";
 
 /** 当前应用版本（与 tauri.conf.json / package.json 保持一致）：浏览器模式回退值，检测更新的比较基线 */
-export const APP_VERSION = "0.1.2";
+export const APP_VERSION = "0.1.3";
 /** 项目信息：GitHub 仓库（owner/repo）与主页地址 */
 export const APP_REPO = "Crvesoft/CookLLM";
 export const PROJECT_URL = `https://github.com/${APP_REPO}`;

@@ -137,6 +137,9 @@ struct AppConfig {
     /// 模型存储根目录（社区下载 / 自动扫描）；缺省为应用数据目录下的 models。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     models_dir: Option<String>,
+    /// 启动时自动检查应用更新；缺省开启。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    auto_update_enabled: Option<bool>,
 }
 
 impl Default for AppConfig {
@@ -178,6 +181,7 @@ impl Default for AppConfig {
             network: None,
             llamacpp_dir: None,
             models_dir: None,
+            auto_update_enabled: None,
         }
     }
 }
@@ -217,6 +221,8 @@ struct TimingState(Mutex<StartupTiming>);
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis() as u64
 }
+
+const APP_GITHUB_REPO: &str = "Crvesoft/CookLLM";
 
 fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
     let directory = app.path().app_config_dir().map_err(|error| error.to_string())?;
@@ -648,6 +654,19 @@ struct DiskUsage {
     path: String,
     total_bytes: u64,
     free_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AppUpdateInfo {
+    status: String,
+    latest_tag: String,
+    release_url: String,
+    release_notes: Option<String>,
+    asset_url: Option<String>,
+    asset_name: Option<String>,
+    asset_size: Option<u64>,
+    asset_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1419,7 +1438,7 @@ async fn hf_trending(app: AppHandle, limit: Option<usize>, gguf_only: Option<boo
     let network = config.network.clone().unwrap_or_default();
     let client = build_net_client(&network)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let base = format!("{}/models?sort=trendingScore&direction=-1&expand[]=lastModified", HF_API_BASE);
+        let base = format!("{}/models?sort=trendingScore&direction=-1&expand[]=lastModified&expand[]=downloads&expand[]=likes", HF_API_BASE);
         let base = if let Some(sort_by) = sort {
             base.replace("sort=trendingScore", &format!("sort={}", sort_by))
         } else {
@@ -1443,6 +1462,8 @@ async fn hf_search(app: AppHandle, query: String, limit: Option<usize>, gguf_onl
             .append_pair("search", query.trim())
             .append_pair("sort", sort.as_deref().unwrap_or("trendingScore"))
             .append_pair("expand[]", "lastModified")
+            .append_pair("expand[]", "downloads")
+            .append_pair("expand[]", "likes")
             .append_pair("direction", "-1");
         let base = url.as_str().to_string();
         fetch_models_filtered(&client, &base, gguf_only.unwrap_or(false), limit.unwrap_or(30), skip, quants)
@@ -2286,6 +2307,154 @@ fn fetch_github_release_with_fallback(config_client: &reqwest::blocking::Client,
     Err(format!("GitHub API 连接失败（{}）。请在「设置 → 网络与代理」选择手动代理（Clash 端口 7897 / V2rayN 10809）后重试", errors.join("；")))
 }
 
+fn version_number(value: &str) -> Vec<u64> {
+    value.trim().trim_start_matches('v').split(|character: char| !character.is_ascii_digit() && character != '.').next().unwrap_or("")
+        .split('.').map(|part| part.parse::<u64>().unwrap_or(0)).collect()
+}
+
+fn is_newer_version(candidate: &str, current: &str) -> bool {
+    let candidate = version_number(candidate);
+    let current = version_number(current);
+    (0..candidate.len().max(current.len())).any(|index| {
+        let left = candidate.get(index).copied().unwrap_or(0);
+        let right = current.get(index).copied().unwrap_or(0);
+        left != right && left > right
+    })
+}
+
+fn app_installer_from_value(value: &serde_json::Value) -> Option<(String, String, u64, Option<String>)> {
+    let assets = value.get("assets")?.as_array()?;
+    assets.iter().filter_map(|item| {
+        let name = item.get("name")?.as_str()?.to_string();
+        let lower = name.to_lowercase();
+        let rank = if lower.ends_with(".exe") && (lower.contains("setup") || lower.contains("nsis")) { 0 } else if lower.ends_with(".msi") { 1 } else { return None };
+        if lower.contains("arm64") || lower.contains("aarch64") { return None; }
+        let url = item.get("browser_download_url")?.as_str()?.to_string();
+        if url.is_empty() { return None; }
+        let size = item.get("size").and_then(serde_json::Value::as_u64).unwrap_or(0);
+        let digest = item.get("digest").and_then(serde_json::Value::as_str).and_then(|text| text.strip_prefix("sha256:")).map(str::to_string);
+        Some((rank, (url, name, size, digest)))
+    }).min_by_key(|(rank, _)| *rank).map(|(_, item)| item)
+}
+
+fn check_app_update_impl(app: &AppHandle) -> Result<AppUpdateInfo, String> {
+    let current_version = app.package_info().version.to_string();
+    let config = read_config(app)?;
+    let client = build_net_client(&config.network.clone().unwrap_or_default())?;
+    let url = format!("https://api.github.com/repos/{APP_GITHUB_REPO}/releases/latest");
+    let release = fetch_github_release_with_fallback(&client, &url)?;
+    let latest_tag = release.get("tag_name").and_then(serde_json::Value::as_str).unwrap_or("").trim().to_string();
+    if latest_tag.is_empty() { return Err("bad-response".into()); }
+    let installer = if cfg!(target_os = "windows") { app_installer_from_value(&release) } else { None };
+    let (asset_url, asset_name, asset_size, asset_sha256) = installer
+        .map(|(url, name, size, digest)| (Some(url), Some(name), Some(size), digest))
+        .unwrap_or((None, None, None, None));
+    Ok(AppUpdateInfo {
+        status: if is_newer_version(&latest_tag, &current_version) { "available".into() } else { "latest".into() },
+        latest_tag,
+        release_url: release.get("html_url").and_then(serde_json::Value::as_str).unwrap_or("https://github.com/Crvesoft/CookLLM/releases").to_string(),
+        release_notes: release.get("body").and_then(serde_json::Value::as_str).map(str::to_string).filter(|text| !text.trim().is_empty()),
+        asset_url, asset_name, asset_size, asset_sha256,
+    })
+}
+
+#[tauri::command]
+async fn check_app_update(app: AppHandle) -> Result<AppUpdateInfo, String> {
+    tauri::async_runtime::spawn_blocking(move || check_app_update_impl(&app)).await.map_err(|error| format!("应用更新检查任务中断：{}", error))?
+}
+
+fn installer_digest(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut file = fs::File::open(path).map_err(|error| format!("读取安装包失败：{}", error))?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).map_err(|error| format!("计算安装包校验失败：{}", error))?;
+    Ok(hasher.finalize().iter().map(|byte| format!("{:02x}", byte)).collect())
+}
+
+fn verify_app_installer(path: &Path, expected_size: Option<u64>, expected_digest: Option<&str>) -> Result<(), String> {
+    let metadata = fs::metadata(path).map_err(|error| format!("安装包校验失败：{}", error))?;
+    if metadata.len() == 0 { return Err("安装包为空".into()); }
+    if let Some(size) = expected_size.filter(|size| *size > 0) {
+        if metadata.len() != size { return Err(format!("安装包大小校验失败：期望 {} 字节，实际 {} 字节", size, metadata.len())); }
+    }
+    if let Some(expected) = expected_digest.filter(|digest| !digest.trim().is_empty()) {
+        if !installer_digest(path)?.eq_ignore_ascii_case(expected.trim()) { return Err("安装包 SHA-256 校验失败".into()); }
+    }
+    Ok(())
+}
+
+fn download_app_update_impl(app: AppHandle, url: String, file_name: String, expected_size: Option<u64>, expected_sha256: Option<String>) -> Result<String, String> {
+    let normalized = url.trim().to_string();
+    let parsed = reqwest::Url::parse(&normalized).map_err(|_| "安装包下载地址无效".to_string())?;
+    if parsed.scheme() != "https" || parsed.host_str() != Some("github.com") || !parsed.path().contains("/releases/download/") {
+        return Err("安装包下载地址不受信任".into());
+    }
+    let safe_name = file_name.trim();
+    let safe_self = Path::new(safe_name).file_name().and_then(|value| value.to_str()).unwrap_or("");
+    if safe_name != safe_self || !(safe_name.to_lowercase().ends_with(".exe") || safe_name.to_lowercase().ends_with(".msi")) {
+        return Err("安装包文件名无效".into());
+    }
+    let directory = std::env::temp_dir().join("CookLLM");
+    fs::create_dir_all(&directory).map_err(|error| format!("创建更新临时目录失败：{}", error))?;
+    let destination = directory.join(safe_name);
+    if destination.exists() && verify_app_installer(&destination, expected_size, expected_sha256.as_deref()).is_ok() {
+        emit_download_progress(&app, "done", 100, expected_size.unwrap_or(0), expected_size.unwrap_or(0), 0, "安装包已就绪");
+        return Ok(destination.to_string_lossy().to_string());
+    }
+    let temporary = destination.with_extension(format!("part.{}", now_ms()));
+    UPDATE_CANCEL_FLAG.store(false, Ordering::Relaxed);
+    let client = build_net_client(&read_config(&app)?.network.clone().unwrap_or_default())?;
+    let download_result = stream_download_with_fallback(&client, &normalized, &temporary, &app);
+    if let Err(error) = download_result {
+        let _ = fs::remove_file(&temporary);
+        return Err(error);
+    }
+    verify_app_installer(&temporary, expected_size, expected_sha256.as_deref())?;
+    if destination.exists() {
+        fs::remove_file(&destination).map_err(|error| format!("替换旧安装包失败：{}", error))?;
+    }
+    fs::rename(&temporary, &destination).map_err(|error| format!("保存安装包失败：{}", error))?;
+    emit_download_progress(&app, "done", 100, expected_size.unwrap_or(0), expected_size.unwrap_or(0), 0, "安装包已就绪");
+    Ok(destination.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+async fn download_app_update(app: AppHandle, url: String, file_name: String, size: Option<u64>, sha256: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || download_app_update_impl(app, url, file_name, size, sha256))
+        .await.map_err(|error| format!("应用更新下载任务中断：{}", error))?
+}
+
+#[tauri::command]
+fn cancel_app_update() -> Result<(), String> {
+    UPDATE_CANCEL_FLAG.store(true, Ordering::Relaxed);
+    Ok(())
+}
+
+#[tauri::command]
+fn install_app_update(app: AppHandle, path: String) -> Result<(), String> {
+    let installer = PathBuf::from(&path);
+    let allowed_parent = std::env::temp_dir().join("CookLLM");
+    if !installer.starts_with(&allowed_parent) || !installer.is_file() || !(path.to_lowercase().ends_with(".exe") || path.to_lowercase().ends_with(".msi")) {
+        return Err("安装包无效".into());
+    }
+    if fs::metadata(&installer).map(|metadata| metadata.len()).unwrap_or(0) == 0 { return Err("安装包为空".into()); }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        if path.to_lowercase().ends_with(".msi") {
+            Command::new("msiexec").arg("/i").arg(&installer).creation_flags(0x00000208).spawn().map_err(|error| format!("启动安装程序失败：{}", error))?;
+        } else {
+            Command::new(&installer).creation_flags(0x00000208).spawn().map_err(|error| format!("启动安装程序失败：{}", error))?;
+        }
+    }
+    #[cfg(not(target_os = "windows"))]
+    let _ = Command::new(&installer).spawn();
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    app.cleanup_before_exit();
+    app.exit(0);
+    Ok(())
+}
+
 /// 解析 Windows x64 的 llama.cpp 资产（llama-bXXXX-bin-win-{cuda|vulkan|avx2}.zip）。
 fn parse_win_assets(value: &serde_json::Value) -> Vec<LlamaCppAsset> {
     let mut out = Vec::new();
@@ -2865,7 +3034,7 @@ pub fn run() {
             react_mounted_ms: None,
             reported: false,
         })))
-        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_download, hf_download_url, hf_cancel_download, hf_pause_downloads, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, pick_files, pick_folder, pick_server_dir, expand_paths, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
+        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_download, hf_download_url, hf_cancel_download, hf_pause_downloads, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, pick_files, pick_folder, pick_server_dir, expand_paths, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
         .setup(|app| match configure_main_window(app) {
             Ok(()) => Ok(()),
             Err(error) => Err(error.into()),

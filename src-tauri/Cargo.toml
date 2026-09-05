@@ -1,6 +1,6 @@
 [package]
 name = "cookllm"
-version = "0.1.2"
+version = "0.1.3"
 description = "A lightweight desktop launcher for local llama.cpp models"
 authors = ["CookLLM"]
 edition = "2021"
@@ -20,6 +20,5 @@ serde_json = "1"
 shlex = "1"
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_Storage_FileSystem"] }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "stream", "system-proxy", "http2", "native-tls"] }
+sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
-
-
