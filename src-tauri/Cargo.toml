@@ -18,4 +18,8 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 shlex = "1"
-windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole"] }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_Storage_FileSystem"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "stream", "system-proxy", "http2", "native-tls"] }
+zip = { version = "2", default-features = false, features = ["deflate"] }
+
+

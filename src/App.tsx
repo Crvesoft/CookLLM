@@ -1,10 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DEMO_CONFIG, DEFAULT_PROFILES, INITIAL_LOGS, migrateConfig, uid } from "./data";
 import { setLocale, useI18n } from "./i18n";
-import { getGpuStats, getServerStatus, isTauri, loadConfig, onLlamaLog, openExternal, saveConfig, setWindowTheme, startServer, stopServer } from "./tauri";
+import { getGpuStats, getModelsDir, getServerStatus, hfCancelDownload, hfDownload, hfDownloadUrl, hfPauseDownloads, isTauri, loadConfig, onLlamaLog, openExternal, pickModelsDir, removeLocalFile, revealInFolder, saveConfig, setWindowTheme, startServer, stopServer } from "./tauri";
+import type { ActiveDownload } from "./components/ExplorePage";
 import type { PickedFile } from "./tauri";
+import { onModelDownloadProgress } from "./tauri";
+import type { DiskUsage, ModelDownloadProgress } from "./types";
 import { PAGE_LOG_MODE, type AppConfig, type GpuStats, type LlamaLogPayload, type ModelAsset, type Page, type Profile, type ServerStatus, type TokSample } from "./types";
-import { ACCENTS, EMPTY_STATUS, cn, fileName, modelTitle, newLog, parseTokPerSec } from "./utils";
+import { ACCENTS, EMPTY_STATUS, cn, fileName, formatBytes, modelTitle, newLog, parseTokPerSec } from "./utils";
 import LogDock from "./components/LogDock";
 import { LogsPage, Sidebar, Toast, Topbar } from "./components/Layout";
 import ImportModelModal from "./components/ImportModelModal";
@@ -12,7 +15,24 @@ import ModelsPage from "./components/ModelsPage";
 import ProfilesPage from "./components/ProfilesPage";
 import Playground from "./components/Playground";
 import SettingsPage from "./components/SettingsPage";
+import ExplorePage from "./components/ExplorePage";
 import ProfileEditor from "./components/ProfileEditor";
+
+/** 下载任务持久化 key：重开程序后恢复任务列表（含未完成的断点续传） */
+const DOWNLOADS_STORAGE_KEY = "cookllm.downloads";
+/** 自动续传全局一次性标记（StrictMode 双挂载 / 组件重建不会重复发起） */
+let autoResumeTriggered = false;
+
+function loadStoredDownloads(): ActiveDownload[] {
+  try {
+    const raw = localStorage.getItem(DOWNLOADS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as ActiveDownload[];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
 
 export default function App() {
   /** 界面语言：文案经 t() 查当前 locale；locale 由 AppConfig.language 驱动（adopt/persist 时同步） */
@@ -43,6 +63,15 @@ export default function App() {
   const stopIntendedRef = useRef(false);
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
+  /** 社区探索：下载中任务（持久化到 localStorage，重开程序后恢复并自动续传） */
+  const [downloads, setDownloads] = useState<ActiveDownload[]>(loadStoredDownloads);
+  /** 社区探索：模型下载实时进度（仓库文件名 -> 进度） */
+  const [modelProgress, setModelProgress] = useState<Record<string, ModelDownloadProgress>>({});
+  const [diskUsage, setDiskUsage] = useState<DiskUsage | null>(null);
+  /** 社区探索下载完成后刚导入的模型 id（卡片显示「刚刚导入」绿色 Badge，一定时间后消失） */
+  const [justImportedIds, setJustImportedIds] = useState<Set<string>>(new Set());
+  /** 下载任务镜像（供进度回调读取，避免闭包过期） */
+  const downloadsRef = useRef<ActiveDownload[]>([]);
   const [menuModelId, setMenuModelId] = useState<string | null>(null);
   const [quickModelId, setQuickModelId] = useState("");
   const [importOpen, setImportOpen] = useState(false);
@@ -136,12 +165,226 @@ export default function App() {
   useEffect(() => { document.documentElement.setAttribute("data-theme", theme); void setWindowTheme(theme === "dark"); }, [theme]);
   useEffect(() => { if (!toast) return; const timeout = window.setTimeout(() => setToast(null), 2200); return () => window.clearTimeout(timeout); }, [toast]);
 
+
+
+  // 读取模型存储目录与可用空间（配置加载完成后）
+  useEffect(() => {
+    if (!isTauri()) return;
+    void getModelsDir().then((usage) => setDiskUsage(usage)).catch(() => undefined);
+  }, [config.modelsDir]);
+  // 持久化任务列表：任何变更自动写盘（localStorage），重开程序后恢复
+  useEffect(() => {
+    try { localStorage.setItem(DOWNLOADS_STORAGE_KEY, JSON.stringify(downloads)); } catch { /* 忽略写入失败 */ }
+  }, [downloads]);
+
+  // 任务镜像随 state 同步（集中兜底，覆盖恢复初始值与所有 setDownloads 路径）
+  useEffect(() => { downloadsRef.current = downloads; }, [downloads]);
+
+  /** 启动一次通用下载启动器：仓库文件 / 直链统一走这里（自动续传复用） */
+  const launchDownload = (entry: ActiveDownload) => {
+    const run = entry.url ? hfDownloadUrl(entry.url) : hfDownload(entry.repo, entry.file);
+    void run.then((result) => {
+      appendLog(t("explore.downloaded") + ": " + result.path, "system");
+      void importDownloadedModel(entry, result.path, result.sizeBytes);
+    }).catch((error) => {
+      const raw = error instanceof Error ? error.message : String(error);
+      if (raw.includes("取消") || raw.includes("暂停")) { setToast(t("toast.downloadCancelled")); }
+      else { appendLog(t("explore.error", { error: raw }), "stderr"); }
+      const failed: ActiveDownload = { ...entry, status: "error", error: raw, speedBps: 0, finishedAt: Date.now() };
+      setDownloads((previous) => previous.map((item) => (item.repo + "::" + item.file === entry.repo + "::" + entry.file ? failed : item)));
+      downloadsRef.current = downloadsRef.current.map((item) => (item.repo + "::" + item.file === entry.repo + "::" + entry.file ? failed : item));
+    });
+  };
+
+  // 启动后自动续传：恢复的任务中以 active 开场（上次退出时未完成）→ 重新发起下载（后端 .part 断点续传）
+  useEffect(() => {
+    if (!isTauri() || !configReady || autoResumeTriggered) return;
+    const pending = downloadsRef.current.filter((item) => item.status === "active");
+    if (!pending.length) return;
+    autoResumeTriggered = true;
+    const timer = window.setTimeout(() => {
+      for (const task of pending) {
+        const entry: ActiveDownload = { ...task, startedAt: Date.now(), status: "active", percent: 0, downloaded: 0, total: task.total ?? task.sizeBytes, speedBps: 0 };
+        setDownloads((previous) => [...previous.filter((item) => !(item.repo === task.repo && item.file === task.file)), entry]);
+        launchDownload(entry);
+      }
+      if (pending.length) setToast(t("toast.downloadQueued"));
+    }, 800);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [configReady]);
+
+  // 订阅模型下载进度：同步任务状态（percent/speed/status），完成时标记 done 并延迟清理 progressMap
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    const patchTask = (repo: string, file: string, patch: Partial<ActiveDownload>) => {
+      const key = repo + "::" + file;
+      setDownloads((previous) => previous.map((item) => (item.repo + "::" + item.file === key ? { ...item, ...patch } : item)));
+      downloadsRef.current = downloadsRef.current.map((item) => (item.repo + "::" + item.file === key ? { ...item, ...patch } : item));
+    };
+    void onModelDownloadProgress((payload) => {
+      const key = payload.repo + "::" + payload.file;
+      setModelProgress((previous) => ({ ...previous, [key]: payload }));
+      if (payload.phase === "done") {
+        patchTask(payload.repo, payload.file, { status: "done", percent: 100, downloaded: payload.downloaded, total: payload.total, speedBps: 0, finishedAt: Date.now() });
+        window.setTimeout(() => {
+          setModelProgress((previous) => {
+            const next = { ...previous };
+            delete next[key];
+            return next;
+          });
+        }, 1800);
+      } else if (payload.phase === "error") {
+        patchTask(payload.repo, payload.file, { status: "error", error: payload.message || "download failed", speedBps: 0, finishedAt: Date.now() });
+      } else {
+        patchTask(payload.repo, payload.file, { status: "active", percent: payload.percent, downloaded: payload.downloaded, total: payload.total, speedBps: payload.speedBps });
+      }
+    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
+    return () => { unlisten?.(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const persist = async (next: AppConfig, message?: string) => {
     setConfig(next);
     /** 语言随本次保存立即生效（值未变时为空操作） */
     setLocale(next.language ?? "zh");
     try { await saveConfig(next); if (message) setToast(message); }
     catch (error) { appendLog(t("log.saveConfigFailed", { error: String(error) }), "stderr"); }
+  };
+
+
+  /** 下载完成：仅把文件登记为本地资产（不自动创建预设、不自动启动），badge 打上「刚刚下载」 */
+  const importDownloadedModel = async (download: ActiveDownload, path: string, sizeBytes?: number) => {
+    try {
+      const existing = new Set(config.models.map((model) => model.path.toLowerCase()));
+      if (existing.has(path.toLowerCase())) {
+        setDownloads((previous) => previous.map((item) => (item.repo + "::" + item.file === download.repo + "::" + download.file ? { ...item, status: "done" as const, path, finishedAt: Date.now() } : item)));
+        return;
+      }
+      const name = fileName(path).replace(/\.gguf$/i, "").replace(/[-_]/g, " ");
+      const paramMatch = path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase();
+      const parameters = paramMatch || "—";
+      const model: ModelAsset = {
+        id: uid("model"),
+        name,
+        path,
+        sizeBytes: sizeBytes ?? download.sizeBytes,
+        architecture: "GGUF",
+        quantization: path.match(/Q\d(?:_[A-Z0-9]+)+/i)?.[0]?.toUpperCase() || t("model.unknownQuant"),
+        parameters,
+        profiles: [],
+        accent: ACCENTS[config.models.length % ACCENTS.length],
+      };
+      setJustImportedIds((previous) => new Set(previous).add(model.id));
+      window.setTimeout(() => { setJustImportedIds((previous) => { const next = new Set(previous); next.delete(model.id); return next; }); }, 6000);
+      setDownloads((previous) => previous.map((item) => (item.repo + "::" + item.file === download.repo + "::" + download.file ? { ...item, status: "done" as const, path, finishedAt: Date.now() } : item)));
+      await persist({ ...config, models: [...config.models, model] }, t("toast.downloadImported", { name }));
+    } catch (error) {
+      appendLog(t("log.saveConfigFailed", { error: String(error) }), "stderr");
+    }
+  };
+
+  /** 社区探索：点击下载 → 登记任务（task 池）+ 提示，进度由后端事件推送 */
+  const handleModelDownload = (repo: string, file: string, sizeBytes: number) => {
+    const entry: ActiveDownload = { repo, file, sizeBytes, startedAt: Date.now(), status: "active", percent: 0, downloaded: 0, total: sizeBytes, speedBps: 0 };
+    setDownloads((previous) => [...previous.filter((item) => !(item.repo === repo && item.file === file)), entry]);
+    downloadsRef.current = [...downloadsRef.current.filter((item) => !(item.repo === repo && item.file === file)), entry];
+    void hfDownload(repo, file).then((result) => {
+      appendLog(t("explore.downloaded") + ": " + result.path, "system");
+      void importDownloadedModel(entry, result.path, result.sizeBytes);
+    }).catch((error) => {
+      const raw = error instanceof Error ? error.message : String(error);
+      if (raw.includes("取消") || raw.includes("暂停")) { setToast(t("toast.downloadCancelled")); }
+      else { appendLog(t("explore.error", { error: raw }), "stderr"); }
+      const failed: ActiveDownload = { ...entry, status: "error", error: raw, speedBps: 0, finishedAt: Date.now() };
+      setDownloads((previous) => previous.map((item) => (item.repo === repo && item.file === file ? failed : item)));
+      downloadsRef.current = downloadsRef.current.map((item) => (item.repo === repo && item.file === file ? failed : item));
+    });
+    setToast(t("toast.downloadStarted"));
+  };
+
+  /** ===== 任务管理：暂停 / 重试 / 清理 / 取消 / 定位 ===== */
+  const cancelTaskImpl = (task: ActiveDownload, withDelete: boolean) => {
+    hfCancelDownload().catch(() => undefined);
+    const failed: ActiveDownload = { ...task, status: "cancelled", error: "cancelled", speedBps: 0, finishedAt: Date.now() };
+    setDownloads((previous) => previous.map((item) => (item.repo + "::" + item.file === task.repo + "::" + task.file ? failed : item)));
+    downloadsRef.current = downloadsRef.current.map((item) => (item.repo + "::" + item.file === task.repo + "::" + task.file ? failed : item));
+    if (withDelete) {
+      // 已完成任务用 task.path；下载中则按 modelsRoot + repoDir + file 构造（含 .gguf.part 断点文件）
+      const base = task.path || (diskUsage?.path ? diskUsage.path.replace(/[\\/]+$/, "") + (task.repo !== "direct-url" ? "/" + (task.repo.split("/").pop() || "") : "") : "");
+      if (base) {
+        void removeLocalFile(base).catch(() => undefined);
+        void removeLocalFile(base + ".part").catch(() => undefined);
+      }
+    }
+    setToast(t("toast.downloadCancelled"));
+  };
+  /** 暂停全部（后端置位暂停标志，下载循环下一轮退出并保留 .part） */
+  const handlePauseAll = () => {
+    void hfPauseDownloads().catch(() => undefined);
+    setToast(t("toast.pausedAll"));
+  };
+  /** 恢复失败/已暂停任务：重新放入任务池并重新发起下载 */
+  const handleResumeFailed = () => {
+    const failedTasks = downloadsRef.current.filter((item) => item.status === "error" || item.status === "cancelled");
+    setDownloads((previous) => previous.filter((item) => !(item.status === "error" || item.status === "cancelled")));
+    downloadsRef.current = downloadsRef.current.filter((item) => !(item.status === "error" || item.status === "cancelled"));
+    for (const task of failedTasks) {
+      const entry: ActiveDownload = { ...task, startedAt: Date.now(), status: "active" as const, percent: 0, downloaded: 0, total: task.total ?? task.sizeBytes, speedBps: 0 };
+      setDownloads((previous) => [...previous.filter((item) => !(item.repo === task.repo && item.file === task.file)), entry]);
+      downloadsRef.current = [...downloadsRef.current.filter((item) => !(item.repo === task.repo && item.file === task.file)), entry];
+      const run = task.url ? hfDownloadUrl(task.url) : hfDownload(task.repo, task.file);
+      void run.then((result) => {
+        appendLog(t("explore.downloaded") + ": " + result.path, "system");
+        void importDownloadedModel(entry, result.path, result.sizeBytes);
+      }).catch((error) => {
+        const raw = error instanceof Error ? error.message : String(error);
+        const failed: ActiveDownload = { ...entry, status: "error", error: raw, speedBps: 0, finishedAt: Date.now() };
+        setDownloads((previous) => previous.map((item) => (item.repo === task.repo && item.file === task.file ? failed : item)));
+        downloadsRef.current = downloadsRef.current.map((item) => (item.repo === task.repo && item.file === task.file ? failed : item));
+      });
+    }
+    if (failedTasks.length) setToast(t("toast.resumedAll"));
+  };
+  /** 清除完成记录 */
+  const handleClearDone = () => {
+    setDownloads((previous) => previous.filter((item) => item.status !== "done"));
+    downloadsRef.current = downloadsRef.current.filter((item) => item.status !== "done");
+    setToast(t("toast.queueCleared"));
+  };
+  /** 单任务：暂停 / 取消并删除缓存 */
+  const handleCancelTask = (task: ActiveDownload, deleteCache = false) => cancelTaskImpl(task, deleteCache);
+  /** 单任务重试 */
+  const handleRetry = (task: ActiveDownload) => {
+    const entry: ActiveDownload = { ...task, startedAt: Date.now(), status: "active" as const, percent: 0, downloaded: 0, total: task.total ?? task.sizeBytes, speedBps: 0 };
+    setDownloads((previous) => previous.map((item) => (item.repo === task.repo && item.file === task.file ? entry : item)));
+    downloadsRef.current = downloadsRef.current.map((item) => (item.repo === task.repo && item.file === task.file ? entry : item));
+    const run = task.url ? hfDownloadUrl(task.url) : hfDownload(task.repo, task.file);
+    void run.then((result) => {
+      appendLog(t("explore.downloaded") + ": " + result.path, "system");
+      void importDownloadedModel(entry, result.path, result.sizeBytes);
+    }).catch((error) => {
+      const raw = error instanceof Error ? error.message : String(error);
+      const failed: ActiveDownload = { ...entry, status: "error", error: raw, speedBps: 0, finishedAt: Date.now() };
+      setDownloads((previous) => previous.map((item) => (item.repo === task.repo && item.file === task.file ? failed : item)));
+      downloadsRef.current = downloadsRef.current.map((item) => (item.repo === task.repo && item.file === task.file ? failed : item));
+    });
+  };
+  const handleReveal = async (path: string) => { await revealInFolder(path); };
+  const goModels = () => { setPage("models"); };
+
+  /** 设置页 / 社区探索共用：选择模型存储目录 */
+  const pickModelsDirFlow = async () => {
+    try {
+      const picked = await pickModelsDir();
+      if (!picked) return;
+      const nextConfig = { ...config, modelsDir: picked };
+      await persist(nextConfig, t("toast.dirChanged"));
+      const usage = await getModelsDir();
+      setDiskUsage(usage);
+    } catch (error) {
+      appendLog(t("explore.error", { error: error instanceof Error ? error.message : String(error) }), "stderr");
+    }
   };
 
   const activeModel = config.models.find((model) => model.id === status.modelId);
@@ -322,15 +565,20 @@ export default function App() {
   /** 当前页是否使用 Dock 日志（除"日志"整页外所有页面）：Dock 参与布局，无悬浮遮挡 */
   const isDockPage = PAGE_LOG_MODE[page] === "dock";
 
+  /** 侧边栏「社区探索」下载角标：后台有进行中任务时动态显示数量 */
+  const exploreActive = downloads.filter((item) => item.status === "active").length;
+  const exploreBadge = exploreActive > 0 ? String(exploreActive) : undefined;
+
   return <div className={cn("app-shell", sidebarCollapsed && "sidebar-collapsed")}>
-    <Sidebar page={page} onPage={setPage} modelCount={config.models.length} status={status} abnormal={serviceAbnormal} gpuStats={gpuStats} tokSample={tokSample} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed((value) => !value)} theme={theme} onToggleTheme={() => void persist({ ...config, theme: theme === "dark" ? "light" : "dark" })} />
+    <Sidebar page={page} onPage={setPage} modelCount={config.models.length} downloadBadge={exploreBadge} status={status} abnormal={serviceAbnormal} gpuStats={gpuStats} tokSample={tokSample} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed((value) => !value)} theme={theme} onToggleTheme={() => void persist({ ...config, theme: theme === "dark" ? "light" : "dark" })} />
     <div className={cn("workspace", isDockPage && "dock-mode")}><Topbar page={page} status={status} busy={busy} onToggleService={status.running ? handleStop : startQuick} models={config.models} modelId={quickModelId || config.preferredModelId || config.models[0]?.id || ""} onSelectModel={setQuickModelId} /><main className="main-content">
-      {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} query={query} onQuery={setQuery} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onRenameModel={renameModel} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} />}
+      {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} query={query} onQuery={setQuery} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onAddProfile={(model) => setProfileEditing({ modelId: model.id, profile: { ...DEFAULT_PROFILES[0], id: uid("profile"), name: t("newProfile") } })} onRenameModel={renameModel} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} downloads={downloads} modelProgress={modelProgress} justImportedIds={justImportedIds} />}
+      <ExplorePage visible={page === "explore"} config={config} onPersist={persist} onToast={setToast} onLog={appendLog} diskUsage={diskUsage} onPickModelsDir={pickModelsDirFlow} onDownload={handleModelDownload} activeDownloads={downloads} progressMap={modelProgress} onPauseAll={handlePauseAll} onResumeFailed={handleResumeFailed} onClearDone={handleClearDone} onCancelTask={handleCancelTask} onRetry={handleRetry} onReveal={handleReveal} onGoModels={goModels} />
       {page === "profiles" && <ProfilesPage models={config.models} onEdit={(modelId, profile) => setProfileEditing({ modelId, profile })} onDelete={deleteProfile} onDuplicate={duplicateProfile} onSetDefault={setDefaultProfile} onReorderProfile={reorderProfiles} onDeleteProfiles={deleteMultipleProfiles} />}
       {/* 会话页保持常驻（隐藏而非卸载）：切换菜单不销毁内嵌 WebUI，回来时无需从聊天记录重新进入；WebUI 始终填满 Dock 下全部剩余高度 */}
       <Playground visible={page === "playground"} status={status} webUiUrl={webUiUrl} modelName={activeModel ? modelTitle(activeModel) : undefined} onOpenWebUi={openWebUi} />
       {page === "logs" && <LogsPage logs={logs} status={status} onClear={() => setLogs([])} />}
-      {page === "settings" && <SettingsPage config={config} onPersist={persist} onLog={appendLog} />}
+      <SettingsPage visible={page === "settings"} config={config} onPersist={persist} onLog={appendLog} />
     </main>
     {/* Dock 日志参与布局（收起=底部状态栏 / 展开=可调高度面板），各页面共用同一份状态，不遮挡内容；仅"日志"整页除外 */}
     {isDockPage && <LogDock open={logDockOpen} height={logDockHeight} logs={logs} status={status} modelName={activeModel ? modelTitle(activeModel) : undefined} abnormal={serviceAbnormal} tokPerSec={tokSample ? tokSample.rate : null} onToggle={() => setLogDockOpen((value) => !value)} onHeightChange={setLogDockHeight} onClear={() => setLogs([])} />}
