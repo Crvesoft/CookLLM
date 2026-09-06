@@ -441,6 +441,9 @@ export default function App() {
       setTokSample(null);
       dockAutoCollapseRef.current = true; // 武装：本次启动期间收到就绪日志后自动收起 Dock
       if (profile.mmprojPath) appendLog(`--mmproj ${profile.mmprojPath}`, "stdout");
+      if (profile.mtpDraftPath) appendLog(`-md ${profile.mtpDraftPath}`, "stdout");
+      if (profile.mtp && !profile.mtpDraftPath) appendLog(`--spec-type draft-mtp`, "stdout");
+      if (profile.mtp || profile.mtpDraftPath) appendLog(`--spec-draft-n-max ${profile.specDraftNMax ?? 2}`, "stdout");
       if (page !== "logs") setLogDockOpen(true); // 所有 Dock 页启动时自动展开，显示加载日志；就绪后自动收起（日志整页本身就在看日志）
       setToast(t("toast.started", { model: modelTitle(model) }));
     } catch (error) { appendLog(t("log.startFailed", { error: String(error) }), "stderr"); setServiceAbnormal(true); dockAutoCollapseRef.current = false; if (page !== "logs") setLogDockOpen(true); setToast(t("toast.startFailedToast")); }

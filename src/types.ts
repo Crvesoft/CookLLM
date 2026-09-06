@@ -43,6 +43,10 @@ export interface Profile {
   batchSize: number;
   ubatchSize: number;
   flashAttention: boolean;
+  ncmoeLayers: number;
+  mtp: boolean;
+  mtpDraftPath?: string;
+  specDraftNMax: number;
   cacheTypeK: string;
   cacheTypeV: string;
   jinja: boolean;

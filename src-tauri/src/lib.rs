@@ -54,6 +54,14 @@ struct Profile {
     #[serde(default = "default_ubatch_size")]
     ubatch_size: u32,
     flash_attention: bool,
+    #[serde(default)]
+    ncmoe_layers: i32,
+    #[serde(default)]
+    mtp: bool,
+    #[serde(default)]
+    mtp_draft_path: Option<String>,
+    #[serde(default = "default_spec_draft_n_max")]
+    spec_draft_n_max: u32,
     #[serde(default = "default_cache_type")]
     cache_type_k: String,
     #[serde(default = "default_cache_type")]
@@ -82,6 +90,7 @@ fn default_ubatch_size() -> u32 { 256 }
 fn default_cache_type() -> String { "f32".into() }
 fn default_reasoning() -> String { "auto".into() }
 fn default_load_mode() -> String { "mmap".into() }
+fn default_spec_draft_n_max() -> u32 { 3 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -160,6 +169,10 @@ impl Default for AppConfig {
                 batch_size: 512,
                 ubatch_size: default_ubatch_size(),
                 flash_attention: true,
+                ncmoe_layers: 0,
+                mtp: false,
+                mtp_draft_path: None,
+                spec_draft_n_max: default_spec_draft_n_max(),
                 cache_type_k: default_cache_type(),
                 cache_type_v: default_cache_type(),
                 jinja: true,
@@ -357,6 +370,12 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
             return Err(format!("图像识别模型（mmproj）不存在：{}", mmproj));
         }
     }
+    let mtp_draft_path = profile.mtp_draft_path.as_deref().filter(|p| !p.trim().is_empty());
+    if let Some(draft) = mtp_draft_path {
+        if !PathBuf::from(draft).exists() {
+            return Err(format!("Draft/MTP 模型不存在：{}", draft));
+        }
+    }
 
     let mut guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
     if let Some(mut running) = guard.take() {
@@ -368,6 +387,9 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
         .arg("-m").arg(&model.path);
     if let Some(mmproj) = mmproj_path {
         command.arg("--mmproj").arg(mmproj);
+    }
+    if let Some(draft) = mtp_draft_path {
+        command.arg("-md").arg(draft);
     }
     command
         .arg("--host").arg(&profile.host)
@@ -389,6 +411,15 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
         .arg("--repeat-penalty").arg(profile.repeat_penalty.to_string());
     if profile.flash_attention {
         command.arg("--flash-attn").arg("on");
+    }
+    if profile.ncmoe_layers > 0 {
+        command.arg("-ncmoe").arg(profile.ncmoe_layers.to_string());
+    }
+    if profile.mtp && mtp_draft_path.is_none() {
+        command.arg("--spec-type").arg("draft-mtp");
+    }
+    if profile.mtp || mtp_draft_path.is_some() {
+        command.arg("--spec-draft-n-max").arg(profile.spec_draft_n_max.to_string());
     }
     if profile.jinja {
         command.arg("--jinja");
