@@ -1,11 +1,20 @@
-import { AlertCircle, Boxes, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Database, Download, ExternalLink, FolderOpen, Globe, Loader2, PauseCircle, PlayCircle, RefreshCw, Search, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
+import { AlertCircle, Boxes, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Database, Download, ExternalLink, FolderOpen, Globe, KeyRound, Loader2, PauseCircle, PlayCircle, RefreshCw, Search, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
+import ConfirmModal from "./ConfirmModal";
 import { useI18n } from "../i18n";
 import { hfListFiles, hfSearch, hfTrending, openExternal } from "../tauri";
 import type { AppConfig, DiskUsage, HfFile, HfModel, ModelDownloadProgress } from "../types";
 import { cn, formatBytes, fileName } from "../utils";
 
+/** 模型仓库的 HF 许可协议签署页（gated 模型无访问权限时引导用户前往同意）。 */
+function hfLicenseUrl(repo: string): string {
+  const id = repo.trim().replace(/\/+$/, "");
+  return `https://huggingface.co/${id}`;
+}
+
 export interface ActiveDownload {
+  /** 任务唯一标识（新建任务即生成，取消 / 暂停 / 删除 / 恢复都按它精确命中单个任务） */
+  taskId: string;
   /** 关联仓库（直链下载为 "direct-url"） */
   repo: string;
   file: string;
@@ -20,6 +29,8 @@ export interface ActiveDownload {
   path?: string;
   /** 失败时的错误信息 */
   error?: string;
+  /** 失败时的错误类型（用于任务卡片的闭环引导：needs-token / no-permission） */
+  errorKind?: "needs-token" | "no-permission";
   /** 完成时间戳 */
   finishedAt?: number;
   /** 直链任务保留原始 URL（恢复 / 重试时重新发起） */
@@ -38,12 +49,24 @@ interface Props {
   activeDownloads: ActiveDownload[];
   progressMap: Record<string, ModelDownloadProgress>;
   onPauseAll: () => void;
+  /** 单任务暂停：仅中止该 taskId 的下载 */
+  onPauseTask: (task: ActiveDownload) => void;
   onResumeFailed: () => void;
+  /** 批量恢复选中的任务 */
+  onResumeTasks: (ids: string[]) => void;
+  /** 批量暂停选中的进行中任务 */
+  onPauseTasks: (ids: string[]) => void;
   onClearDone: () => void;
   onCancelTask: (task: ActiveDownload, deleteCache?: boolean) => void;
+  /** 单任务删除（暂停 / 异常卡片）：彻底移除记录并清理本地缓存 */
+  onDeleteTask: (task: ActiveDownload) => void;
+  /** 批量删除选中的任务（批量工具栏使用） */
+  onDeleteTasks: (ids: string[]) => void;
   onRetry: (task: ActiveDownload) => void;
   onReveal: (path: string) => Promise<void>;
   onGoModels: () => void;
+  /** 跳转到「设置」页（gated 需配置 Token 时一键跳转） */
+  onGoSettings: () => void;
 }
 
 /* ---------------- 刻面筛选定义 ---------------- */
@@ -451,6 +474,9 @@ export default function ExplorePage(props: Props) {
   const [trendingLoading, setTrendingLoading] = useState(false);
   const [trendCollapsed, setTrendCollapsed] = useState(false);
   const [taskFilter, setTaskFilter] = useState<"all" | "active" | "done" | "failed">("all");
+  /** 多选：任务卡片勾选集合（按 taskId）；切分类时清空避免隐藏勾选 */
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
   const [queued, setQueued] = useState<Set<string>>(new Set());
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -706,6 +732,23 @@ export default function ExplorePage(props: Props) {
   const shownTasks = taskFilter === "active" ? tasksActive : taskFilter === "done" ? tasksDone : taskFilter === "failed" ? tasksFailed : props.activeDownloads;
   const totalSpeed = tasksActive.reduce((sum, item) => sum + (item.speedBps || 0), 0);
 
+  /** 勾选集合随任务列表自动收敛（清除完成 / 删除后残留的 id 不再生效） */
+  const selectedTasks = props.activeDownloads.filter((item) => selectedIds.has(item.taskId));
+  const allVisibleSelected = shownTasks.length > 0 && shownTasks.every((item) => selectedIds.has(item.taskId));
+  const toggleSelect = (taskId: string) => setSelectedIds((previous) => {
+    const next = new Set(previous);
+    if (next.has(taskId)) next.delete(taskId); else next.add(taskId);
+    return next;
+  });
+  const toggleSelectAll = () => setSelectedIds((previous) => {
+    const next = new Set(previous);
+    if (allVisibleSelected) { for (const item of shownTasks) next.delete(item.taskId); }
+    else { for (const item of shownTasks) next.add(item.taskId); }
+    return next;
+  });
+  // 切换分类过滤时清空勾选，避免「全选当前分类」与隐藏勾选混淆
+  useEffect(() => { setSelectedIds(new Set()); setConfirmBatchDelete(false); }, [taskFilter]);
+
   // 列表不再做本地刻面过滤：查询关键字已由 effectiveKeyword 携带至服务端，防止「假过滤」只显示 1 个模型。
   const sorted = [...models].sort((a, b) => {
     if (sortKey === "likes") return b.likes - a.likes;
@@ -860,17 +903,33 @@ export default function ExplorePage(props: Props) {
       /* ==================== 任务管理视图 ==================== */
       <div className="tasks-view">
         <div className="tasks-filterbar">
+          {/* 全选当前分类：勾选切到批量操作模式；无勾选时全局按钮保持快捷保底 */}
+          <label className="tasks-select-all" title={t("explore.selectAllFilter")}>
+            <input type="checkbox" checked={allVisibleSelected} disabled={!shownTasks.length} onChange={toggleSelectAll} />
+            <span>{t("explore.selectAllFilter")}</span>
+          </label>
           <div className="explore-filters">
             {([["all", t("explore.tasksAll") + (props.activeDownloads.length ? " (" + props.activeDownloads.length + ")" : "")], ["active", t("explore.tasksActive") + (tasksActive.length ? " (" + tasksActive.length + ")" : "")], ["done", t("explore.tasksDone") + (tasksDone.length ? " (" + tasksDone.length + ")" : "")], ["failed", t("explore.tasksFailed") + (tasksFailed.length ? " (" + tasksFailed.length + ")" : "")]] as const).map(([key, label]) => (
               <button key={key} className={cn("explore-filter", taskFilter === key && "active")} onClick={() => setTaskFilter(key)}>{label}</button>
             ))}
           </div>
           <div className="library-actions">
-            <button className="secondary-button compact" disabled={!tasksActive.length} onClick={props.onPauseAll}><PauseCircle size={14} />{t("explore.pauseAll")}</button>
-            <button className="secondary-button compact" disabled={!tasksFailed.length} onClick={props.onResumeFailed}><PlayCircle size={14} />{t("explore.resumeAll")}</button>
-            <button className="secondary-button compact" disabled={!tasksDone.length} onClick={props.onClearDone}><Trash2 size={14} />{t("explore.clearDone")}</button>
+            <button className="secondary-button compact" disabled={selectedTasks.length > 0 || !tasksActive.length} onClick={props.onPauseAll}><PauseCircle size={14} />{t("explore.pauseAll")}</button>
+            <button className="secondary-button compact" disabled={selectedTasks.length > 0 || !tasksFailed.length} onClick={props.onResumeFailed}><PlayCircle size={14} />{t("explore.resumeAll")}</button>
+            <button className="secondary-button compact" disabled={selectedTasks.length > 0 || !tasksDone.length} onClick={props.onClearDone}><Trash2 size={14} />{t("explore.clearDone")}</button>
           </div>
         </div>
+
+        {/* 批量操作工具栏：勾选数量 > 0 时展示 */}
+        {selectedTasks.length > 0 && (
+          <div className="task-batch-bar">
+            <span className="task-batch-count">{t("explore.batchSelected", { count: selectedTasks.length })}</span>
+            <button className="secondary-button compact" disabled={!selectedTasks.some((item) => item.status === "error" || item.status === "cancelled")} onClick={() => props.onResumeTasks(selectedTasks.map((item) => item.taskId))}><PlayCircle size={13} />{t("explore.batchResume")}</button>
+            <button className="secondary-button compact" disabled={!selectedTasks.some((item) => item.status === "active")} onClick={() => props.onPauseTasks(selectedTasks.map((item) => item.taskId))}><PauseCircle size={13} />{t("explore.batchPause")}</button>
+            <button className="danger-button compact" onClick={() => setConfirmBatchDelete(true)}><Trash2 size={13} />{t("explore.batchDelete")}</button>
+            <button className="ghost-icon task-batch-clear" title={t("clearSelection")} aria-label={t("clearSelection")} onClick={() => setSelectedIds(new Set())}><X size={14} /></button>
+          </div>
+        )}
 
         {tasksActive.length > 0 && (
           <div className="tasks-section-title"><h2>{t("explore.tasksActive", { count: tasksActive.length })}</h2><span>{t("explore.totalSpeed", { speed: humanSpeed(totalSpeed) })}</span></div>
@@ -886,15 +945,17 @@ export default function ExplorePage(props: Props) {
           const eta = etaSeconds > 0 ? String(Math.floor(etaSeconds / 60)).padStart(2, "0") + ":" + String(etaSeconds % 60).padStart(2, "0") : "--:--";
           const targetDir = props.diskUsage ? props.diskUsage.path + (item.repo !== "direct-url" ? "/" + (item.repo.split("/").pop() || "") : "") : "";
           return (
-            <div className="task-card" key={key}>
+            <div className="task-card" key={item.taskId}>
               <div className="task-card-head">
+                <label className="task-card-check" title={t("explore.selectTask")}><input type="checkbox" checked={selectedIds.has(item.taskId)} onChange={() => toggleSelect(item.taskId)} /></label>
                 <span className="task-file-icon"><Database size={16} /></span>
                 <div className="task-file-info">
                   <strong>{item.file}</strong>
                   <span>{t("explore.source", { repo: item.repo })} · {t("explore.target", { path: item.path ?? targetDir })}</span>
                 </div>
                 <div className="task-card-actions">
-                  <button className="secondary-button compact" onClick={props.onPauseAll} title={t("explore.pauseAll")}><PauseCircle size={13} />{t("explore.pause")}</button>
+                  {/* 单任务暂停：只暂停该 taskId，不再误触全局「全部暂停」 */}
+                  <button className="secondary-button compact" onClick={() => props.onPauseTask(item)}><PauseCircle size={13} />{t("explore.pause")}</button>
                   <button className="danger-button compact" onClick={() => props.onCancelTask(item, true)} title={t("explore.cancelDelete")}><X size={13} />{t("explore.cancel")}</button>
                 </div>
               </div>
@@ -918,8 +979,9 @@ export default function ExplorePage(props: Props) {
           <div className="tasks-empty"><span>{t("explore.noDoneTasks")}</span></div>
         )}
         {shownTasks.filter((item) => item.status === "done").map((item) => (
-          <div className="task-card task-card-done" key={item.repo + "::" + item.file + "::" + (item.finishedAt ?? item.startedAt)}>
+          <div className="task-card task-card-done" key={item.taskId}>
             <div className="task-card-head">
+              <label className="task-card-check" title={t("explore.selectTask")}><input type="checkbox" checked={selectedIds.has(item.taskId)} onChange={() => toggleSelect(item.taskId)} /></label>
               <span className="task-file-icon"><Check size={16} /></span>
               <div className="task-file-info">
                 <strong>{item.file}</strong>
@@ -938,16 +1000,28 @@ export default function ExplorePage(props: Props) {
           <div className="tasks-section-title"><h2>{t("explore.tasksFailed")} ({shownTasks.filter((item) => item.status === "error" || item.status === "cancelled").length})</h2></div>
         )}
         {shownTasks.filter((item) => item.status === "error" || item.status === "cancelled").map((item) => (
-          <div className="task-card task-card-error" key={item.repo + "::" + item.file + "::" + (item.finishedAt ?? item.startedAt)}>
+          <div className="task-card task-card-error" key={item.taskId}>
             <div className="task-card-head">
+              <label className="task-card-check" title={t("explore.selectTask")}><input type="checkbox" checked={selectedIds.has(item.taskId)} onChange={() => toggleSelect(item.taskId)} /></label>
               <span className="task-file-icon err"><AlertCircle size={16} /></span>
               <div className="task-file-info">
                 <strong>{item.file}</strong>
-                <span>{item.error || t("explore.tasksFailed")}</span>
+                <span className="task-status-text">
+                  {item.errorKind === "needs-token" ? t("explore.statusUnauthorized")
+                    : item.errorKind === "no-permission" ? t("explore.statusNoPermission")
+                      : item.error || (item.status === "cancelled" ? t("explore.statusPaused") : t("explore.statusError"))}
+                </span>
               </div>
               <div className="task-card-actions">
+                {item.errorKind === "needs-token" && (
+                  <button className="secondary-button compact" onClick={props.onGoSettings}><KeyRound size={13} />{t("st.hfGatedNeedToken")}</button>
+                )}
+                {item.errorKind === "no-permission" && (
+                  <button className="secondary-button compact" onClick={() => void openExternal(hfLicenseUrl(item.repo))}><ExternalLink size={13} />{t("st.hfGatedNoPermission")}</button>
+                )}
                 <button className="secondary-button compact" onClick={() => props.onRetry(item)}><RefreshCw size={13} />{t("explore.resume")}</button>
-                <button className="danger-button compact" onClick={() => props.onCancelTask(item, true)} title={t("explore.cancelDelete")}><Trash2 size={13} />{t("explore.cancel")}</button>
+                {/* 暂停/异常状态下的红色按钮语义为「删除」：彻底移除记录并清理本地缓存 */}
+                <button className="danger-button compact" onClick={() => props.onDeleteTask(item)} title={t("explore.delete")}><Trash2 size={13} />{t("explore.delete")}</button>
               </div>
             </div>
           </div>
@@ -958,6 +1032,19 @@ export default function ExplorePage(props: Props) {
         )}
       </div>
     )}
+  {confirmBatchDelete && selectedTasks.length > 0 && (
+    <ConfirmModal
+      title={t("explore.confirmDeleteTasksTitle")}
+      description={t("explore.confirmDeleteTasksDesc", { count: selectedTasks.length })}
+      confirmLabel={t("explore.delete")}
+      onConfirm={() => {
+        props.onDeleteTasks(selectedTasks.map((item) => item.taskId));
+        setSelectedIds(new Set());
+        setConfirmBatchDelete(false);
+      }}
+      onClose={() => setConfirmBatchDelete(false)}
+    />
+  )}
   {modalModel && (
     <FileModal
       model={modalModel}

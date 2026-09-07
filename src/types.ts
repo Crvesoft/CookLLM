@@ -74,6 +74,10 @@ export interface AppConfig {
   gpuMonitorEnabled?: boolean;
   /** 社区探索「筛选」侧边栏是否折叠（默认展开） */
   exploreSidebarCollapsed?: boolean;
+  /** Hugging Face 授权 Token（门禁模型下载必需；明文保存在本地配置文件中） */
+  hfToken?: string;
+  /** 最近一次 whoami 验证通过的用户名（设置页展示「已绑定」状态用） */
+  hfTokenUser?: string;
   preferredModelId?: string;
   preferredProfileId?: string;
   /** 网络与代理配置（跟随系统 / 手动 HTTP/SOCKS5 代理 / GitHub 反代镜像） */
@@ -157,6 +161,8 @@ export interface HfDownloadResult {
 }
 
 export interface ModelDownloadProgress {
+  /** 任务唯一标识（前端生成，取消 / 暂停按它精确命中单个任务） */
+  taskId: string;
   repo: string;
   file: string;
   phase: "download" | "extract" | "install" | "done" | "paused" | "error" | string;

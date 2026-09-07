@@ -50,6 +50,14 @@ jobs:
           echo "Creating release $TAG with ${#ARTIFACTS[@]} artifact(s):"
           for f in "${ARTIFACTS[@]}"; do echo "  - $(basename "$f")"; done
 
+          # Generate release notes from CHANGELOG.md / README.md so the
+          # in-app updater never shows an empty changelog again.
+          if python .github/scripts/get_release_notes.py --version "$VERSION" > notes.md; then
+            NOTES_ARGS=(--notes-file notes.md)
+          else
+            NOTES_ARGS=(--notes "## $TAG")
+          fi
+
           # If triggered by tag push, the tag already exists on remote.
           # For manual dispatch, create a new tag first.
           if [ "${{ github.event_name }}" != "push" ]; then
@@ -65,5 +73,6 @@ jobs:
             gh release create "$TAG" \
               --title "CookLLM $TAG" \
               --target master \
+              "${NOTES_ARGS[@]}" \
               "${ARTIFACTS[@]}"
           fi

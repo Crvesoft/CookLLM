@@ -331,28 +331,46 @@ export async function hfListFiles(repo: string): Promise<HfFile[]> {
   return invoke<HfFile[]>("hf_list_files", { repo });
 }
 
-/** 下载仓库文件到模型存储目录（流式 + 进度事件） */
-export async function hfDownload(repo: string, file: string): Promise<HfDownloadResult> {
-  if (!isTauri()) throw new Error("仅 Tauri 桌面端可用");
-  return invoke<HfDownloadResult>("hf_download", { repo, file });
+/** 验证 Hugging Face Token（/whoami-v2），成功返回绑定的用户名 */
+export async function hfWhoami(token: string): Promise<string> {
+  if (!isTauri()) return "";
+  return invoke<string>("hf_whoami", { token });
 }
 
-/** 从任意直链下载模型文件（流式 + 进度事件） */
-export async function hfDownloadUrl(url: string): Promise<HfDownloadResult> {
+/** 下载仓库文件到模型存储目录（流式 + 进度事件）；taskId 为前端生成的唯一任务标识 */
+export async function hfDownload(repo: string, file: string, taskId: string): Promise<HfDownloadResult> {
   if (!isTauri()) throw new Error("仅 Tauri 桌面端可用");
-  return invoke<HfDownloadResult>("hf_download_url", { url });
+  return invoke<HfDownloadResult>("hf_download", { repo, file, taskId });
 }
 
-/** 取消正在进行的模型下载 */
-export async function hfCancelDownload(): Promise<void> {
+/** 从任意直链下载模型文件（流式 + 进度事件）；taskId 为前端生成的唯一任务标识 */
+export async function hfDownloadUrl(url: string, taskId: string): Promise<HfDownloadResult> {
+  if (!isTauri()) throw new Error("仅 Tauri 桌面端可用");
+  return invoke<HfDownloadResult>("hf_download_url", { url, taskId });
+}
+
+/** 取消指定下载任务（仅中止该 taskId 对应任务的下载线程，不影响其他下载） */
+export async function hfCancelDownload(taskId: string): Promise<void> {
   if (!isTauri()) return;
-  await invoke("hf_cancel_download");
+  await invoke("hf_cancel_download", { taskId });
 }
 
-/** 暂停全部正在进行的模型下载（后端置位暂停标志，下载循环在下一轮退出并清理 .part） */
+/** 暂停指定下载任务（后端置位该任务的暂停标志，下载循环下一轮退出并清理 .part） */
+export async function hfPauseDownload(taskId: string): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("hf_pause_download", { taskId });
+}
+
+/** 暂停全部正在进行的模型下载（对每个已注册任务置位暂停标志，下载循环在下一轮退出并清理 .part） */
 export async function hfPauseDownloads(): Promise<void> {
   if (!isTauri()) return;
   await invoke("hf_pause_downloads");
+}
+
+/** 清除 / 摘除指定任务的控制器（重新发起下载或删除任务前调用，避免残留标志影响下一轮） */
+export async function hfClearDownload(taskId: string): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("hf_clear_download", { taskId });
 }
 
 /** 删除本地文件（下载管理中「取消任务并删除缓存」用；不删除库内已登记模型，由调用方先判断） */

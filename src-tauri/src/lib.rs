@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::atomic::{AtomicBool, Ordering},
-    sync::{Mutex, OnceLock},
+    sync::{Arc, Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{webview::NewWindowResponse, AppHandle, Emitter, Manager, State};
@@ -135,6 +136,12 @@ struct AppConfig {
     /// 社区探索「刻面筛选」侧边栏是否折叠（默认展开）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     explore_sidebar_collapsed: Option<bool>,
+    /// Hugging Face 授权 Token（门禁模型下载必需；明文保存在本地配置文件中）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hf_token: Option<String>,
+    /// 最近一次 whoami 验证通过的用户名（设置页展示「已绑定」状态用）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    hf_token_user: Option<String>,
     preferred_model_id: Option<String>,
     preferred_profile_id: Option<String>,
     /// 网络与代理配置（跟随系统 / 手动代理 / GitHub 镜像）；缺省为跟随系统。
@@ -189,6 +196,8 @@ impl Default for AppConfig {
             theme: None,
             gpu_monitor_enabled: None,
             explore_sidebar_collapsed: None,
+            hf_token: None,
+            hf_token_user: None,
             preferred_model_id: None,
             preferred_profile_id: None,
             network: None,
@@ -1553,14 +1562,47 @@ fn model_download_dest(root: &Path, repo: &str, file: &str) -> Result<PathBuf, S
     Ok(out)
 }
 
-/// 模型下载取消标志（与 llama.cpp 更新取消标志相互独立）。
-static HF_CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
-/// 模型下载暂停标志：置位后下载循环在下一轮退出（保留 .part 断点文件，不删除）。
-static HF_PAUSE_FLAG: AtomicBool = AtomicBool::new(false);
+/// 单个下载任务的独立控制器：取消 / 暂停标志按任务隔离（每个 taskId 一份），
+/// 不再使用进程级全局标志，避免「取消一个任务 = 全部取消 / 全部暂停」的串扰。
+#[derive(Default)]
+struct DownloadTaskControl {
+    cancel: AtomicBool,
+    pause: AtomicBool,
+}
+
+/// 下载任务注册表：taskId -> 任务控制器。
+/// 前端每次发起下载携带唯一 taskId；取消 / 暂停 / 删除只操作自己那把控制器，
+/// 同时多个下载任务可并行推进互不干扰。
+#[derive(Clone, Default)]
+struct DownloadRegistry(Arc<Mutex<HashMap<String, Arc<DownloadTaskControl>>>>);
+
+impl DownloadRegistry {
+    /// 注册（或重置）一个任务控制器，返回该任务的 Arc 引用。
+    fn register(&self, task_id: &str) -> Arc<DownloadTaskControl> {
+        let slot = Arc::new(DownloadTaskControl::default());
+        if let Ok(mut guard) = self.0.lock() {
+            guard.insert(task_id.to_string(), slot.clone());
+        }
+        slot
+    }
+
+    /// 按 taskId 取控制器；不存在（任务已结束 / 未注册）返回 None。
+    fn slot(&self, task_id: &str) -> Option<Arc<DownloadTaskControl>> {
+        self.0.lock().ok()?.get(task_id).cloned()
+    }
+
+    /// 移除任务控制器（下载循环结束 / 前端删除任务后调用）。
+    fn unregister(&self, task_id: &str) {
+        if let Ok(mut guard) = self.0.lock() {
+            guard.remove(task_id);
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ModelDownloadProgress {
+    task_id: String,
     repo: String,
     file: String,
     phase: String,
@@ -1571,8 +1613,9 @@ struct ModelDownloadProgress {
     message: String,
 }
 
-fn emit_model_progress(app: &AppHandle, repo: &str, file: &str, phase: &str, percent: u32, downloaded: u64, total: u64, speed: u64, message: impl Into<String>) {
+fn emit_model_progress(app: &AppHandle, task_id: &str, repo: &str, file: &str, phase: &str, percent: u32, downloaded: u64, total: u64, speed: u64, message: impl Into<String>) {
     let _ = app.emit("model-download-progress", ModelDownloadProgress {
+        task_id: task_id.into(),
         repo: repo.into(),
         file: file.into(),
         phase: phase.into(),
@@ -1584,18 +1627,40 @@ fn emit_model_progress(app: &AppHandle, repo: &str, file: &str, phase: &str, per
     });
 }
 
-/// 取消正在进行的模型下载。
+/// 取消指定下载任务：仅中止该 taskId 对应的下载循环，不影响其他任务。
 #[tauri::command]
-fn hf_cancel_download() -> Result<(), String> {
-    HF_CANCEL_FLAG.store(true, Ordering::Relaxed);
-    HF_PAUSE_FLAG.store(false, Ordering::Relaxed);
+fn hf_cancel_download(state: State<DownloadRegistry>, task_id: String) -> Result<(), String> {
+    if let Some(slot) = state.slot(&task_id) {
+        slot.cancel.store(true, Ordering::Relaxed);
+        slot.pause.store(false, Ordering::Relaxed);
+    }
     Ok(())
 }
 
-/// 暂停全部正在进行的模型下载（保留 .part 断点文件；前端「继续」时重新发起并断点续传）。
+/// 暂停指定下载任务（保留 .part 断点文件，前端「继续」时重新发起并断点续传），仅影响该 taskId。
 #[tauri::command]
-fn hf_pause_downloads() -> Result<(), String> {
-    HF_PAUSE_FLAG.store(true, Ordering::Relaxed);
+fn hf_pause_download(state: State<DownloadRegistry>, task_id: String) -> Result<(), String> {
+    if let Some(slot) = state.slot(&task_id) {
+        slot.pause.store(true, Ordering::Relaxed);
+    }
+    Ok(())
+}
+
+/// 暂停全部正在进行的模型下载：对每个已注册任务置位暂停标志（保留 .part 断点文件）。
+#[tauri::command]
+fn hf_pause_downloads(state: State<DownloadRegistry>) -> Result<(), String> {
+    if let Ok(guard) = state.0.lock() {
+        for slot in guard.values() {
+            slot.pause.store(true, Ordering::Relaxed);
+        }
+    }
+    Ok(())
+}
+
+/// 清除 / 摘除指定任务的控制器（前端重新发起下载或删除任务时调用，防止残留标志影响下一轮）。
+#[tauri::command]
+fn hf_clear_download(state: State<DownloadRegistry>, task_id: String) -> Result<(), String> {
+    state.unregister(&task_id);
     Ok(())
 }
 
@@ -1689,17 +1754,47 @@ fn download_hf_with_fallback(config_client: &reqwest::blocking::Client, url: &st
     Err("无法访问 HuggingFace（配置代理 / 直连 / 本地代理 / hf-mirror 镜像均失败）".into())
 }
 
-/// 下载 HuggingFace 仓库中的指定文件到模型存储目录（流式 + 进度事件 + 断点续传）。
+/// 判断下载 URL 是否属于 HuggingFace（官方站或 hf-mirror 镜像），决定是否附加 Token。
+fn is_hf_url(url: &str) -> bool {
+    url.starts_with(HF_DL_BASE) || url.contains("hf-mirror.com")
+}
+
+/// 验证 Hugging Face Token（/whoami-v2），成功返回绑定的用户名。
 #[tauri::command]
-async fn hf_download(app: AppHandle, repo: String, file: String) -> Result<HfDownloadResult, String> {
+fn hf_whoami(token: String) -> Result<String, String> {
+    let client = direct_client();
+    let response = client
+        .get("https://huggingface.co/api/whoami-v2")
+        .bearer_auth(token.trim())
+        .timeout(std::time::Duration::from_secs(15))
+        .send()
+        .map_err(|error| format!("验证失败：{}", error))?;
+    if !response.status().is_success() {
+        return Err(format!("Token 无效或已过期（HTTP {}）", response.status().as_u16()));
+    }
+    let json: serde_json::Value = response.json().map_err(|error| format!("解析响应失败：{}", error))?;
+    let name = json.get("name").and_then(|value| value.as_str()).unwrap_or("").to_string();
+    if name.is_empty() {
+        return Err("未能在响应中解析出用户名".into());
+    }
+    Ok(name)
+}
+
+/// 下载 HuggingFace 仓库中的指定文件到模型存储目录（流式 + 进度事件 + 断点续传）。
+/// task_id：前端为每次下载生成的唯一标识；取消 / 暂停只作用于该任务自己的控制器。
+#[tauri::command]
+async fn hf_download(app: AppHandle, state: State<'_, DownloadRegistry>, repo: String, file: String, task_id: String) -> Result<HfDownloadResult, String> {
     let config = read_config(&app)?;
     let network = config.network.clone().unwrap_or_default();
+    let hf_token = config.hf_token.clone().unwrap_or_default();
     let root = models_root(&app, &config)?;
     let client = build_net_client(&network)?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let registry = state.inner().clone();
+    let task = registry.register(&task_id);
+    let closure_task_id = task_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
         use std::io::Read as _;
         use std::io::Write as _;
-        HF_CANCEL_FLAG.store(false, Ordering::Relaxed);
         let dest = model_download_dest(&root, &repo, &file)?;
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent).map_err(|error| format!("创建下载目录失败：{}", error))?;
@@ -1710,19 +1805,22 @@ async fn hf_download(app: AppHandle, repo: String, file: String) -> Result<HfDow
             let _ = fs::rename(&part_path, &dest);
         }
         let url = format!("{}/{}/resolve/main/{}", HF_DL_BASE, hf_repo_id(&repo), file);
-        emit_model_progress(&app, &repo, &file, "download", 0, 0, 0, 0, "开始下载");
+        emit_model_progress(&app, &closure_task_id, &repo, &file, "download", 0, 0, 0, 0, "开始下载");
         // 多通道兜底：配置代理 → 直连 → 本机代理端口 → hf-mirror 镜像（浏览器常走 TUN / 软路由透明代理）
         let (net_client, effective_url) = download_hf_with_fallback(&client, &url)?;
         let url = effective_url;
-        let mut response = net_client
-            .get(&url)
-            .timeout(std::time::Duration::from_secs(3600))
-            .send()
-            .map_err(|error| format!("下载失败：{}", error))?;
+        let mut request = net_client.get(&url).timeout(std::time::Duration::from_secs(3600));
+        if !hf_token.is_empty() && is_hf_url(&url) {
+            request = request.bearer_auth(&hf_token);
+        }
+        let mut response = request.send().map_err(|error| format!("下载失败：{}", error))?;
         if !response.status().is_success() {
             let code = response.status().as_u16();
             if code == 401 || code == 403 {
-                return Err("该模型需要授权（gated），无法直接下载".into());
+                if hf_token.trim().is_empty() {
+                    return Err("HF_GATED_NEED_TOKEN::该模型需要授权（gated），请在设置中配置 Hugging Face Token".into());
+                }
+                return Err("HF_GATED_NO_PERMISSION::该模型无访问权限，请前往网页端同意模型许可协议后重试".into());
             }
             if code == 404 {
                 return Err("文件不存在或仓库未公开（HTTP 404）".into());
@@ -1733,7 +1831,7 @@ async fn hf_download(app: AppHandle, repo: String, file: String) -> Result<HfDow
         if dest.exists() && full_total > 0 {
             let existing_len = fs::metadata(&dest).map(|meta| meta.len()).unwrap_or(0);
             if existing_len >= full_total {
-                emit_model_progress(&app, &repo, &file, "done", 100, existing_len, full_total, 0, "文件已存在");
+                emit_model_progress(&app, &closure_task_id, &repo, &file, "done", 100, existing_len, full_total, 0, "文件已存在");
                 return Ok(HfDownloadResult {
                     path: dest.to_string_lossy().to_string(),
                     size_bytes: existing_len,
@@ -1749,12 +1847,11 @@ async fn hf_download(app: AppHandle, repo: String, file: String) -> Result<HfDow
         let mut file_handle: fs::File;
         if downloaded > 0 {
             let range = format!("bytes={}-", downloaded);
-            let ranged = net_client
-                .get(&url)
-                .header("range", &range)
-                .timeout(std::time::Duration::from_secs(3600))
-                .send()
-                .map_err(|error| format!("下载失败：{}", error))?;
+            let mut ranged_request = net_client.get(&url).header("range", &range).timeout(std::time::Duration::from_secs(3600));
+            if !hf_token.is_empty() && is_hf_url(&url) {
+                ranged_request = ranged_request.bearer_auth(&hf_token);
+            }
+            let ranged = ranged_request.send().map_err(|error| format!("下载失败：{}", error))?;
             if ranged.status().as_u16() == 206 {
                 response = ranged;
                 file_handle = fs::OpenOptions::new().append(true).create(true).open(&dest).map_err(|error| format!("打开下载文件失败：{}", error))?;
@@ -1776,19 +1873,19 @@ async fn hf_download(app: AppHandle, repo: String, file: String) -> Result<HfDow
         let start_ms = now_ms();
         let mut last_emit_ms = start_ms;
         loop {
-            if HF_CANCEL_FLAG.load(Ordering::Relaxed) {
+            if task.cancel.load(Ordering::Relaxed) {
                 let _ = fs::remove_file(&dest);
                 return Err("下载已取消".into());
             }
-            if HF_PAUSE_FLAG.load(Ordering::Relaxed) {
+            if task.pause.load(Ordering::Relaxed) {
                 // 暂停：保留 .part 断点文件（前端「继续」时按 Range 续传），清掉暂停标志
-                HF_PAUSE_FLAG.store(false, Ordering::Relaxed);
+                task.pause.store(false, Ordering::Relaxed);
                 file_handle.flush().ok();
                 drop(file_handle);
                 let part = dest.with_extension("part");
                 let _ = fs::remove_file(&part);
                 let _ = fs::rename(&dest, &part);
-                emit_model_progress(&app, &repo, &file, "paused", 0, downloaded, full_total, 0, "已暂停，剩余部分保留在 .part 断点文件");
+                emit_model_progress(&app, &closure_task_id, &repo, &file, "paused", 0, downloaded, full_total, 0, "已暂停，剩余部分保留在 .part 断点文件");
                 return Err("下载已暂停".into());
             }
             let count = response.read(&mut buffer).map_err(|error| format!("下载中断：{}", error))?;
@@ -1801,33 +1898,39 @@ async fn hf_download(app: AppHandle, repo: String, file: String) -> Result<HfDow
             if now_ms().saturating_sub(last_emit_ms) >= 200 {
                 let speed = if elapsed > 0 { downloaded * 1000 / elapsed } else { 0 };
                 let percent = if full_total > 0 { ((downloaded as f64 / full_total as f64) * 100.0) as u32 } else { 0 };
-                emit_model_progress(&app, &repo, &file, "download", percent, downloaded, full_total, speed, format!("{downloaded}/{full_total}"));
+                emit_model_progress(&app, &closure_task_id, &repo, &file, "download", percent, downloaded, full_total, speed, format!("{downloaded}/{full_total}"));
                 last_emit_ms = now_ms();
             }
         }
         file_handle.flush().map_err(|error| error.to_string())?;
-        emit_model_progress(&app, &repo, &file, "done", 100, downloaded, full_total, 0, "下载完成");
+        emit_model_progress(&app, &closure_task_id, &repo, &file, "done", 100, downloaded, full_total, 0, "下载完成");
         Ok(HfDownloadResult {
             path: dest.to_string_lossy().to_string(),
             size_bytes: downloaded,
         })
     })
-    .await
-    .map_err(|error| format!("下载任务中断：{}", error))?
+    .await;
+    // 无论成功失败都摘除控制器，避免注册表残留影响后续取消 / 暂停
+    registry.unregister(&task_id);
+    result.map_err(|error| format!("下载任务中断：{}", error))?
 }
 
 
 /// 从任意直链 URL 下载文件到模型存储目录（流式 + 进度事件）。
+/// task_id：前端生成的唯一任务标识，取消 / 暂停只作用于该任务。
 #[tauri::command]
-async fn hf_download_url(app: AppHandle, url: String) -> Result<HfDownloadResult, String> {
+async fn hf_download_url(app: AppHandle, state: State<'_, DownloadRegistry>, url: String, task_id: String) -> Result<HfDownloadResult, String> {
     let config = read_config(&app)?;
     let network = config.network.clone().unwrap_or_default();
+    let hf_token = config.hf_token.clone().unwrap_or_default();
     let root = models_root(&app, &config)?;
     let client = build_net_client(&network)?;
-    tauri::async_runtime::spawn_blocking(move || {
+    let registry = state.inner().clone();
+    let task = registry.register(&task_id);
+    let closure_task_id = task_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
         use std::io::Read as _;
         use std::io::Write as _;
-        HF_CANCEL_FLAG.store(false, Ordering::Relaxed);
         let raw_name = url.rsplit('/').next().filter(|name| !name.trim().is_empty()).unwrap_or("model.gguf").trim().to_string();
         let file_name: String = raw_name
             .chars()
@@ -1841,16 +1944,23 @@ async fn hf_download_url(app: AppHandle, url: String) -> Result<HfDownloadResult
             let _ = fs::rename(&part_path, &dest);
         }
         let repo_id = "direct-url";
-        emit_model_progress(&app, repo_id, &file_name, "download", 0, 0, 0, 0, "开始下载");
+        emit_model_progress(&app, &closure_task_id, repo_id, &file_name, "download", 0, 0, 0, 0, "开始下载");
         // 多通道兜底：配置代理 → 直连 → 本机代理端口 → hf-mirror 镜像
         let (net_client, effective_url) = download_hf_with_fallback(&client, &url)?;
         let url = effective_url;
-        let mut response = net_client
-            .get(&url)
-            .timeout(std::time::Duration::from_secs(3600))
-            .send()
-            .map_err(|error| format!("下载失败：{}", error))?;
+        let mut request = net_client.get(&url).timeout(std::time::Duration::from_secs(3600));
+        if !hf_token.is_empty() && is_hf_url(&url) {
+            request = request.bearer_auth(&hf_token);
+        }
+        let mut response = request.send().map_err(|error| format!("下载失败：{}", error))?;
         if !response.status().is_success() {
+            let code = response.status().as_u16();
+            if code == 401 || code == 403 {
+                if hf_token.trim().is_empty() {
+                    return Err("HF_GATED_NEED_TOKEN::该模型需要授权（gated），请在设置中配置 Hugging Face Token".into());
+                }
+                return Err("HF_GATED_NO_PERMISSION::该模型无访问权限，请前往网页端同意模型许可协议后重试".into());
+            }
             return Err(format!("下载失败：HTTP {}", response.status()));
         }
         let full_total: u64 = response.content_length().unwrap_or(0);
@@ -1860,18 +1970,18 @@ async fn hf_download_url(app: AppHandle, url: String) -> Result<HfDownloadResult
         let start_ms = now_ms();
         let mut last_emit_ms = start_ms;
         loop {
-            if HF_CANCEL_FLAG.load(Ordering::Relaxed) {
+            if task.cancel.load(Ordering::Relaxed) {
                 let _ = fs::remove_file(&dest);
                 return Err("下载已取消".into());
             }
-            if HF_PAUSE_FLAG.load(Ordering::Relaxed) {
-                HF_PAUSE_FLAG.store(false, Ordering::Relaxed);
+            if task.pause.load(Ordering::Relaxed) {
+                task.pause.store(false, Ordering::Relaxed);
                 file_handle.flush().ok();
                 drop(file_handle);
                 let part = dest.with_extension("part");
                 let _ = fs::remove_file(&part);
                 let _ = fs::rename(&dest, &part);
-                emit_model_progress(&app, repo_id, &file_name, "paused", 0, downloaded, full_total, 0, "已暂停，剩余部分保留在 .part 断点文件");
+                emit_model_progress(&app, &closure_task_id, repo_id, &file_name, "paused", 0, downloaded, full_total, 0, "已暂停，剩余部分保留在 .part 断点文件");
                 return Err("下载已暂停".into());
             }
             let count = response.read(&mut buffer).map_err(|error| format!("下载中断：{}", error))?;
@@ -1884,19 +1994,20 @@ async fn hf_download_url(app: AppHandle, url: String) -> Result<HfDownloadResult
             if now_ms().saturating_sub(last_emit_ms) >= 200 {
                 let speed = if elapsed > 0 { downloaded * 1000 / elapsed } else { 0 };
                 let percent = if full_total > 0 { ((downloaded as f64 / full_total as f64) * 100.0) as u32 } else { 0 };
-                emit_model_progress(&app, repo_id, &file_name, "download", percent, downloaded, full_total, speed, format!("{downloaded}/{full_total}"));
+                emit_model_progress(&app, &closure_task_id, repo_id, &file_name, "download", percent, downloaded, full_total, speed, format!("{downloaded}/{full_total}"));
                 last_emit_ms = now_ms();
             }
         }
         file_handle.flush().map_err(|error| error.to_string())?;
-        emit_model_progress(&app, repo_id, &file_name, "done", 100, downloaded, full_total, 0, "下载完成");
+        emit_model_progress(&app, &closure_task_id, repo_id, &file_name, "done", 100, downloaded, full_total, 0, "下载完成");
         Ok(HfDownloadResult {
             path: dest.to_string_lossy().to_string(),
             size_bytes: downloaded,
         })
     })
-    .await
-    .map_err(|error| format!("下载任务中断：{}", error))?
+    .await;
+    registry.unregister(&task_id);
+    result.map_err(|error| format!("下载任务中断：{}", error))?
 }
 
 /// 查询模型存储目录的可用空间（Windows 走 GetDiskFreeSpaceExW；其他平台返回 0）。
@@ -3056,6 +3167,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(ProcessState::default())
+        .manage(DownloadRegistry::default())
         .manage(TimingState(Mutex::new(StartupTiming {
             app_start_ms,
             before_builder_ms: now_ms(),
@@ -3065,7 +3177,7 @@ pub fn run() {
             react_mounted_ms: None,
             reported: false,
         })))
-        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_download, hf_download_url, hf_cancel_download, hf_pause_downloads, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, pick_files, pick_folder, pick_server_dir, expand_paths, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
+        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_whoami, hf_download, hf_download_url, hf_cancel_download, hf_pause_download, hf_pause_downloads, hf_clear_download, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, pick_files, pick_folder, pick_server_dir, expand_paths, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
         .setup(|app| match configure_main_window(app) {
             Ok(()) => Ok(()),
             Err(error) => Err(error.into()),

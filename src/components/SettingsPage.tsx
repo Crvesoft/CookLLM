@@ -1,9 +1,9 @@
-import { Activity, AlertTriangle, ArrowRight, Check, Database, Download, FolderOpen, Gauge, Github, Languages, Loader2, Moon, RefreshCw, RotateCw, SlidersHorizontal, SquareTerminal, Sun, Wifi, Wrench, X } from "lucide-react";
+import { Activity, AlertTriangle, ArrowRight, Check, Database, Download, Eye, EyeOff, FolderOpen, Gauge, Github, KeyRound, Languages, Loader2, Moon, RefreshCw, RotateCw, SlidersHorizontal, SquareTerminal, Sun, Wifi, Wrench, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { APP_REPO, PROJECT_URL } from "../data";
 import { useI18n } from "../i18n";
 import { cn, formatBytes } from "../utils";
-import { cancelLlamaCppUpdate, checkLlamaCppUpdate, detectHardware, downloadLlamaCpp, getAppVersion, getGpuInfo, getLlamaCppStatus, getModelsDir, getSystemProxy, onDownloadProgress, openConfigDir, openExternal, pickModelsDir, pickServerDir, testProxyConnection, type DownloadProgress, type GpuInfo, type HardwareSuggestion, type LlamaCppLocalStatus, type LlamaCppRelease, type ProxyTestResult, type UpdateCheckResult } from "../tauri";
+import { cancelLlamaCppUpdate, checkLlamaCppUpdate, detectHardware, downloadLlamaCpp, getAppVersion, getGpuInfo, getLlamaCppStatus, getModelsDir, getSystemProxy, hfWhoami, onDownloadProgress, openConfigDir, openExternal, pickModelsDir, pickServerDir, testProxyConnection, type DownloadProgress, type GpuInfo, type HardwareSuggestion, type LlamaCppLocalStatus, type LlamaCppRelease, type ProxyTestResult, type UpdateCheckResult } from "../tauri";
 import type { AppConfig, DiskUsage, LlamaLogPayload } from "../types";
 
 type ProxyMode = "system" | "manual" | "direct";
@@ -110,6 +110,47 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
     } catch (error) {
       setNetError(error instanceof Error ? error.message : String(error));
     } finally { setNetTesting(false); }
+  };
+
+  /* ==================== Hugging Face Token 授权（阶段二・下载源凭据） ==================== */
+  const [hfTokenDraft, setHfTokenDraft] = useState(config.hfToken ?? "");
+  const [hfShowToken, setHfShowToken] = useState(false);
+  const [hfTesting, setHfTesting] = useState(false);
+  const [hfTestResult, setHfTestResult] = useState<{ ok: boolean; username?: string; detail?: string } | null>(null);
+  const [hfError, setHfError] = useState<string | null>(null);
+  const [hfSaved, setHfSaved] = useState(false);
+
+  useEffect(() => {
+    setHfTokenDraft(config.hfToken ?? "");
+  }, [config.hfToken]);
+
+  const runHfTokenTest = async () => {
+    const value = hfTokenDraft.trim();
+    if (!value) {
+      setHfError(t("st.hfTokenEmpty"));
+      return;
+    }
+    setHfTesting(true); setHfTestResult(null); setHfError(null);
+    try {
+      const username = await hfWhoami(value);
+      setHfTestResult({ ok: true, username });
+      await onPersist({ ...config, hfToken: value, hfTokenUser: username }, t("st.hfTokenVerified", { user: username }));
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setHfTestResult({ ok: false, detail });
+    } finally { setHfTesting(false); }
+  };
+
+  const saveHfToken = () => {
+    const value = hfTokenDraft.trim();
+    if (!value) {
+      void onPersist({ ...config, hfToken: undefined, hfTokenUser: undefined }, t("st.hfTokenCleared"));
+      setHfTestResult(null); setHfError(null);
+      return;
+    }
+    void onPersist({ ...config, hfToken: value }, t("st.hfTokenSaved"));
+    setHfSaved(true);
+    window.setTimeout(() => setHfSaved(false), 2000);
   };
 
   /* ==================== llama.cpp 引擎管理（阶段三） ==================== */
@@ -303,6 +344,57 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
             {netResult?.ok && <span className="net-tag ok"><Check size={13} />{t("net.testLatency", { latency: netResult.latencyMs })}</span>}
             {netResult && !netResult.ok && <span className="net-tag err"><AlertTriangle size={13} />{netResult.detail || netResult.status}</span>}
             {netError && <p className="import-error">{netError}</p>}
+          </div>
+        </div>
+        {/* 下载授权：Hugging Face Gated 模型下载凭据 */}
+        <div className="settings-card">
+          <div className="settings-card-icon violet"><KeyRound size={21} /></div>
+          <div className="settings-card-body">
+            <h3>{t("st.hfTokenTitle")}</h3>
+            <p className="about-desc">{t("st.hfTokenDesc")}</p>
+            {/* 第一行：平台标题 + 状态胶囊（两端对齐） */}
+            <div className="hf-token-head">
+              <div className="hf-token-title">
+                <strong>{t("st.hfTokenLabel")}</strong>
+                <span>{t("st.hfTokenNeedRead")}</span>
+              </div>
+              <span className={cn("hf-token-pill", hfTestResult?.ok || (config.hfToken && !hfTestResult) ? "ok" : hfTestResult && !hfTestResult.ok ? "err" : "idle")}>
+                {hfTestResult?.ok ? <Check size={12} /> : hfTestResult && !hfTestResult.ok ? <AlertTriangle size={12} /> : config.hfToken ? <Check size={12} /> : null}
+                {hfTestResult?.ok
+                  ? t("st.hfTokenBound", { user: hfTestResult.username || "…" })
+                  : hfTestResult && !hfTestResult.ok
+                    ? t("st.hfTokenInvalid")
+                    : config.hfToken
+                      ? t("st.hfTokenBound", { user: config.hfTokenUser || "…" })
+                      : t("st.hfTokenNotSet")}
+              </span>
+            </div>
+            {/* 第二行：输入框 + 测试 + 保存（水平并排） */}
+            <div className="hf-token-controls">
+              <div className="hf-token-field">
+                <input
+                  type={hfShowToken ? "text" : "password"}
+                  className="net-input"
+                  value={hfTokenDraft}
+                  onChange={(e) => { setHfTokenDraft(e.target.value); setHfTestResult(null); setHfError(null); }}
+                  placeholder={t("st.hfTokenPlaceholder")}
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+                <button className="hf-token-eye" type="button" title={hfShowToken ? t("st.hfTokenHide") : t("st.hfTokenShow")} onClick={() => setHfShowToken((value) => !value)}>
+                  {hfShowToken ? <EyeOff size={15} /> : <Eye size={15} />}
+                </button>
+              </div>
+              <button className="secondary-button compact hf-token-test" onClick={() => void runHfTokenTest()} disabled={hfTesting}>
+                {hfTesting ? <Loader2 size={14} className="spin" /> : <KeyRound size={14} />}
+                <span className="hf-token-btn-label">{hfTesting ? t("st.hfTokenTesting") : t("st.hfTokenTest")}</span>
+              </button>
+              <button className="primary-button compact hf-token-save" onClick={saveHfToken} disabled={hfTesting}>
+                {hfSaved ? <Check size={14} /> : null}
+                <span className="hf-token-btn-label">{t("st.hfTokenSave")}</span>
+              </button>
+            </div>
+            {hfError && <p className="hf-token-error">{hfError}</p>}
           </div>
         </div>
 {/* llama.cpp 引擎更新 */}
