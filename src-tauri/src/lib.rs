@@ -1762,23 +1762,74 @@ fn is_hf_url(url: &str) -> bool {
 
 /// 验证 Hugging Face Token（/whoami-v2），成功返回绑定的用户名。
 #[tauri::command]
-fn hf_whoami(token: String) -> Result<String, String> {
-    let client = direct_client();
+async fn hf_whoami(app: AppHandle, token: String) -> Result<String, String> {
+    let config = read_config(&app)?;
+    let network = config.network.clone().unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || verify_hf_token(build_net_client(&network)?, token))
+        .await
+        .map_err(|error| format!("验证任务中断：{}", error))?
+}
+
+/// 多通道自动兜底验证 HF Token（配置代理 → 直连 → 本地探测代理 → hf-mirror 镜像），与 fetch_hf_json 的通道顺序一致。
+fn verify_hf_token(config_client: reqwest::blocking::Client, token: String) -> Result<String, String> {
+    let url = format!("{}/whoami-v2", HF_API_BASE);
+    let mut errors: Vec<String> = Vec::new();
+
+    // 任一通道到达服务端（含 4xx 授权类）即直接返回该结果；仅连接失败才降级到下一通道。
+    if let Some(result) = hf_token_once(&config_client, &url, &token) {
+        return result;
+    } else {
+        errors.push("配置代理".into());
+    }
+    if let Some(result) = hf_token_once(direct_client(), &url, &token) {
+        return result;
+    } else {
+        errors.push("直连".into());
+    }
+    if let Some(proxy_url) = probe_local_proxy() {
+        match proxied_client(&proxy_url) {
+            Ok(proxied) => match hf_token_once(&proxied, &url, &token) {
+                Some(result) => return result,
+                None => errors.push(format!("本地代理 {}", proxy_url)),
+            },
+            Err(error) => errors.push(format!("初始化本地代理失败：{}", error)),
+        }
+    } else {
+        errors.push("未探测到本机代理端口".into());
+    }
+    if let Some(mirror) = hf_mirror_url(&url) {
+        match hf_token_once(direct_client(), &mirror, &token) {
+            Some(result) => return result,
+            None => errors.push("镜像 hf-mirror.com".into()),
+        }
+    }
+    Err(format!(
+        "无法连接 HuggingFace（{}）。请在「设置 → 网络与代理」选择手动代理后重试",
+        errors.join("；")
+    ))
+}
+
+/// 在指定通道发送一次 whoami-v2 验证请求：到达响应（含 4xx 授权类）返回 Some(最终结果)，连接失败返回 None。
+fn hf_token_once(client: &reqwest::blocking::Client, url: &str, token: &str) -> Option<Result<String, String>> {
     let response = client
-        .get("https://huggingface.co/api/whoami-v2")
+        .get(url)
+        .header("user-agent", HF_UA)
         .bearer_auth(token.trim())
         .timeout(std::time::Duration::from_secs(15))
         .send()
-        .map_err(|error| format!("验证失败：{}", error))?;
+        .ok()?;
     if !response.status().is_success() {
-        return Err(format!("Token 无效或已过期（HTTP {}）", response.status().as_u16()));
+        return Some(Err(format!("Token 无效或已过期（HTTP {}）", response.status().as_u16())));
     }
-    let json: serde_json::Value = response.json().map_err(|error| format!("解析响应失败：{}", error))?;
+    let json: serde_json::Value = match response.json() {
+        Ok(value) => value,
+        Err(error) => return Some(Err(format!("解析响应失败：{}", error))),
+    };
     let name = json.get("name").and_then(|value| value.as_str()).unwrap_or("").to_string();
     if name.is_empty() {
-        return Err("未能在响应中解析出用户名".into());
+        return Some(Err("未能在响应中解析出用户名".into()));
     }
-    Ok(name)
+    Some(Ok(name))
 }
 
 /* ==================== HF 作者头像（社区探索模型 logo） ==================== */
