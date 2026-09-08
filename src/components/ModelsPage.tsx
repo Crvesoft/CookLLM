@@ -1,4 +1,4 @@
-import { Box, Check, ChevronDown, ChevronRight, Cpu, Database, DownloadCloud, FileBox, Gauge, HardDrive, ImageIcon, Layers3, ListChecks, MemoryStick, MoreHorizontal, PenLine, Pencil, Play, Plus, Search, SlidersHorizontal, Square, Star, Timer, Trash2 } from "lucide-react";
+import { Box, Check, ChevronDown, Cpu, Database, DownloadCloud, FileBox, Gauge, HardDrive, ImageIcon, Layers3, ListChecks, MemoryStick, MoreHorizontal, PenLine, Pencil, Play, Plus, Search, SlidersHorizontal, Square, Star, Timer, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { usePointerReorder, type CardHandlers } from "../hooks/usePointerReorder";
@@ -61,8 +61,26 @@ export default function ModelsPage(props: Props) {
   };
 
   return <>
-    <div className="library-bar"><div className="library-stats"><span title={t("models.tooltipAssets")}><Database size={14} /><strong>{props.config.models.length}</strong>{t("models.unitModels")}</span><span title={t("tooltipDiskUsage")}><HardDrive size={14} />{t("diskUsageLabel")}<strong>{formatBytes(totalBytes)}</strong></span><span title={t("tooltipProfiles")}><SlidersHorizontal size={14} /><strong>{profileCount}</strong>{t("profiles.unit")}</span></div><div className="library-actions"><button className={cn("secondary-button", selectMode && "active")} onClick={toggleSelectMode}><ListChecks size={16} />{selectMode ? t("exitBulk") : t("bulkManage")}</button><button className="primary-button" onClick={props.onAddModel}><Plus size={17} />{t("addModel")}</button></div></div>
-    <div className="section-title-row"><div><h2>{t("pageTitleModels")}</h2><span>{t("resultsCount", { count: props.models.length })}</span></div><div className="library-tools"><label className="search-box" title="Ctrl+K 快速聚焦"><Search size={15} /><input ref={searchRef} value={props.query} onChange={(e) => props.onQuery(e.target.value)} placeholder={t("searchPlaceholder")} /><kbd>Ctrl+K</kbd></label><button className="text-button" onClick={props.onOpenProfiles}>{t("manageProfiles")}<ChevronRight size={15} /></button></div></div>
+    <div className="models-toolbar">
+      <div className="models-toolbar-left">
+        <label className="search-box" title="Ctrl+K 快速聚焦"><Search size={14} /><input ref={searchRef} value={props.query} onChange={(e) => props.onQuery(e.target.value)} placeholder={t("searchPlaceholder")} /><kbd>Ctrl+K</kbd></label>
+        {searching ? (
+          <span className="models-filter-badge">{t("resultsCount", { count: props.models.length })}</span>
+        ) : (
+          <div className="models-toolbar-stats">
+            <span title={t("models.tooltipAssets")}><Database size={13} /><strong>{props.config.models.length}</strong>{t("models.unitModels")}</span>
+            <span className="stat-sep" aria-hidden="true">·</span>
+            <span title={t("tooltipDiskUsage")}><HardDrive size={13} /><strong>{formatBytes(totalBytes)}</strong></span>
+            <span className="stat-sep" aria-hidden="true">·</span>
+            <span className="stat-clickable" title={t("manageProfiles")} onClick={props.onOpenProfiles}><SlidersHorizontal size={13} /><strong>{profileCount}</strong>{t("profiles.unit")}</span>
+          </div>
+        )}
+      </div>
+      <div className="models-toolbar-actions">
+        <button className={cn("secondary-button", selectMode && "active")} onClick={toggleSelectMode}><ListChecks size={15} />{selectMode ? t("exitBulk") : t("bulkManage")}</button>
+        <button className="primary-button" onClick={props.onAddModel}><Plus size={16} />{t("addModel")}</button>
+      </div>
+    </div>
     {selectMode && selectedIds.size > 0 && <div className="bulk-bar"><span>{t("bulkSelectedPrefix")}<strong>{selectedIds.size}</strong>{t("models.unitModels")}</span><button className="text-button" onClick={selectAll}>{t("selectAll")}</button><div className="bulk-spacer" /><button className="secondary-button compact" disabled={!selectedIds.size} onClick={() => setSelectedIds(new Set())}>{t("clearSelection")}</button><button className="danger-button" disabled={!selectedIds.size} onClick={() => setConfirmDelete(true)}><Trash2 size={14} />{t("deleteSelected", { count: selectedIds.size })}</button></div>}
     {props.models.length ? <section className="model-grid">{modelOrder.map((id) => {
     {props.downloads.filter((item) => item.status === "active").map((download) => {

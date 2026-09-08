@@ -315,7 +315,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
 
                         {/* 网络与代理 */}
         <div className="settings-card">
-          <div className="settings-card-icon cyan"><Wifi size={21} /></div>
+          <div className="settings-card-icon"><Wifi size={18} /></div>
           <div className="settings-card-body">
             <h3>{t("net.title")}</h3>
             <div className="net-row">
@@ -348,7 +348,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
         </div>
         {/* 下载授权：Hugging Face Gated 模型下载凭据 */}
         <div className="settings-card">
-          <div className="settings-card-icon violet"><KeyRound size={21} /></div>
+          <div className="settings-card-icon"><KeyRound size={18} /></div>
           <div className="settings-card-body">
             <h3>{t("st.hfTokenTitle")}</h3>
             <p className="about-desc">{t("st.hfTokenDesc")}</p>
@@ -389,7 +389,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
                 {hfTesting ? <Loader2 size={14} className="spin" /> : <KeyRound size={14} />}
                 <span className="hf-token-btn-label">{hfTesting ? t("st.hfTokenTesting") : t("st.hfTokenTest")}</span>
               </button>
-              <button className="primary-button compact hf-token-save" onClick={saveHfToken} disabled={hfTesting}>
+              <button className="secondary-button compact hf-token-save" onClick={saveHfToken} disabled={hfTesting}>
                 {hfSaved ? <Check size={14} /> : null}
                 <span className="hf-token-btn-label">{t("st.hfTokenSave")}</span>
               </button>
@@ -399,7 +399,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
         </div>
 {/* llama.cpp 引擎更新 */}
         <div className="settings-card engine-card">
-          <div className="settings-card-icon amber"><Wrench size={21} /></div>
+          <div className="settings-card-icon"><Wrench size={18} /></div>
           <div className="settings-card-body">
             <div className="engine-head">
               <h3>{t("llama.title")}</h3>
@@ -456,8 +456,8 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
                 {checking ? t("llama.checking") : checkResult === "updated" ? t("llama.checkDoneShort") : checkResult === "new" ? t("llama.newVersionShort") : t("llama.check")}
               </button>
               {isUpToDate
-                ? <button className="primary-button compact" disabled={updating || checking} onClick={() => void forceReinstall()}>{updating ? <Loader2 size={15} className="spin" /> : <RotateCw size={15} />}{t("llama.forceReinstall")}</button>
-                : <button className="primary-button compact" disabled={updating || checking} onClick={() => void startUpdate()}>{updating ? <Loader2 size={15} className="spin" /> : <Download size={15} />}{remote ? t("llama.updateToTag", { tag: remote.tag }) : t("llama.checkAndUpdate")}</button>}
+                ? <button className="primary-button compact engine-update-btn" disabled={updating || checking} onClick={() => void forceReinstall()}>{updating ? <Loader2 size={15} className="spin" /> : <RotateCw size={15} />}{t("llama.forceReinstall")}</button>
+                : <button className="primary-button compact engine-update-btn" disabled={updating || checking} onClick={() => void startUpdate()}>{updating ? <Loader2 size={15} className="spin" /> : <Download size={15} />}{remote ? t("llama.updateToTag", { tag: remote.tag }) : t("llama.checkAndUpdate")}</button>}
             </div>
             {serverBrowseError && <p className="import-error">{serverBrowseError}</p>}
             {engineError && <p className="import-error">{engineError}</p>}
@@ -465,7 +465,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
         </div>
 {/* 常规偏好：列表项合并卡片 */}
         <div className="settings-card settings-group">
-          <div className="settings-card-icon cyan"><SlidersHorizontal size={21} /></div>
+          <div className="settings-card-icon"><SlidersHorizontal size={18} /></div>
           <div className="settings-card-body">
             <h3>{t("st.preferencesTitle")}</h3>
             <div className="settings-list">
@@ -518,7 +518,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
 
         {/* 关于与调试：项目信息为信息展示，检查更新靠右，测试日志幽灵化 */}
         <div className="settings-card settings-group">
-          <div className="settings-card-icon amber"><Github size={21} /></div>
+          <div className="settings-card-icon"><Github size={18} /></div>
           <div className="settings-card-body">
             <h3>{t("st.aboutTitle")}</h3>
             <p className="about-desc">{t("st.aboutDesc")}</p>

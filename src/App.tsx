@@ -429,8 +429,8 @@ export default function App() {
     if (targets.length) setToast(t("toast.batchPaused", { count: targets.length }));
   };
   /** 删除任务：从前端响应式列表彻底移除，并同步清理本地未完成缓存（.part 断点等）。
-   *  已完成且已入库的任务仅移除记录，不删库内模型文件。 */
-  const deleteTasksImpl = (ids: string[]) => {
+   *  若 deleteLocalFiles = true，还会彻底删除本地硬盘文件，并同步从模型仓库 config.models 中移除并持久化。 */
+  const deleteTasksImpl = async (ids: string[], deleteLocalFiles = false) => {
     const idSet = new Set(ids);
     const targets = downloadsRef.current.filter((item) => idSet.has(item.taskId));
     if (!targets.length) return;
@@ -440,14 +440,32 @@ export default function App() {
     }
     setDownloads((previous) => previous.filter((item) => !idSet.has(item.taskId)));
     downloadsRef.current = downloadsRef.current.filter((item) => !idSet.has(item.taskId));
-    for (const task of targets) {
-      if (task.status === "done" && task.path) continue; // 已同步进模型仓库，不删库内文件
-      removeTaskFiles(task);
+
+    if (deleteLocalFiles) {
+      const removedPaths = new Set<string>();
+      for (const task of targets) {
+        if (task.path) {
+          removedPaths.add(task.path.toLowerCase());
+          void removeLocalFile(task.path).catch(() => undefined);
+        }
+        removeTaskFiles(task);
+      }
+      const nextModels = config.models.filter((model) => !removedPaths.has(model.path.toLowerCase()));
+      if (nextModels.length !== config.models.length) {
+        await persist({ ...config, models: nextModels });
+      }
+      void getModelsDir().then(setDiskUsage).catch(() => undefined);
+      setToast(t("toast.tasksAndFilesDeleted", { count: targets.length }));
+    } else {
+      for (const task of targets) {
+        if (task.status === "done" && task.path) continue; // 已同步进模型仓库，不删库内文件
+        removeTaskFiles(task);
+      }
+      setToast(t("toast.tasksDeleted", { count: targets.length }));
     }
-    setToast(t("toast.tasksDeleted", { count: targets.length }));
   };
-  /** 单任务删除（暂停 / 异常卡片上的「删除」按钮） */
-  const handleDeleteTask = (task: ActiveDownload) => deleteTasksImpl([task.taskId]);
+  /** 单任务删除 */
+  const handleDeleteTask = (task: ActiveDownload, deleteLocalFile = false) => void deleteTasksImpl([task.taskId], deleteLocalFile);
   /** 清除完成记录 */
   const handleClearDone = () => {
     setDownloads((previous) => previous.filter((item) => item.status !== "done"));

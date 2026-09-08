@@ -1686,7 +1686,9 @@ fn reveal_in_folder(path: String) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
-        let args = if target.exists() {
+        let args = if target.is_dir() {
+            vec![target.to_string_lossy().to_string()]
+        } else if target.exists() {
             vec!["/select,".to_string(), target.to_string_lossy().to_string()]
         } else if let Some(parent) = target.parent().filter(|dir| dir.exists()) {
             vec![parent.to_string_lossy().to_string()]

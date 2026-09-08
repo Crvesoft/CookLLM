@@ -1,4 +1,4 @@
-import { AlertCircle, Boxes, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clock, Database, Download, EllipsisVertical, ExternalLink, FolderOpen, Globe, KeyRound, Loader2, PauseCircle, PlayCircle, RefreshCw, Search, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
+import { AlertCircle, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clock, Database, Download, EllipsisVertical, ExternalLink, FolderOpen, Globe, HardDrive, KeyRound, Loader2, PauseCircle, PlayCircle, RefreshCw, Search, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ConfirmModal from "./ConfirmModal";
 import { useI18n } from "../i18n";
@@ -58,10 +58,10 @@ interface Props {
   onPauseTasks: (ids: string[]) => void;
   onClearDone: () => void;
   onCancelTask: (task: ActiveDownload, deleteCache?: boolean) => void;
-  /** 单任务删除（暂停 / 异常卡片）：彻底移除记录并清理本地缓存 */
-  onDeleteTask: (task: ActiveDownload) => void;
-  /** 批量删除选中的任务（批量工具栏使用） */
-  onDeleteTasks: (ids: string[]) => void;
+  /** 单任务删除：可选择是否连同本地文件及模型库记录彻底删除 */
+  onDeleteTask: (task: ActiveDownload, deleteLocalFile?: boolean) => void;
+  /** 批量删除选中的任务：可选择是否连同本地文件彻底删除 */
+  onDeleteTasks: (ids: string[], deleteLocalFiles?: boolean) => void;
   onRetry: (task: ActiveDownload) => void;
   onReveal: (path: string) => Promise<void>;
   onGoModels: () => void;
@@ -805,17 +805,39 @@ export default function ExplorePage(props: Props) {
   const searching = query.trim().length > 0;
   const queuedKeys = queued;
 
+  /** 单任务删除目标与“同时删除本地文件”勾选状态 */
+  const [taskToDelete, setTaskToDelete] = useState<ActiveDownload | null>(null);
+  const [deleteLocalFile, setDeleteLocalFile] = useState(false);
+  /** 批量删除时的“同时删除本地文件”勾选状态 */
+  const [batchDeleteLocalFiles, setBatchDeleteLocalFiles] = useState(false);
+
   return <div className="explore-page" hidden={!props.visible}>
-    {/* 第 1 行：视图切换 + 存储目录（轻量化副信息条） */}
-    <div className="library-bar explore-header">
-      <div className="explore-view-tabs">
-        <button className={cn("explore-view-tab", view === "discover" && "active")} onClick={() => setView("discover")}><Globe size={15} />{t("explore.viewDiscover")}</button>
-        <button className={cn("explore-view-tab", view === "tasks" && "active")} onClick={() => setView("tasks")}><Download size={15} />{t("explore.viewTasks")}{activeCount > 0 && <em>{activeCount}</em>}</button>
-      </div>
-      <div className="explore-storage">
-        <span title={t("explore.storageDir")}><FolderOpen size={13} />{props.diskUsage?.path ?? t("explore.storageDir")}</span>
-        {props.diskUsage && <em className="explore-free-badge">{t("explore.storageFree", { free: formatBytes(props.diskUsage.freeBytes) })}</em>}
-        <button className="explore-change-dir" onClick={() => void props.onPickModelsDir()}><FolderOpen size={12} />{t("explore.changeDir")}</button>
+    {/* 顶栏：视图切换（方案 A：极简留白，右侧完全留空不抢启动胶囊重心） */}
+    <div className="explore-toolbar">
+      <div className="explore-toolbar-left">
+        <div className="explore-view-tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "discover"}
+            className={cn("explore-view-tab", view === "discover" && "active")}
+            onClick={() => setView("discover")}
+          >
+            <Globe size={14} />
+            <span>{t("explore.viewDiscover")}</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={view === "tasks"}
+            className={cn("explore-view-tab", view === "tasks" && "active")}
+            onClick={() => setView("tasks")}
+          >
+            <Download size={14} />
+            <span>{t("explore.viewTasks")}</span>
+            {activeCount > 0 && <em className="explore-tab-count">{activeCount}</em>}
+          </button>
+        </div>
       </div>
     </div>
 
@@ -843,25 +865,30 @@ export default function ExplorePage(props: Props) {
           {/* 第 2 行：搜索（内嵌来源前缀）+ 排序 / GGUF */}
           <div className="explore-searchzone">
             {sidebarHidden && (
-              <button className={"facet-search-toggle"} onClick={toggleCollapsed} title={t("explore.facetExpand")}>
+              <button type="button" className={"facet-search-toggle"} onClick={toggleCollapsed} title={t("explore.facetExpand")}>
                 <ChevronRight size={14} />{t("explore.facetToggle")}{facetCount > 0 && <em>{facetCount}</em>}
               </button>
             )}
-            <label className="search-box explore-search">
+            <label className="search-box explore-search" title="Ctrl+K 快速聚焦">
               <span className="explore-source"><span>🤗</span> HuggingFace<ChevronDown size={12} /></span>
               <Search size={14} />
               <input ref={searchRef} value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("explore.searchPlaceholder")} />
               <kbd>Ctrl+K</kbd>
             </label>
             <div className="explore-search-tools">
-              <select className="engine-select" value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}>
+              <select className="explore-sort-select" value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}>
                 <option value="downloads">{t("explore.sortDownloads")}</option>
                 <option value="likes">{t("explore.sortLikes")}</option>
                 <option value="updated">{t("explore.sortUpdated")}</option>
                 <option value="hot">{t("explore.sortHot")}</option>
               </select>
-              <button className="ghost-icon hf-icon-button" onClick={() => void refreshAll(true)} disabled={refreshing} title={t("explore.refreshList")} aria-label={t("explore.refreshList")}><RefreshCw size={15} className={cn("facet-refresh-icon", refreshing && "spin")} /></button>
-              <label className="hf-gguf-toggle"><input type="checkbox" checked={ggufOnly} onChange={(e) => setGgufOnly(e.target.checked)} />{t("explore.ggufOnly")}</label>
+              <button type="button" className="explore-refresh-btn" onClick={() => void refreshAll(true)} disabled={refreshing} title={t("explore.refreshList")} aria-label={t("explore.refreshList")}>
+                <RefreshCw size={14} className={cn("facet-refresh-icon", refreshing && "spin")} />
+              </button>
+              <label className="explore-gguf-toggle">
+                <input type="checkbox" checked={ggufOnly} onChange={(e) => setGgufOnly(e.target.checked)} />
+                <span>{t("explore.ggufOnly")}</span>
+              </label>
             </div>
           </div>
 
@@ -1045,8 +1072,8 @@ export default function ExplorePage(props: Props) {
               </div>
               <div className="task-card-actions">
                 {item.finishedAt ? <span className="task-done-time">{new Date(item.finishedAt).toLocaleString()}</span> : null}
-                {item.path && <button className="task-icon-action" title={t("explore.openFolder")} aria-label={t("explore.openFolder")} onClick={() => void props.onReveal(item.path!)}><FolderOpen size={16} /></button>}
-                <button className="task-text-action" onClick={props.onGoModels}><Boxes size={14} />{t("explore.goModels")}</button>
+                {item.path && <button type="button" className="task-icon-action" title={t("explore.openFolder")} aria-label={t("explore.openFolder")} onClick={() => void props.onReveal(item.path!)}><FolderOpen size={16} /></button>}
+                <button type="button" className="task-icon-action danger" title={t("explore.delete")} aria-label={t("explore.delete")} onClick={() => { setTaskToDelete(item); setDeleteLocalFile(false); }}><Trash2 size={16} /></button>
               </div>
             </div>
           </div>
@@ -1091,14 +1118,62 @@ export default function ExplorePage(props: Props) {
   {confirmBatchDelete && selectedTasks.length > 0 && (
     <ConfirmModal
       title={t("explore.confirmDeleteTasksTitle")}
-      description={t("explore.confirmDeleteTasksDesc", { count: selectedTasks.length })}
-      confirmLabel={t("explore.delete")}
+      description={
+        <div className="delete-task-dialog">
+          <p>{t("explore.confirmDeleteTasksDesc", { count: selectedTasks.length })}</p>
+          {selectedTasks.some((item) => item.status === "done") && (
+            <label className="delete-file-checkbox">
+              <input
+                type="checkbox"
+                checked={batchDeleteLocalFiles}
+                onChange={(e) => setBatchDeleteLocalFiles(e.target.checked)}
+              />
+              <span>{t("explore.batchAlsoDeleteFiles")}</span>
+            </label>
+          )}
+        </div>
+      }
+      confirmLabel={batchDeleteLocalFiles ? t("explore.deleteTaskAndFile") : t("explore.delete")}
       onConfirm={() => {
-        props.onDeleteTasks(selectedTasks.map((item) => item.taskId));
+        props.onDeleteTasks(selectedTasks.map((item) => item.taskId), batchDeleteLocalFiles);
         setSelectedIds(new Set());
         setConfirmBatchDelete(false);
+        setBatchDeleteLocalFiles(false);
       }}
-      onClose={() => setConfirmBatchDelete(false)}
+      onClose={() => {
+        setConfirmBatchDelete(false);
+        setBatchDeleteLocalFiles(false);
+      }}
+    />
+  )}
+  {taskToDelete && (
+    <ConfirmModal
+      title={t("explore.deleteTaskTitle")}
+      description={
+        <div className="delete-task-dialog">
+          <p>{t("explore.deleteTaskDesc", { file: taskToDelete.file })}</p>
+          {taskToDelete.status === "done" && (
+            <label className="delete-file-checkbox">
+              <input
+                type="checkbox"
+                checked={deleteLocalFile}
+                onChange={(e) => setDeleteLocalFile(e.target.checked)}
+              />
+              <span>{t("explore.alsoDeleteFile")}</span>
+            </label>
+          )}
+        </div>
+      }
+      confirmLabel={deleteLocalFile ? t("explore.deleteTaskAndFile") : t("explore.deleteRecordOnly")}
+      onConfirm={() => {
+        props.onDeleteTask(taskToDelete, deleteLocalFile);
+        setTaskToDelete(null);
+        setDeleteLocalFile(false);
+      }}
+      onClose={() => {
+        setTaskToDelete(null);
+        setDeleteLocalFile(false);
+      }}
     />
   )}
   {confirmClearFailed && tasksFailed.length > 0 && (

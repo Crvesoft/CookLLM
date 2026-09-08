@@ -1,4 +1,4 @@
-import { Check, MessageSquareText, PanelLeftClose, PanelLeftOpen, Play, Settings, SlidersHorizontal, Square, SquareTerminal, Boxes, Globe, type LucideIcon } from "lucide-react";
+import { Check, MessageSquareText, PanelLeftClose, PanelLeftOpen, Play, Settings, SlidersHorizontal, Square, SquareTerminal, Boxes, Globe, Loader2, type LucideIcon } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type React from "react";
 import { useEffect, useRef, useState } from "react";
@@ -73,10 +73,51 @@ export function Sidebar({ page, onPage, downloadBadge, updateAvailable, status, 
 
 export function Topbar({ page, status, busy, onToggleService, models, modelId, onSelectModel }: { page: Page; status: ServerStatus; busy: boolean; onToggleService: () => void; models: ModelAsset[]; modelId: string; onSelectModel: (id: string) => void }) {
   const { t } = useI18n();
-  /** 状态融入模型组件：运行中用只读胶囊替代下拉框（绿点 + 名称 · 量化），停止服务后自动还原为可选下拉框 */
+  /** 状态融入模型组件：运行中用只读胶囊替代下拉框（绿点 + 模型名称），停止服务后自动还原为可选下拉框 */
   const active = models.find((model) => model.id === status.modelId);
-  const runningLabel = active ? `${modelTitle(active)} · ${active.quantization}` : status.modelName || t("modelFallback");
-  return <header className="topbar" data-tauri-drag-region="deep"><div className="breadcrumbs"><strong>{t(page === "models" ? "nav.models" : page === "explore" ? "nav.explore" : page === "profiles" ? "nav.profiles" : page === "playground" ? "nav.playground" : page === "logs" ? "nav.logs" : "nav.settings")}</strong></div><div className="topbar-actions">{status.running ? <span className="running-capsule" title={t("runningPrefix", { label: runningLabel })}><i aria-hidden="true" /><span>{runningLabel}</span></span> : <label className="topbar-model" title={t("selectModel")}><select value={modelId} onChange={(e) => onSelectModel(e.target.value)} disabled={!models.length}>{!models.length && <option value="">{t("selectModel")}</option>}{models.map((item) => <option key={item.id} value={item.id}>{modelTitle(item)}</option>)}</select></label>}<button className={cn("service-toggle", status.running && "running")} disabled={busy} onClick={onToggleService}>{status.running ? <><Square size={13} fill="currentColor" />{t("stopService")}</> : <><Play size={14} fill="currentColor" />{t("startService")}</>}</button></div><WindowControls /></header>;
+  const runningLabel = active ? modelTitle(active) : status.modelName || t("modelFallback");
+  return (
+    <header className="topbar" data-tauri-drag-region="deep">
+      <div className="breadcrumbs">
+        <strong>{t(page === "models" ? "nav.models" : page === "explore" ? "nav.explore" : page === "profiles" ? "nav.profiles" : page === "playground" ? "nav.playground" : page === "logs" ? "nav.logs" : "nav.settings")}</strong>
+      </div>
+      <div className="topbar-actions">
+        <div className={cn("launcher-capsule", status.running && "running", busy && "busy")}>
+          {status.running ? (
+            <span className="capsule-model" title={t("runningPrefix", { label: runningLabel })}>
+              <i className={cn("status-dot", busy ? "busy" : "live")} aria-hidden="true" />
+              <span>{runningLabel}</span>
+            </span>
+          ) : (
+            <label className="capsule-select" title={t("selectModel")}>
+              <i className={cn("status-dot", busy ? "busy" : "idle")} aria-hidden="true" />
+              <select value={modelId} onChange={(e) => onSelectModel(e.target.value)} disabled={!models.length || busy}>
+                {!models.length && <option value="">{t("selectModel")}</option>}
+                {models.map((item) => <option key={item.id} value={item.id}>{modelTitle(item)}</option>)}
+              </select>
+            </label>
+          )}
+          <span className="capsule-divider" aria-hidden="true" />
+          <button
+            className={cn("capsule-btn", status.running && "running", busy && "busy")}
+            disabled={busy}
+            onClick={onToggleService}
+            title={t(status.running ? "stopService" : "startService")}
+            aria-label={t(status.running ? "stopService" : "startService")}
+          >
+            {busy ? (
+              <Loader2 size={12} className="spin" />
+            ) : status.running ? (
+              <Square size={11} fill="currentColor" />
+            ) : (
+              <Play size={12} fill="currentColor" />
+            )}
+          </button>
+        </div>
+      </div>
+      <WindowControls />
+    </header>
+  );
 }
 
 export function LogsPage({ logs, status, onClear }: { logs: LlamaLogPayload[]; status: ServerStatus; onClear: () => void }) {
