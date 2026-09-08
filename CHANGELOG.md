@@ -2,6 +2,11 @@
 
 本文档是发布流程提取 Release Notes 的唯一数据源（`.github/workflows/release.yml` 会自动读取，请在每次发版前更新本文件）。
 
+## v0.1.6
+
+- 更新窗口栏为无边框效果
+- 优化下载任务管理界面
+
 ## v0.1.5
 
 - 增加 Hugging Face Token 授权

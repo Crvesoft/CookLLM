@@ -22,6 +22,11 @@ const zh = {
   "nav.settings": "设置",
   "expandMenu": "展开菜单",
   "collapseMenu": "收起菜单",
+  // ---- 窗口控制（无边框标题栏） ----
+  "win.minimize": "最小化",
+  "win.maximize": "最大化",
+  "win.restore": "还原",
+  "win.close": "关闭",
 
   // ---- 顶栏 / 服务状态 ----
   "runningPrefix": "正在运行：{label}",
@@ -348,6 +353,10 @@ const zh = {
   "explore.resumeAll": "全部开始",
   "explore.clearDone": "清除完成记录",
   "explore.selectAllFilter": "全选当前分类",
+  "explore.moreActions": "更多操作",
+  "explore.clearFailedTasks": "清空异常任务",
+  "explore.confirmClearFailedTitle": "清空异常任务？",
+  "explore.confirmClearFailedDesc": "将删除 {count} 个异常任务的下载记录，并清理对应的本地缓存文件。",
   "explore.selectTask": "勾选该任务",
   "explore.batchSelected": "已选中 {count} 项",
   "explore.batchResume": "批量开始/继续",
@@ -575,6 +584,10 @@ const en: typeof zh = {
   "nav.profiles": "Profiles",
   "nav.playground": "Chat",
   "nav.logs": "Logs",
+  "win.minimize": "Minimize",
+  "win.maximize": "Maximize",
+  "win.restore": "Restore",
+  "win.close": "Close",
 
   // ---- Community Explore (HuggingFace) ----
   "nav.explore": "Explore",
@@ -644,6 +657,10 @@ const en: typeof zh = {
   "explore.resumeAll": "Resume all",
   "explore.clearDone": "Clear history",
   "explore.selectAllFilter": "Select all current",
+  "explore.moreActions": "More actions",
+  "explore.clearFailedTasks": "Clear failed tasks",
+  "explore.confirmClearFailedTitle": "Clear failed tasks?",
+  "explore.confirmClearFailedDesc": "This removes {count} failed task records and deletes their local cache files.",
   "explore.selectTask": "Select this task",
   "explore.batchSelected": "{count} selected",
   "explore.batchResume": "Resume selected",

@@ -1,8 +1,8 @@
-import { AlertCircle, Boxes, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Database, Download, ExternalLink, FolderOpen, Globe, KeyRound, Loader2, PauseCircle, PlayCircle, RefreshCw, Search, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
+import { AlertCircle, Boxes, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clock, Database, Download, EllipsisVertical, ExternalLink, FolderOpen, Globe, KeyRound, Loader2, PauseCircle, PlayCircle, RefreshCw, Search, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ConfirmModal from "./ConfirmModal";
 import { useI18n } from "../i18n";
-import { hfListFiles, hfSearch, hfTrending, openExternal } from "../tauri";
+import { hfAvatar, hfListFiles, hfSearch, hfTrending, openExternal } from "../tauri";
 import type { AppConfig, DiskUsage, HfFile, HfModel, ModelDownloadProgress } from "../types";
 import { cn, formatBytes, fileName } from "../utils";
 
@@ -232,6 +232,49 @@ function FileRow({ file, progress, disabled, queued, preferred, onDownload }: Fi
   </div>;
 }
 
+/* ---------------- HF 作者头像（组织 / 用户 logo） ---------------- */
+
+/** 已解析的作者头像：author -> data URI；null 表示无头像，渲染时回退 "HF" 文字徽章 */
+const avatarCache = new Map<string, string | null>();
+/** 同一作者的并发请求去重：避免列表里同组织多行时重复拉取 */
+const avatarPending = new Map<string, Promise<string | null>>();
+
+function loadAvatar(author: string): Promise<string | null> {
+  if (avatarCache.has(author)) return Promise.resolve(avatarCache.get(author)!);
+  let pending = avatarPending.get(author);
+  if (!pending) {
+    pending = hfAvatar(author)
+      .then((uri) => {
+        avatarCache.set(author, uri);
+        return uri;
+      })
+      .catch(() => {
+        avatarCache.set(author, null);
+        return null;
+      })
+      .finally(() => avatarPending.delete(author));
+    avatarPending.set(author, pending);
+  }
+  return pending;
+}
+
+/** 模型行 / 趋势卡左侧图标：优先展示作者头像，拉取失败或无头像时回退 "HF" 徽章 */
+function ModelAvatar({ author }: { author: string }) {
+  const [uri, setUri] = useState<string | null>(avatarCache.get(author) ?? null);
+  useEffect(() => {
+    let alive = true;
+    loadAvatar(author).then((resolved) => {
+      if (alive) setUri(resolved);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [author]);
+  return uri
+    ? <img className="hf-model-icon hf-model-avatar" src={uri} alt="" loading="lazy" draggable={false} />
+    : <span className="hf-model-icon">HF</span>;
+}
+
 interface ModelRowProps {
   model: HfModel;
   preferredQuant: boolean;
@@ -256,7 +299,7 @@ function ModelRow({ model, preferredQuant, onViewFiles }: ModelRowProps) {
       <div className="hf-model-row-body">
         <div className="hf-model-main-col">
           <div className="hf-model-title-row">
-            <span className="hf-model-icon">HF</span>
+            <ModelAvatar author={model.author} />
             <strong>{model.id}</strong>
             {preferredQuant && <span className="hf-quant-badge preferred" title={t("explore.quantPreferred", { quant: quant || "" })}><Star size={10} fill="currentColor" />{quant}</span>}
             {parameter && <span className="hf-param-badge" title={t("explore.facetParams")}>{parameter}</span>}
@@ -477,6 +520,9 @@ export default function ExplorePage(props: Props) {
   /** 多选：任务卡片勾选集合（按 taskId）；切分类时清空避免隐藏勾选 */
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
+  /** 顶栏「⋮」更多操作菜单与「清空异常任务」确认框 */
+  const [tasksMenuOpen, setTasksMenuOpen] = useState(false);
+  const [confirmClearFailed, setConfirmClearFailed] = useState(false);
   const [queued, setQueued] = useState<Set<string>>(new Set());
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -847,7 +893,7 @@ export default function ExplorePage(props: Props) {
               {trending.map((model) => (
                 <div className="hf-trend-card" key={model.id}>
                   <div className="hf-model-title-row">
-                    <span className="hf-model-icon">HF</span>
+                    <ModelAvatar author={model.author} />
                     <strong>{model.id}</strong>
                     <button className="ghost-icon hf-icon-button" title={t("explore.openOnHf")} onClick={() => void openHf(model.id)}><ExternalLink size={14} /></button>
                   </div>
@@ -913,23 +959,33 @@ export default function ExplorePage(props: Props) {
               <button key={key} className={cn("explore-filter", taskFilter === key && "active")} onClick={() => setTaskFilter(key)}>{label}</button>
             ))}
           </div>
-          <div className="library-actions">
-            <button className="secondary-button compact" disabled={selectedTasks.length > 0 || !tasksActive.length} onClick={props.onPauseAll}><PauseCircle size={14} />{t("explore.pauseAll")}</button>
-            <button className="secondary-button compact" disabled={selectedTasks.length > 0 || !tasksFailed.length} onClick={props.onResumeFailed}><PlayCircle size={14} />{t("explore.resumeAll")}</button>
-            <button className="secondary-button compact" disabled={selectedTasks.length > 0 || !tasksDone.length} onClick={props.onClearDone}><Trash2 size={14} />{t("explore.clearDone")}</button>
-          </div>
+          {/* 右端响应式工具区：无勾选 = 极简图标组（全局暂停 / 全局恢复 / 更多菜单）；有勾选 = 选中项批量操作 */}
+          {selectedTasks.length > 0 ? (
+            <div className="tasks-batch-inline">
+              <span className="task-batch-count">{t("explore.batchSelected", { count: selectedTasks.length })}</span>
+              <span className="tasks-tools-sep" aria-hidden="true" />
+              <button className="task-inline-action" disabled={!selectedTasks.some((item) => item.status === "active")} onClick={() => props.onPauseTasks(selectedTasks.map((item) => item.taskId))}><PauseCircle size={14} />{t("explore.batchPause")}</button>
+              <button className="task-inline-action danger" onClick={() => setConfirmBatchDelete(true)}><Trash2 size={14} />{t("explore.batchDelete")}</button>
+              <button className="ghost-icon hf-icon-button" title={t("clearSelection")} aria-label={t("clearSelection")} onClick={() => setSelectedIds(new Set())}><X size={15} /></button>
+            </div>
+          ) : (
+            <div className="tasks-tools">
+              <button className="ghost-icon hf-icon-button" title={t("explore.pauseAll")} aria-label={t("explore.pauseAll")} disabled={!tasksActive.length} onClick={props.onPauseAll}><PauseCircle size={16} /></button>
+              <button className="ghost-icon hf-icon-button" title={t("explore.resumeAll")} aria-label={t("explore.resumeAll")} disabled={!tasksFailed.length} onClick={props.onResumeFailed}><PlayCircle size={16} /></button>
+              <span className="tasks-tools-sep" aria-hidden="true" />
+              <div className="task-menu-wrap">
+                <button className="ghost-icon hf-icon-button" title={t("explore.moreActions")} aria-label={t("explore.moreActions")} onClick={() => setTasksMenuOpen((value) => !value)}><EllipsisVertical size={16} /></button>
+                {tasksMenuOpen && <div className="menu-backdrop" onClick={() => setTasksMenuOpen(false)} />}
+                {tasksMenuOpen && (
+                  <div className="context-menu tasks-menu">
+                    <button onClick={() => { setTasksMenuOpen(false); props.onClearDone(); }}><Trash2 size={14} />{t("explore.clearDone")}</button>
+                    <button className="danger" disabled={!tasksFailed.length} onClick={() => { setTasksMenuOpen(false); setConfirmClearFailed(true); }}><Trash2 size={14} />{t("explore.clearFailedTasks")}</button>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
         </div>
-
-        {/* 批量操作工具栏：勾选数量 > 0 时展示 */}
-        {selectedTasks.length > 0 && (
-          <div className="task-batch-bar">
-            <span className="task-batch-count">{t("explore.batchSelected", { count: selectedTasks.length })}</span>
-            <button className="secondary-button compact" disabled={!selectedTasks.some((item) => item.status === "error" || item.status === "cancelled")} onClick={() => props.onResumeTasks(selectedTasks.map((item) => item.taskId))}><PlayCircle size={13} />{t("explore.batchResume")}</button>
-            <button className="secondary-button compact" disabled={!selectedTasks.some((item) => item.status === "active")} onClick={() => props.onPauseTasks(selectedTasks.map((item) => item.taskId))}><PauseCircle size={13} />{t("explore.batchPause")}</button>
-            <button className="danger-button compact" onClick={() => setConfirmBatchDelete(true)}><Trash2 size={13} />{t("explore.batchDelete")}</button>
-            <button className="ghost-icon task-batch-clear" title={t("clearSelection")} aria-label={t("clearSelection")} onClick={() => setSelectedIds(new Set())}><X size={14} /></button>
-          </div>
-        )}
 
         {tasksActive.length > 0 && (
           <div className="tasks-section-title"><h2>{t("explore.tasksActive", { count: tasksActive.length })}</h2><span>{t("explore.totalSpeed", { speed: humanSpeed(totalSpeed) })}</span></div>
@@ -948,15 +1004,15 @@ export default function ExplorePage(props: Props) {
             <div className="task-card" key={item.taskId}>
               <div className="task-card-head">
                 <label className="task-card-check" title={t("explore.selectTask")}><input type="checkbox" checked={selectedIds.has(item.taskId)} onChange={() => toggleSelect(item.taskId)} /></label>
-                <span className="task-file-icon"><Database size={16} /></span>
+                <span className="task-file-icon dl"><Database size={16} /></span>
                 <div className="task-file-info">
                   <strong>{item.file}</strong>
                   <span>{t("explore.source", { repo: item.repo })} · {t("explore.target", { path: item.path ?? targetDir })}</span>
                 </div>
                 <div className="task-card-actions">
                   {/* 单任务暂停：只暂停该 taskId，不再误触全局「全部暂停」 */}
-                  <button className="secondary-button compact" onClick={() => props.onPauseTask(item)}><PauseCircle size={13} />{t("explore.pause")}</button>
-                  <button className="danger-button compact" onClick={() => props.onCancelTask(item, true)} title={t("explore.cancelDelete")}><X size={13} />{t("explore.cancel")}</button>
+                  <button className="task-icon-action" title={t("explore.pause")} aria-label={t("explore.pause")} onClick={() => props.onPauseTask(item)}><PauseCircle size={16} /></button>
+                  <button className="task-icon-action danger" title={t("explore.cancelDelete")} aria-label={t("explore.cancelDelete")} onClick={() => props.onCancelTask(item, true)}><Trash2 size={16} /></button>
                 </div>
               </div>
               <div className="task-progress-row">
@@ -965,8 +1021,8 @@ export default function ExplorePage(props: Props) {
               </div>
               <div className="task-meta-row">
                 <span>{t("explore.progressLabel", { down: formatBytes(downloaded), total: formatBytes(total) })}</span>
-                <span>{humanSpeed(speed)}</span>
-                <span>{t("explore.eta", { eta })}</span>
+                <span className="task-speed"><Download size={12} />{humanSpeed(speed)}</span>
+                <span className="task-eta"><Clock size={12} />{t("explore.eta", { eta })}</span>
               </div>
             </div>
           );
@@ -982,15 +1038,15 @@ export default function ExplorePage(props: Props) {
           <div className="task-card task-card-done" key={item.taskId}>
             <div className="task-card-head">
               <label className="task-card-check" title={t("explore.selectTask")}><input type="checkbox" checked={selectedIds.has(item.taskId)} onChange={() => toggleSelect(item.taskId)} /></label>
-              <span className="task-file-icon"><Check size={16} /></span>
+              <span className="task-file-icon ok"><Check size={16} /></span>
               <div className="task-file-info">
                 <strong>{item.file}</strong>
                 <span>{t("explore.syncedToLibrary")}</span>
               </div>
               <div className="task-card-actions">
-                {item.path && <button className="secondary-button compact" onClick={() => void props.onReveal(item.path!)}><FolderOpen size={13} />{t("explore.openFolder")}</button>}
-                <button className="secondary-button compact" onClick={props.onGoModels}><Boxes size={13} />{t("explore.goModels")}</button>
                 {item.finishedAt ? <span className="task-done-time">{new Date(item.finishedAt).toLocaleString()}</span> : null}
+                {item.path && <button className="task-icon-action" title={t("explore.openFolder")} aria-label={t("explore.openFolder")} onClick={() => void props.onReveal(item.path!)}><FolderOpen size={16} /></button>}
+                <button className="task-text-action" onClick={props.onGoModels}><Boxes size={14} />{t("explore.goModels")}</button>
               </div>
             </div>
           </div>
@@ -1014,14 +1070,14 @@ export default function ExplorePage(props: Props) {
               </div>
               <div className="task-card-actions">
                 {item.errorKind === "needs-token" && (
-                  <button className="secondary-button compact" onClick={props.onGoSettings}><KeyRound size={13} />{t("st.hfGatedNeedToken")}</button>
+                  <button className="task-icon-action accent" title={t("st.hfGatedNeedToken")} aria-label={t("st.hfGatedNeedToken")} onClick={props.onGoSettings}><KeyRound size={16} /></button>
                 )}
                 {item.errorKind === "no-permission" && (
-                  <button className="secondary-button compact" onClick={() => void openExternal(hfLicenseUrl(item.repo))}><ExternalLink size={13} />{t("st.hfGatedNoPermission")}</button>
+                  <button className="task-icon-action accent" title={t("st.hfGatedNoPermission")} aria-label={t("st.hfGatedNoPermission")} onClick={() => void openExternal(hfLicenseUrl(item.repo))}><ExternalLink size={16} /></button>
                 )}
-                <button className="secondary-button compact" onClick={() => props.onRetry(item)}><RefreshCw size={13} />{t("explore.resume")}</button>
+                <button className="task-icon-action" title={t("explore.resume")} aria-label={t("explore.resume")} onClick={() => props.onRetry(item)}><RefreshCw size={16} /></button>
                 {/* 暂停/异常状态下的红色按钮语义为「删除」：彻底移除记录并清理本地缓存 */}
-                <button className="danger-button compact" onClick={() => props.onDeleteTask(item)} title={t("explore.delete")}><Trash2 size={13} />{t("explore.delete")}</button>
+                <button className="task-icon-action danger" title={t("explore.delete")} aria-label={t("explore.delete")} onClick={() => props.onDeleteTask(item)}><Trash2 size={16} /></button>
               </div>
             </div>
           </div>
@@ -1043,6 +1099,18 @@ export default function ExplorePage(props: Props) {
         setConfirmBatchDelete(false);
       }}
       onClose={() => setConfirmBatchDelete(false)}
+    />
+  )}
+  {confirmClearFailed && tasksFailed.length > 0 && (
+    <ConfirmModal
+      title={t("explore.confirmClearFailedTitle")}
+      description={t("explore.confirmClearFailedDesc", { count: tasksFailed.length })}
+      confirmLabel={t("explore.delete")}
+      onConfirm={() => {
+        props.onDeleteTasks(tasksFailed.map((item) => item.taskId));
+        setConfirmClearFailed(false);
+      }}
+      onClose={() => setConfirmClearFailed(false)}
     />
   )}
   {modalModel && (

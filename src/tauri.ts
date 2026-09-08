@@ -337,6 +337,12 @@ export async function hfWhoami(token: string): Promise<string> {
   return invoke<string>("hf_whoami", { token });
 }
 
+/** 获取 HF 作者（组织 / 用户）头像，返回 data URI；拉不到时返回 null（前端回退文字徽章） */
+export async function hfAvatar(author: string): Promise<string | null> {
+  if (!isTauri()) return null;
+  return invoke<string | null>("hf_avatar", { author });
+}
+
 /** 下载仓库文件到模型存储目录（流式 + 进度事件）；taskId 为前端生成的唯一任务标识 */
 export async function hfDownload(repo: string, file: string, taskId: string): Promise<HfDownloadResult> {
   if (!isTauri()) throw new Error("仅 Tauri 桌面端可用");

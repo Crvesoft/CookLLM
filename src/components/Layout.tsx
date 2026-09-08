@@ -1,11 +1,53 @@
 import { Check, MessageSquareText, PanelLeftClose, PanelLeftOpen, Play, Settings, SlidersHorizontal, Square, SquareTerminal, Boxes, Globe, type LucideIcon } from "lucide-react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type React from "react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
+import { isTauri } from "../tauri";
 import type { GpuStats, LlamaLogPayload, ModelAsset, Page, ServerStatus, TokSample } from "../types";
 import { cn, lineKind, modelTitle, timeLabel } from "../utils";
 import { LlamaMark } from "./LlamaMark";
 import MiniStatusBar from "./MiniStatusBar";
+
+/* ==================== 自定义标题栏：窗口控制按钮（无边框窗口） ==================== */
+
+/** Windows 11 风格的窗口字形（1px 描边，替代系统控制按钮） */
+function GlyphMinimize() {
+  return <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5h10" stroke="currentColor" strokeWidth="1" /></svg>;
+}
+function GlyphMaximize() {
+  return <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" strokeWidth="1" /></svg>;
+}
+function GlyphRestore() {
+  return <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><rect x="0.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" strokeWidth="1" /><path d="M2.5 2.5v-2h7v7h-2" fill="none" stroke="currentColor" strokeWidth="1" /></svg>;
+}
+function GlyphClose() {
+  return <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0 0l10 10M10 0L0 10" stroke="currentColor" strokeWidth="1" /></svg>;
+}
+
+/** 最小化 / 最大化还原 / 关闭；浏览器 dev 模式下不渲染 */
+function WindowControls() {
+  const { t } = useI18n();
+  const [maximized, setMaximized] = useState(false);
+  useEffect(() => {
+    if (!isTauri()) return;
+    const win = getCurrentWindow();
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    const sync = () => { void win.isMaximized().then((value) => { if (!disposed) setMaximized(value); }); };
+    sync();
+    void win.onResized(sync).then((fn) => { if (disposed) fn(); else unlisten = fn; });
+    return () => { disposed = true; unlisten?.(); };
+  }, []);
+  if (!isTauri()) return null;
+  return (
+    <div className="window-controls">
+      <button title={t("win.minimize")} aria-label={t("win.minimize")} onClick={() => void getCurrentWindow().minimize()}><GlyphMinimize /></button>
+      <button title={t(maximized ? "win.restore" : "win.maximize")} aria-label={t(maximized ? "win.restore" : "win.maximize")} onClick={() => void getCurrentWindow().toggleMaximize()}>{maximized ? <GlyphRestore /> : <GlyphMaximize />}</button>
+      <button className="close" title={t("win.close")} aria-label={t("win.close")} onClick={() => void getCurrentWindow().close()}><GlyphClose /></button>
+    </div>
+  );
+}
 
 export function Sidebar({ page, onPage, downloadBadge, updateAvailable, status, abnormal, gpuStats, tokSample, collapsed, onToggleCollapsed, theme, onToggleTheme }: { page: Page; onPage: (page: Page) => void; downloadBadge?: string; updateAvailable?: boolean; status: ServerStatus; abnormal: boolean; gpuStats: GpuStats | null; tokSample: TokSample | null; collapsed: boolean; onToggleCollapsed: () => void; theme: string; onToggleTheme: () => void }) {
   const { t } = useI18n();
@@ -19,7 +61,8 @@ export function Sidebar({ page, onPage, downloadBadge, updateAvailable, status, 
     { id: "settings", label: t("nav.settings"), icon: Settings },
   ];
   return <aside className={cn("sidebar", collapsed && "collapsed")}>
-    <div className="brand"><div className="brand-mark"><LlamaMark size={36} /></div><div className="brand-name"><strong>CookLLM</strong></div><button className="sidebar-toggle" title={collapsed ? t("expandMenu") : t("collapseMenu")} aria-label={collapsed ? t("expandMenu") : t("collapseMenu")} onClick={onToggleCollapsed}>{collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}</button></div>
+    {/* 品牌区即标题栏左端：deep 拖拽区（收起/展开按钮自身可点击，自动豁免拖拽） */}
+    <div className="brand" data-tauri-drag-region="deep"><div className="brand-mark"><LlamaMark size={36} /></div><div className="brand-name"><strong>CookLLM</strong></div><button className="sidebar-toggle" title={collapsed ? t("expandMenu") : t("collapseMenu")} aria-label={collapsed ? t("expandMenu") : t("collapseMenu")} onClick={onToggleCollapsed}>{collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}</button></div>
     <div className="side-section-label">{t("workspace")}</div>
     <nav className="side-nav">{nav.map((item) => { const Icon = item.icon; return <button key={item.id} title={collapsed ? item.label : undefined} className={cn("side-link", page === item.id && "active")} onClick={() => onPage(item.id)}><Icon size={18} /><span>{item.label}</span>{item.badge && <em className={item.badgeClass}>{item.badge}</em>}{item.dot && <i className="update-dot" aria-hidden="true" />}</button>; })}</nav>
     <div className="sidebar-spacer" />
@@ -33,7 +76,7 @@ export function Topbar({ page, status, busy, onToggleService, models, modelId, o
   /** 状态融入模型组件：运行中用只读胶囊替代下拉框（绿点 + 名称 · 量化），停止服务后自动还原为可选下拉框 */
   const active = models.find((model) => model.id === status.modelId);
   const runningLabel = active ? `${modelTitle(active)} · ${active.quantization}` : status.modelName || t("modelFallback");
-  return <header className="topbar" data-tauri-drag-region><div className="breadcrumbs"><strong>{t(page === "models" ? "nav.models" : page === "explore" ? "nav.explore" : page === "profiles" ? "nav.profiles" : page === "playground" ? "nav.playground" : page === "logs" ? "nav.logs" : "nav.settings")}</strong></div><div className="topbar-actions">{status.running ? <span className="running-capsule" title={t("runningPrefix", { label: runningLabel })}><i aria-hidden="true" /><span>{runningLabel}</span></span> : <label className="topbar-model" title={t("selectModel")}><select value={modelId} onChange={(e) => onSelectModel(e.target.value)} disabled={!models.length}>{!models.length && <option value="">{t("selectModel")}</option>}{models.map((item) => <option key={item.id} value={item.id}>{modelTitle(item)}</option>)}</select></label>}<button className={cn("service-toggle", status.running && "running")} disabled={busy} onClick={onToggleService}>{status.running ? <><Square size={13} fill="currentColor" />{t("stopService")}</> : <><Play size={14} fill="currentColor" />{t("startService")}</>}</button></div></header>;
+  return <header className="topbar" data-tauri-drag-region="deep"><div className="breadcrumbs"><strong>{t(page === "models" ? "nav.models" : page === "explore" ? "nav.explore" : page === "profiles" ? "nav.profiles" : page === "playground" ? "nav.playground" : page === "logs" ? "nav.logs" : "nav.settings")}</strong></div><div className="topbar-actions">{status.running ? <span className="running-capsule" title={t("runningPrefix", { label: runningLabel })}><i aria-hidden="true" /><span>{runningLabel}</span></span> : <label className="topbar-model" title={t("selectModel")}><select value={modelId} onChange={(e) => onSelectModel(e.target.value)} disabled={!models.length}>{!models.length && <option value="">{t("selectModel")}</option>}{models.map((item) => <option key={item.id} value={item.id}>{modelTitle(item)}</option>)}</select></label>}<button className={cn("service-toggle", status.running && "running")} disabled={busy} onClick={onToggleService}>{status.running ? <><Square size={13} fill="currentColor" />{t("stopService")}</> : <><Play size={14} fill="currentColor" />{t("startService")}</>}</button></div><WindowControls /></header>;
 }
 
 export function LogsPage({ logs, status, onClear }: { logs: LlamaLogPayload[]; status: ServerStatus; onClear: () => void }) {

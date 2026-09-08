@@ -1476,8 +1476,9 @@ fn regex_like_parameter(text: &str) -> Option<f64> {
 async fn hf_trending(app: AppHandle, limit: Option<usize>, gguf_only: Option<bool>, skip: Option<usize>, sort: Option<String>, quants: Option<Vec<i32>>) -> Result<Vec<HuggingFaceModel>, String> {
     let config = read_config(&app)?;
     let network = config.network.clone().unwrap_or_default();
-    let client = build_net_client(&network)?;
     tauri::async_runtime::spawn_blocking(move || {
+        // reqwest blocking 客户端只能在 spawn_blocking 线程上构建：debug 构建下在 async 线程构建会触发 tokio panic
+        let client = build_net_client(&network)?;
         let base = format!("{}/models?sort=trendingScore&direction=-1&expand[]=lastModified&expand[]=downloads&expand[]=likes", HF_API_BASE);
         let base = if let Some(sort_by) = sort {
             base.replace("sort=trendingScore", &format!("sort={}", sort_by))
@@ -1495,8 +1496,8 @@ async fn hf_trending(app: AppHandle, limit: Option<usize>, gguf_only: Option<boo
 async fn hf_search(app: AppHandle, query: String, limit: Option<usize>, gguf_only: Option<bool>, skip: Option<usize>, sort: Option<String>, quants: Option<Vec<i32>>) -> Result<Vec<HuggingFaceModel>, String> {
     let config = read_config(&app)?;
     let network = config.network.clone().unwrap_or_default();
-    let client = build_net_client(&network)?;
     tauri::async_runtime::spawn_blocking(move || {
+        let client = build_net_client(&network)?;
         let mut url = reqwest::Url::parse(&format!("{}/models", HF_API_BASE)).map_err(|error| format!("构建请求 URL 失败：{}", error))?;
         url.query_pairs_mut()
             .append_pair("search", query.trim())
@@ -1517,8 +1518,8 @@ async fn hf_search(app: AppHandle, query: String, limit: Option<usize>, gguf_onl
 async fn hf_list_files(app: AppHandle, repo: String) -> Result<Vec<HuggingFaceFile>, String> {
     let config = read_config(&app)?;
     let network = config.network.clone().unwrap_or_default();
-    let client = build_net_client(&network)?;
     tauri::async_runtime::spawn_blocking(move || {
+        let client = build_net_client(&network)?;
         let base = hf_repo_id(&repo);
         let url = format!("{}/models/{}/tree/main?recursive=true&expand=false", HF_API_BASE, base);
         let value = fetch_hf_json(&client, &url)?;
@@ -1780,6 +1781,126 @@ fn hf_whoami(token: String) -> Result<String, String> {
     Ok(name)
 }
 
+/* ==================== HF 作者头像（社区探索模型 logo） ==================== */
+
+/// 作者头像会话级内存缓存：author -> data URI；None 表示已尝试但不可用（本会话不再重试）。
+fn avatar_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 标准 base64（RFC 4648，含填充）：仅用于头像 data URI，避免为此引入新依赖。
+fn base64_encode(data: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let triple = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let bits = ((triple[0] as u32) << 16) | ((triple[1] as u32) << 8) | triple[2] as u32;
+        out.push(TABLE[(bits >> 18) as usize & 63] as char);
+        out.push(TABLE[(bits >> 12) as usize & 63] as char);
+        out.push(if chunk.len() > 1 { TABLE[(bits >> 6) as usize & 63] as char } else { '=' });
+        out.push(if chunk.len() > 2 { TABLE[bits as usize & 63] as char } else { '=' });
+    }
+    out
+}
+
+/// 单通道解析作者头像的 CDN 地址：先按组织查询，404 再按用户查询。
+/// mirror=true 时把 huggingface.co 替换为 hf-mirror.com（cdn-avatars 子域同样有镜像）。
+fn hf_resolve_avatar_url(client: &reqwest::blocking::Client, author: &str, mirror: bool) -> Result<String, String> {
+    for kind in ["organizations", "users"] {
+        let url = format!("{}/{}/{}/avatar", HF_API_BASE, kind, author);
+        let target = if mirror { hf_mirror_url(&url).unwrap_or(url) } else { url };
+        if let Ok(response) = hf_send(client, &target) {
+            if !response.status().is_success() {
+                continue; // 404：该作者不属于此类身份，换下一种再试
+            }
+            if let Ok(value) = response.json::<serde_json::Value>() {
+                if let Some(avatar) = value.get("avatarUrl").and_then(|v| v.as_str()) {
+                    if !avatar.is_empty() {
+                        return Ok(avatar.to_string());
+                    }
+                }
+            }
+        }
+    }
+    Err("该作者没有公开头像".into())
+}
+
+/// 经通道下载头像图片，返回 (MIME, 字节)；非图片响应或超过 2MB 视为失败。
+fn hf_fetch_avatar_image(client: &reqwest::blocking::Client, url: &str, mirror: bool) -> Result<(String, Vec<u8>), String> {
+    let target = if mirror { hf_mirror_url(url).unwrap_or_else(|| url.to_string()) } else { url.to_string() };
+    let response = hf_send(client, &target).map_err(|error| error.to_string())?;
+    let status = response.status();
+    let mime = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !status.is_success() {
+        return Err(format!("HTTP {}", status.as_u16()));
+    }
+    if !mime.starts_with("image/") {
+        return Err(format!("响应不是图片（{}）", if mime.is_empty() { "未知类型" } else { &mime }));
+    }
+    let bytes = response.bytes().map_err(|error| error.to_string())?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err("头像文件超过 2MB".into());
+    }
+    Ok((mime, bytes.to_vec()))
+}
+
+/// 获取 HuggingFace 作者（组织 / 用户）头像并转为 data URI 返回，前端 <img> 直接渲染。
+/// 复用模型列表的四通道兜底（配置代理 → 直连 → 本地代理 → hf-mirror 镜像）；
+/// 按作者缓存，拉不到时返回 Ok(None)，前端回退到 "HF" 文字徽章。
+#[tauri::command]
+async fn hf_avatar(app: AppHandle, author: String) -> Result<Option<String>, String> {
+    let author = author.trim().trim_start_matches('@').to_string();
+    if author.is_empty() || author.len() > 120 || !author.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) {
+        return Ok(None);
+    }
+    if let Some(cached) = avatar_cache().lock().map_err(|_| "头像缓存不可用")?.get(&author) {
+        return Ok(cached.clone());
+    }
+    let config = read_config(&app)?;
+    let network = config.network.clone().unwrap_or_default();
+    let cache_key = author.clone();
+    let fetched = tauri::async_runtime::spawn_blocking(move || {
+        let author = cache_key.as_str();
+        let mut channels: Vec<(reqwest::blocking::Client, bool)> = Vec::new();
+        if let Ok(client) = build_net_client(&network) {
+            channels.push((client, false));
+        }
+        channels.push((direct_client().clone(), false));
+        if let Some(proxy_url) = probe_local_proxy() {
+            if let Ok(proxied) = proxied_client(&proxy_url) {
+                channels.push((proxied, false));
+            }
+        }
+        channels.push((direct_client().clone(), true)); // 镜像通道
+        let mut errors: Vec<String> = Vec::new();
+        for (client, mirror) in &channels {
+            match hf_resolve_avatar_url(client, &author, *mirror) {
+                Ok(cdn_url) => match hf_fetch_avatar_image(client, &cdn_url, *mirror) {
+                    Ok((mime, bytes)) => return Ok(Some(format!("data:{};base64,{}", mime, base64_encode(&bytes)))),
+                    Err(error) => errors.push(error),
+                },
+                Err(error) => errors.push(error),
+            }
+        }
+        Err(format!("头像获取失败：{}", errors.join("；")))
+    })
+    .await
+    .map_err(|error| format!("获取头像任务中断：{}", error))?;
+    let data_uri = fetched.ok().flatten();
+    avatar_cache().lock().map_err(|_| "头像缓存不可用")?.insert(author, data_uri.clone());
+    Ok(data_uri)
+}
+
 /// 下载 HuggingFace 仓库中的指定文件到模型存储目录（流式 + 进度事件 + 断点续传）。
 /// task_id：前端为每次下载生成的唯一标识；取消 / 暂停只作用于该任务自己的控制器。
 #[tauri::command]
@@ -1788,13 +1909,13 @@ async fn hf_download(app: AppHandle, state: State<'_, DownloadRegistry>, repo: S
     let network = config.network.clone().unwrap_or_default();
     let hf_token = config.hf_token.clone().unwrap_or_default();
     let root = models_root(&app, &config)?;
-    let client = build_net_client(&network)?;
     let registry = state.inner().clone();
     let task = registry.register(&task_id);
     let closure_task_id = task_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         use std::io::Read as _;
         use std::io::Write as _;
+        let client = build_net_client(&network)?;
         let dest = model_download_dest(&root, &repo, &file)?;
         if let Some(parent) = dest.parent() {
             fs::create_dir_all(parent).map_err(|error| format!("创建下载目录失败：{}", error))?;
@@ -1924,13 +2045,13 @@ async fn hf_download_url(app: AppHandle, state: State<'_, DownloadRegistry>, url
     let network = config.network.clone().unwrap_or_default();
     let hf_token = config.hf_token.clone().unwrap_or_default();
     let root = models_root(&app, &config)?;
-    let client = build_net_client(&network)?;
     let registry = state.inner().clone();
     let task = registry.register(&task_id);
     let closure_task_id = task_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         use std::io::Read as _;
         use std::io::Write as _;
+        let client = build_net_client(&network)?;
         let raw_name = url.rsplit('/').next().filter(|name| !name.trim().is_empty()).unwrap_or("model.gguf").trim().to_string();
         let file_name: String = raw_name
             .chars()
@@ -3177,7 +3298,7 @@ pub fn run() {
             react_mounted_ms: None,
             reported: false,
         })))
-        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_whoami, hf_download, hf_download_url, hf_cancel_download, hf_pause_download, hf_pause_downloads, hf_clear_download, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, pick_files, pick_folder, pick_server_dir, expand_paths, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
+        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_whoami, hf_avatar, hf_download, hf_download_url, hf_cancel_download, hf_pause_download, hf_pause_downloads, hf_clear_download, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, pick_files, pick_folder, pick_server_dir, expand_paths, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
         .setup(|app| match configure_main_window(app) {
             Ok(()) => Ok(()),
             Err(error) => Err(error.into()),

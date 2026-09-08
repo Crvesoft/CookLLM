@@ -1,7 +1,7 @@
 import { ChevronDown, SquareTerminal } from "lucide-react";
 import type React from "react";
 import { useI18n } from "../i18n";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { LlamaLogPayload, ServerStatus } from "../types";
 import { cn, lineKind, timeLabel } from "../utils";
 
@@ -24,7 +24,8 @@ interface LogDockProps {
 }
 
 /**
- * 会话页 Dock 日志：参与页面 flex 布局（非悬浮），收起 = 底部状态栏，展开 = 可调高度的日志面板。
+ * 会话页 Dock 日志：参与页面 flex 布局（非悬浮）。单一容器高度在 34px（收起=状态栏）与展开高度间过渡，
+ * 日志面板常驻挂载（只被高度裁剪），因此收展有平滑动画、日志滚动位置也不丢失。
  * 仅负责显示 / 隐藏；Rust 端日志监听与缓冲始终持续，关闭后再打开仍能看到之前的日志。
  */
 export default function LogDock({ open, height, logs, status, modelName, abnormal, tokPerSec, onToggle, onHeightChange, onClear }: LogDockProps) {
@@ -34,6 +35,8 @@ export default function LogDock({ open, height, logs, status, modelName, abnorma
   useEffect(() => { if (open) endRef.current?.scrollIntoView(); }, [logs, open]);
 
   // ---- 拖动 Dock 上边缘调整高度（120px ~ 60% 视口）----
+  /** 拖拽中关闭高度过渡：否则面板高度过渡跟不上指针（不跟手） */
+  const [resizing, setResizing] = useState(false);
   /** 最新回调：全局监听经 ref 取值，避免闭包过期 */
   const onHeightChangeRef = useRef(onHeightChange);
   onHeightChangeRef.current = onHeightChange;
@@ -49,6 +52,7 @@ export default function LogDock({ open, height, logs, status, modelName, abnorma
     /** 捕获指针：否则拖动经过上方内嵌 WebUI（iframe）区域时事件改派给子文档，父窗口丢失 move/up——跟手冻结、松手后监听残留 */
     e.currentTarget.setPointerCapture(e.pointerId);
     dragState.current = { startY: e.clientY, startH: height };
+    setResizing(true);
 
     const onMove = (event: PointerEvent) => {
       const drag = dragState.current;
@@ -66,6 +70,7 @@ export default function LogDock({ open, height, logs, status, modelName, abnorma
     const finish = () => {
       dragState.current = null;
       pendingHeight.current = null;
+      setResizing(false);
       if (rafId.current) { cancelAnimationFrame(rafId.current); rafId.current = 0; }
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", finish);
@@ -82,32 +87,28 @@ export default function LogDock({ open, height, logs, status, modelName, abnorma
   // 状态栏文案：异常 > 运行中（含吞吐）> 未启动
   const statusText = abnormal ? t("serviceAbnormal") : status.running ? `${modelName || t("modelFallback")} · Running${tokPerSec != null ? ` ${tokPerSec} tok/s` : ""}` : t("notStarted");
 
-  if (!open) {
-    return (
+  return (
+    <div className={cn("log-dock", open && "open", resizing && "resizing")} style={{ height: open ? height : 34 }}>
+      <div className="log-dock-panel" aria-hidden={!open}>
+        <div className="log-dock-resize" title={t("resizeDockHint")} onPointerDown={startDrag} />
+        <div className="console-toolbar">
+          <div>
+            <span className="dot red" /><span className="dot yellow" /><span className="dot green" />
+            {abnormal && <em className="dock-error-badge">{t("serviceAbnormal")}</em>}
+            <strong>llama-server · output</strong>
+          </div>
+          <div>
+            <button onClick={onClear}>{t("clearLogs")}</button>
+          </div>
+        </div>
+        <div className="console-lines">
+          {logs.length ? logs.map((log, index) => { const kind = lineKind(log.stream, log.line); return <div className={cn("log-line", kind)} key={`${log.timestamp}-${index}`}><span>{timeLabel(log.timestamp)}</span><em>{kind === "err" ? "ERR" : kind === "warn" ? "WRN" : kind === "system" ? "SYS" : "OUT"}</em><code>{log.line}</code></div>; }) : <div className="console-empty">{t("noLogs")}</div>}
+          <div ref={endRef} />
+        </div>
+      </div>
       <div className={cn("log-dock-bar", !abnormal && status.running && "running", abnormal && "abnormal")}>
         <span className="log-dock-status"><i aria-hidden="true" />{statusText}</span>
-        <button className="log-dock-toggle" onClick={onToggle}><SquareTerminal size={14} /><span>{abnormal ? t("viewLogs") : t("runLogs")}</span></button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="log-dock-panel" style={{ height }}>
-      <div className="log-dock-resize" title={t("resizeDockHint")} onPointerDown={startDrag} />
-      <div className="console-toolbar">
-        <div>
-          <span className="dot red" /><span className="dot yellow" /><span className="dot green" />
-          {abnormal && <em className="dock-error-badge">{t("serviceAbnormal")}</em>}
-          <strong>llama-server · output</strong>
-        </div>
-        <div>
-          <button onClick={onClear}>{t("clearLogs")}</button>
-          <button onClick={onToggle} title={t("collapseDock")}><ChevronDown size={15} /></button>
-        </div>
-      </div>
-      <div className="console-lines">
-        {logs.length ? logs.map((log, index) => { const kind = lineKind(log.stream, log.line); return <div className={cn("log-line", kind)} key={`${log.timestamp}-${index}`}><span>{timeLabel(log.timestamp)}</span><em>{kind === "err" ? "ERR" : kind === "warn" ? "WRN" : kind === "system" ? "SYS" : "OUT"}</em><code>{log.line}</code></div>; }) : <div className="console-empty">{t("noLogs")}</div>}
-        <div ref={endRef} />
+        <button className="log-dock-toggle" onClick={onToggle}>{open ? <><ChevronDown size={14} /><span>{t("collapseDock")}</span></> : <><SquareTerminal size={14} /><span>{abnormal ? t("viewLogs") : t("runLogs")}</span></>}</button>
       </div>
     </div>
   );
