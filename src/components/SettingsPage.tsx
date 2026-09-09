@@ -24,6 +24,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
   useEffect(() => { void getModelsDir().then(setModelsDisk).catch(() => undefined); }, [config.modelsDir]);
 
   const gpuOn = config.gpuMonitorEnabled !== false;
+  const trayOn = config.minimizeToTrayOnClose !== false;
   const saveServerPath = (value: string) => {
     setServerPath(value);
     if (value.trim() && value !== config.serverPath) void onPersist({ ...config, serverPath: value.trim() }, t("toast.settingsSaved"));
@@ -501,6 +502,15 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
                 <span className="settings-row-desc">{gpuInfo === null ? t("gpu.detecting") : gpuInfo.vendor === "nvidia" ? t("gpu.nvidia") : gpuInfo.vendor === "amd" ? t("gpu.amd") : t("gpu.none")}</span>
                 <div className="settings-control">
                   <button className={"switch" + (gpuOn ? " on" : "")} onClick={() => void onPersist({ ...config, gpuMonitorEnabled: !gpuOn }, gpuOn ? t("toast.gpuOff") : t("toast.gpuOn"))} role="switch" aria-checked={gpuOn}>
+                    <span className="switch-knob" />
+                  </button>
+                </div>
+              </div>
+              <div className="settings-row">
+                <span className="settings-row-label">{t("st.trayTitle")}</span>
+                <span className="settings-row-desc">{t("st.trayDesc")}</span>
+                <div className="settings-control">
+                  <button className={"switch" + (trayOn ? " on" : "")} onClick={() => void onPersist({ ...config, minimizeToTrayOnClose: !trayOn }, trayOn ? t("toast.trayOff") : t("toast.trayOn"))} role="switch" aria-checked={trayOn}>
                     <span className="switch-knob" />
                   </button>
                 </div>

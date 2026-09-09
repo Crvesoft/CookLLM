@@ -33,6 +33,11 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
 /* 可伸缩侧边菜单：宽度由 --sidebar-w 驱动，收起态为 64px 图标轨；收放平滑过渡 */
 .app-shell { display: grid; grid-template-columns: var(--sidebar-w, 250px) 1fr; height: 100vh; background: radial-gradient(circle at 72% 0%, rgba(255,107,40,.12), transparent 29%), var(--bg); transition: grid-template-columns .18s ease; }
 .app-shell.sidebar-collapsed { --sidebar-w: 64px; }
+.app-shell.zen-mode { --sidebar-w: 0px; grid-template-columns: 0px 1fr; }
+.app-shell.zen-mode .sidebar { width: 0 !important; min-width: 0 !important; max-width: 0 !important; padding: 0 !important; border-right: none !important; opacity: 0 !important; pointer-events: none !important; overflow: hidden !important; }
+.app-shell.zen-mode .chat-header { display: none !important; }
+.app-shell.zen-mode .log-dock { display: none !important; }
+.app-shell.zen-mode .topbar .launcher-capsule { display: none !important; }
 .sidebar { position: relative; display: flex; flex-direction: column; padding: 24px 14px 14px; border-right: 1px solid #1b2230; background: linear-gradient(180deg,#0b0f15 0%,#090d12 100%); z-index: 3; transition: padding .18s ease; }
 .brand { display: flex; align-items: center; gap: 8px; padding: 0 8px 28px; }
 .brand-mark { display: grid; place-items: center; transform: translateY(-7px); }
@@ -119,7 +124,11 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
 .topbar { flex:none; }
 .topbar { height:62px; display:flex; align-items:center; justify-content:space-between; padding:0 0 0 28px; border-bottom:1px solid #1c2330; background:rgba(9,13,18,.84); backdrop-filter:blur(16px); user-select:none; }
 .breadcrumbs { display:flex; align-items:center; gap:8px; color:#626d80; font-size:15px; }.breadcrumbs strong { color:#9da6b5; font-weight:500; }
-.topbar-actions { display:flex; align-items:center; gap:12px; margin-left:auto; padding-right:14px; }
+.topbar-actions { display:flex; align-items:center; gap:8px; margin-left:auto; padding-right:14px; }
+/* 顶栏沉浸模式切换按钮 */
+.zen-toggle-btn { display:inline-flex; align-items:center; justify-content:center; width:32px; height:32px; border-radius:8px; border:1px solid #293342; background:#0a0f15; color:#94a3b8; cursor:pointer; transition:all .18s ease; }
+.zen-toggle-btn:hover { border-color:#3d4a5e; color:#eef2f8; background:rgba(255,255,255,.05); }
+.zen-toggle-btn.active { color:#f4b454; border-color:rgba(244,180,84,.4); background:rgba(244,180,84,.1); box-shadow:0 0 12px rgba(244,180,84,.15); }
 /* 顶栏一体化启动胶囊：左侧选模/运行态 + 右侧纯图标按钮 ▶/■，统一高度 32px，恒定宽度消除割裂 */
 .launcher-capsule { display:inline-flex; align-items:center; height:32px; border:1px solid #293342; border-radius:8px; background:#0a0f15; transition:border-color .24s ease,background .24s ease,box-shadow .24s ease; }
 .launcher-capsule:hover { border-color:#3d4a5e; }
@@ -153,6 +162,7 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
 /* 自定义标题栏：窗口控制按钮（无边框窗口，贴右上角，通栏高度） */
 .window-controls{flex:none;display:flex;align-self:stretch}
 .window-controls button{display:grid;place-items:center;width:46px;border:0;outline:none;color:#8d97a9;background:transparent;cursor:default;transition:background .12s ease,color .12s ease}
+.window-controls button.zen-control-btn{cursor:pointer}
 .window-controls button:hover{color:#e6ebf4;background:#ffffff14}
 .window-controls button:active{background:#ffffff20}
 .window-controls button.close:hover{color:#fff;background:#e81123}
@@ -459,7 +469,13 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
 .launch-row { grid-template-columns:1fr auto; }.launch-controls { display:flex; gap:6px; }.launch-controls .profile-select { flex:1; min-width:104px; }
 .model-rename-input { width:100%; height:26px; margin:1px 0 4px; padding:0 6px; border:1px solid #584129; border-radius:6px; outline:0; color:var(--text, #eef2f8); background:#0a0f15; font:inherit; font-size:15px; }
 /* 与状态标签统一为 32px 高 / 8px 圆角，右侧操作区只保留这一个按钮 */
+/* 会话子顶栏动作按钮：统一为 30px 方形小按钮，默认正常文字色无边框，极简低调 */
+.chat-action-btn { display:inline-flex; align-items:center; justify-content:center; width:30px; height:30px; padding:0; border:0; outline:none; border-radius:6px; background:transparent; color:#8d97a9; cursor:pointer; transition:background .15s ease,color .15s ease; }
+.chat-action-btn:hover:not(:disabled) { color:#eef2f8; background:rgba(255,255,255,.08); }
+.chat-action-btn:active:not(:disabled) { background:rgba(255,255,255,.14); }
+.chat-action-btn:disabled { opacity:.35; cursor:not-allowed; }
 .webui-button { display:flex; align-items:center; gap:7px; height:32px; padding:0 10px; border-radius:8px; color:#e8a061; font-size:13px; font-weight:600; transition:.18s ease }.webui-button:not(:disabled):hover { background:rgba(255,255,255,.07) }.webui-button:disabled { opacity:.45; cursor:not-allowed; }
+.webui-button.active { color:#f4b454; background:rgba(244,180,84,.12); }
 /* WebUI 高度 = 当前面板全高：填满 Dock 下全部剩余高度，Dock 展开时随 flex 自动缩小，iframe 按常规窗口缩放重排 */
 .native-frame-wrap{position:relative;flex:1;min-height:0;overflow:hidden}
 .native-frame-wrap iframe { display:block; width:100%; height:100%; border:0; }
@@ -524,6 +540,10 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
 [data-theme="light"] .ms-spark.core polygon { fill:rgba(47,174,124,.22); }
 [data-theme="light"] .ms-spark.core polyline { stroke:#2fae7c; }
 [data-theme="light"] .runtime-meta span { color:#6b7384; border-color:#dde2ea; }
+/* 顶栏独立控制项亮色套 */
+[data-theme="light"] .zen-toggle-btn { background:#ffffff; border-color:#d3dbe6; color:#64748b; }
+[data-theme="light"] .zen-toggle-btn:hover { border-color:#b9c3d3; color:#1e293b; background:#f8fafc; }
+[data-theme="light"] .zen-toggle-btn.active { color:#b45309; border-color:#fcd34d; background:#fef3c7; }
 /* 顶栏一体化启动胶囊亮色套 */
 [data-theme="light"] .launcher-capsule { background:#ffffff; border-color:#d3dbe6; }
 [data-theme="light"] .launcher-capsule:hover { border-color:#b9c3d3; }
@@ -597,6 +617,10 @@ button:disabled, select:disabled { cursor: not-allowed; opacity: .55; }
 [data-theme="light"] .form-section { border-color:#e9edf3; }
 [data-theme="light"] .theme-toggle { border-color:#d3dbe6; background:#ffffff; }
 [data-theme="light"] .webui-button { color:#bd5c16; }[data-theme="light"] .webui-button:not(:disabled):hover { background:#f0f2f7; }
+[data-theme="light"] .webui-button.active { color:#b45309; background:#fef3c7; }
+[data-theme="light"] .chat-action-btn { color:#64748b; }
+[data-theme="light"] .chat-action-btn:hover:not(:disabled) { color:#1f2937; background:rgba(0,0,0,.06); }
+[data-theme="light"] .chat-action-btn:active:not(:disabled) { background:rgba(0,0,0,.1); }
 /* 亮色状态标签：等待=灰点，已连接=绿点；悬浮出极浅底色提示可点击刷新 */
 [data-theme="light"] .connection-chip { color:#6b7384; }
 [data-theme="light"] .connection-chip i { background:#c2c9d4; box-shadow:none; }

@@ -1,10 +1,26 @@
-import { Bot, Globe, RefreshCw } from "lucide-react";
+import { Bot, Globe, RefreshCw, Scan } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import type { ServerStatus } from "../types";
 import { openExternal, writeClipboard } from "../tauri";
 
-export default function Playground({ visible, status, webUiUrl, modelName, onOpenWebUi }: { visible: boolean; status: ServerStatus; webUiUrl: string; modelName?: string; onOpenWebUi: () => void }) {
+export default function Playground({
+  visible,
+  status,
+  webUiUrl,
+  modelName,
+  onOpenWebUi,
+  zenMode,
+  onToggleZenMode,
+}: {
+  visible: boolean;
+  status: ServerStatus;
+  webUiUrl: string;
+  modelName?: string;
+  onOpenWebUi: () => void;
+  zenMode?: boolean;
+  onToggleZenMode?: () => void;
+}) {
   const { t } = useI18n();
   /** 刷新内嵌 WebUI：key 变化时重建 iframe（服务重启后旧页面状态失效时用） */
   const [frameKey, setFrameKey] = useState(0);
@@ -19,11 +35,13 @@ export default function Playground({ visible, status, webUiUrl, modelName, onOpe
         void writeClipboard(data.text).catch(() => {});
       } else if (data.type === "cookllm:open" && typeof data.url === "string") {
         void openExternal(data.url);
+      } else if (data.type === "cookllm:zen-toggle") {
+        onToggleZenMode?.();
       }
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, []);
+  }, [onToggleZenMode]);
 
   return (
     <div className="playground-pane" hidden={!visible}>
@@ -33,9 +51,37 @@ export default function Playground({ visible, status, webUiUrl, modelName, onOpe
           <div className="chat-header">
             <div><Bot size={18} /><span>{modelName || "Local model"}</span></div>
             <div className="playground-actions">
-              {/* 状态与刷新合并为一个轻量标签：整块点击即刷新内嵌 WebUI；服务未运行时整体禁用 */}
-              <button type="button" className={status.running ? "connection-chip connected" : "connection-chip"} title={t("refreshWebUi")} aria-label={t("refreshWebUi")} disabled={!status.running} onClick={() => setFrameKey((key) => key + 1)}><i /><span>{status.running ? t("connected") : t("waitingService")}</span><em className="chip-divider" /><RefreshCw size={14} /></button>
-              <button type="button" className="webui-button" disabled={!status.running} onClick={onOpenWebUi}><Globe size={15} />WebUI</button>
+              <button
+                type="button"
+                className="chat-action-btn"
+                title={status.running ? t("refreshWebUi") : t("waitingService")}
+                aria-label={t("refreshWebUi")}
+                disabled={!status.running}
+                onClick={() => setFrameKey((key) => key + 1)}
+              >
+                <RefreshCw size={15} />
+              </button>
+              {onToggleZenMode && (
+                <button
+                  type="button"
+                  className="chat-action-btn"
+                  onClick={onToggleZenMode}
+                  title={t("zen.enter")}
+                  aria-label={t("zen.enter")}
+                >
+                  <Scan size={15} />
+                </button>
+              )}
+              <button
+                type="button"
+                className="chat-action-btn"
+                disabled={!status.running}
+                onClick={onOpenWebUi}
+                title={t("openInBrowser")}
+                aria-label={t("openInBrowser")}
+              >
+                <Globe size={15} />
+              </button>
             </div>
           </div>
           {status.running

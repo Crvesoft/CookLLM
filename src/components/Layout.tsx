@@ -1,4 +1,4 @@
-import { Check, MessageSquareText, PanelLeftClose, PanelLeftOpen, Play, Settings, SlidersHorizontal, Square, SquareTerminal, Boxes, Globe, Loader2, type LucideIcon } from "lucide-react";
+import { Check, MessageSquareText, PanelLeftClose, PanelLeftOpen, Play, Settings, SlidersHorizontal, Square, SquareTerminal, Boxes, Globe, Loader2, Minimize, type LucideIcon } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type React from "react";
 import { useEffect, useRef, useState } from "react";
@@ -25,8 +25,8 @@ function GlyphClose() {
   return <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true"><path d="M0 0l10 10M10 0L0 10" stroke="currentColor" strokeWidth="1" /></svg>;
 }
 
-/** 最小化 / 最大化还原 / 关闭；浏览器 dev 模式下不渲染 */
-function WindowControls() {
+/** 最小化 / 最大化还原 / 关闭；支持在左侧嵌入低调的沉浸模式切换键 */
+function WindowControls({ zenToggle }: { zenToggle?: React.ReactNode }) {
   const { t } = useI18n();
   const [maximized, setMaximized] = useState(false);
   useEffect(() => {
@@ -39,12 +39,17 @@ function WindowControls() {
     void win.onResized(sync).then((fn) => { if (disposed) fn(); else unlisten = fn; });
     return () => { disposed = true; unlisten?.(); };
   }, []);
-  if (!isTauri()) return null;
+  if (!isTauri() && !zenToggle) return null;
   return (
     <div className="window-controls">
-      <button title={t("win.minimize")} aria-label={t("win.minimize")} onClick={() => void getCurrentWindow().minimize()}><GlyphMinimize /></button>
-      <button title={t(maximized ? "win.restore" : "win.maximize")} aria-label={t(maximized ? "win.restore" : "win.maximize")} onClick={() => void getCurrentWindow().toggleMaximize()}>{maximized ? <GlyphRestore /> : <GlyphMaximize />}</button>
-      <button className="close" title={t("win.close")} aria-label={t("win.close")} onClick={() => void getCurrentWindow().close()}><GlyphClose /></button>
+      {zenToggle}
+      {isTauri() && (
+        <>
+          <button title={t("win.minimize")} aria-label={t("win.minimize")} onClick={() => void getCurrentWindow().minimize()}><GlyphMinimize /></button>
+          <button title={t(maximized ? "win.restore" : "win.maximize")} aria-label={t(maximized ? "win.restore" : "win.maximize")} onClick={() => void getCurrentWindow().toggleMaximize()}>{maximized ? <GlyphRestore /> : <GlyphMaximize />}</button>
+          <button className="close" title={t("win.close")} aria-label={t("win.close")} onClick={() => void getCurrentWindow().close()}><GlyphClose /></button>
+        </>
+      )}
     </div>
   );
 }
@@ -71,51 +76,68 @@ export function Sidebar({ page, onPage, downloadBadge, updateAvailable, status, 
   </aside>;
 }
 
-export function Topbar({ page, status, busy, onToggleService, models, modelId, onSelectModel }: { page: Page; status: ServerStatus; busy: boolean; onToggleService: () => void; models: ModelAsset[]; modelId: string; onSelectModel: (id: string) => void }) {
+export function Topbar({ page, status, busy, onToggleService, models, modelId, onSelectModel, zenMode, onToggleZenMode }: { page: Page; status: ServerStatus; busy: boolean; onToggleService: () => void; models: ModelAsset[]; modelId: string; onSelectModel: (id: string) => void; zenMode?: boolean; onToggleZenMode?: () => void }) {
   const { t } = useI18n();
   /** 状态融入模型组件：运行中用只读胶囊替代下拉框（绿点 + 模型名称），停止服务后自动还原为可选下拉框 */
   const active = models.find((model) => model.id === status.modelId);
   const runningLabel = active ? modelTitle(active) : status.modelName || t("modelFallback");
+  const isZenActive = zenMode && page === "playground";
   return (
     <header className="topbar" data-tauri-drag-region="deep">
       <div className="breadcrumbs">
         <strong>{t(page === "models" ? "nav.models" : page === "explore" ? "nav.explore" : page === "profiles" ? "nav.profiles" : page === "playground" ? "nav.playground" : page === "logs" ? "nav.logs" : "nav.settings")}</strong>
       </div>
       <div className="topbar-actions">
-        <div className={cn("launcher-capsule", status.running && "running", busy && "busy")}>
-          {status.running ? (
-            <span className="capsule-model" title={t("runningPrefix", { label: runningLabel })}>
-              <i className={cn("status-dot", busy ? "busy" : "live")} aria-hidden="true" />
-              <span>{runningLabel}</span>
-            </span>
-          ) : (
-            <label className="capsule-select" title={t("selectModel")}>
-              <i className={cn("status-dot", busy ? "busy" : "idle")} aria-hidden="true" />
-              <select value={modelId} onChange={(e) => onSelectModel(e.target.value)} disabled={!models.length || busy}>
-                {!models.length && <option value="">{t("selectModel")}</option>}
-                {models.map((item) => <option key={item.id} value={item.id}>{modelTitle(item)}</option>)}
-              </select>
-            </label>
-          )}
-          <span className="capsule-divider" aria-hidden="true" />
-          <button
-            className={cn("capsule-btn", status.running && "running", busy && "busy")}
-            disabled={busy}
-            onClick={onToggleService}
-            title={t(status.running ? "stopService" : "startService")}
-            aria-label={t(status.running ? "stopService" : "startService")}
-          >
-            {busy ? (
-              <Loader2 size={12} className="spin" />
-            ) : status.running ? (
-              <Square size={11} fill="currentColor" />
+        {!isZenActive && (
+          <div className={cn("launcher-capsule", status.running && "running", busy && "busy")}>
+            {status.running ? (
+              <span className="capsule-model" title={t("runningPrefix", { label: runningLabel })}>
+                <i className={cn("status-dot", busy ? "busy" : "live")} aria-hidden="true" />
+                <span>{runningLabel}</span>
+              </span>
             ) : (
-              <Play size={12} fill="currentColor" />
+              <label className="capsule-select" title={t("selectModel")}>
+                <i className={cn("status-dot", busy ? "busy" : "idle")} aria-hidden="true" />
+                <select value={modelId} onChange={(e) => onSelectModel(e.target.value)} disabled={!models.length || busy}>
+                  {!models.length && <option value="">{t("selectModel")}</option>}
+                  {models.map((item) => <option key={item.id} value={item.id}>{modelTitle(item)}</option>)}
+                </select>
+              </label>
             )}
-          </button>
-        </div>
+            <span className="capsule-divider" aria-hidden="true" />
+            <button
+              className={cn("capsule-btn", status.running && "running", busy && "busy")}
+              disabled={busy}
+              onClick={onToggleService}
+              title={t(status.running ? "stopService" : "startService")}
+              aria-label={t(status.running ? "stopService" : "startService")}
+            >
+              {busy ? (
+                <Loader2 size={12} className="spin" />
+              ) : status.running ? (
+                <Square size={11} fill="currentColor" />
+              ) : (
+                <Play size={12} fill="currentColor" />
+              )}
+            </button>
+          </div>
+        )}
       </div>
-      <WindowControls />
+      <WindowControls
+        zenToggle={
+          page === "playground" && zenMode && onToggleZenMode ? (
+            <button
+              type="button"
+              className="zen-control-btn"
+              onClick={onToggleZenMode}
+              title={t("zen.exit")}
+              aria-label={t("zen.exit")}
+            >
+              <Minimize size={13} />
+            </button>
+          ) : undefined
+        }
+      />
     </header>
   );
 }

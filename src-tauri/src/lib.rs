@@ -9,7 +9,12 @@ use std::{
     sync::{Arc, Mutex, OnceLock},
     time::{SystemTime, UNIX_EPOCH},
 };
-use tauri::{webview::NewWindowResponse, AppHandle, Emitter, Manager, State};
+use tauri::{
+    menu::{Menu, MenuItem, PredefinedMenuItem},
+    tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
+    webview::NewWindowResponse,
+    AppHandle, Emitter, Manager, State,
+};
 use tauri_plugin_dialog::DialogExt;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -156,6 +161,9 @@ struct AppConfig {
     /// 启动时自动检查应用更新；缺省开启。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     auto_update_enabled: Option<bool>,
+    /// 关闭主窗口时是否最小化到托盘（缺省开启）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    minimize_to_tray_on_close: Option<bool>,
 }
 
 impl Default for AppConfig {
@@ -204,6 +212,7 @@ impl Default for AppConfig {
             llamacpp_dir: None,
             models_dir: None,
             auto_update_enabled: None,
+            minimize_to_tray_on_close: None,
         }
     }
 }
@@ -357,6 +366,16 @@ fn save_config(app: AppHandle, config: AppConfig) -> Result<(), String> {
     fs::rename(&temporary, &path).map_err(|error| error.to_string())
 }
 
+fn update_tray_status(app: &AppHandle, running_model: Option<&str>) {
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        let tooltip = match running_model {
+            Some(name) => format!("CookLLM · 运行中: {}", name),
+            None => "CookLLM · 本地大模型管理器".to_string(),
+        };
+        let _ = tray.set_tooltip(Some(tooltip));
+    }
+}
+
 #[tauri::command]
 fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, profile_id: String) -> Result<ServerStatus, String> {
     let config = read_config(&app)?;
@@ -457,12 +476,14 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
         pid: Some(pid),
         port: Some(profile.port),
         model_id: Some(model.id),
-        model_name: Some(model.name),
+        model_name: Some(model.name.clone()),
         profile_id: Some(profile.id),
         profile_name: Some(profile.name),
         started_at: Some(now_ms()),
     };
+    let model_name_display = model.name;
     *guard = Some(ManagedProcess { child, status: status.clone() });
+    update_tray_status(&app, Some(&model_name_display));
     Ok(status)
 }
 
@@ -475,6 +496,7 @@ fn stop_server(app: AppHandle, state: State<ProcessState>) -> Result<ServerStatu
     } else {
         emit_log(&app, "system", "llama-server 未在运行");
     }
+    update_tray_status(&app, None);
     Ok(ServerStatus::default())
 }
 
@@ -1028,6 +1050,79 @@ const IFRAME_BRIDGE_SCRIPT: &str = r##"
       send({ type: "cookllm:open", url: url.href });
     }
   });
+
+  window.addEventListener("keydown", function (event) {
+    if (event.key === "F11") {
+      event.preventDefault();
+      send({ type: "cookllm:zen-toggle" });
+    }
+  });
+
+  // 强制 WebUI 在内嵌桌面环境下始终以 Desktop 模式运行：
+  // 1) 拦截 mobile 探测媒体查询（max-width: 767px 等），防止 SvelteKit 将侧边栏当成移动端全屏抽屉；
+  // 保证收起按钮显示为侧边栏折叠图标而非关闭 X，并在收起时彻底 unmount 历史会话列表，避免首字溢出。
+  try {
+    var origMatchMedia = window.matchMedia;
+    if (origMatchMedia) {
+      window.matchMedia = function (query) {
+        var q = String(query || "");
+        if (/max-width:\s*(76[0-9]|770|48rem)/i.test(q) || q.indexOf("max-width: 767px") !== -1) {
+          return origMatchMedia.call(window, "(max-width: 0px)");
+        }
+        return origMatchMedia.apply(this, arguments);
+      };
+    }
+  } catch (e) {}
+
+  // 2) 注入桌面布局样式补丁，保证即使在窄视口下侧边栏折叠也能固定为 3rem (48px)，
+  // 并在非展开状态下隐藏会话历史及多余文本，防止任何溢出。
+  function injectDesktopStyles() {
+    try {
+      if (document.getElementById("cookllm-desktop-layout-override")) return;
+      var target = document.head || document.documentElement;
+      if (!target) return;
+      var style = document.createElement("style");
+      style.id = "cookllm-desktop-layout-override";
+      style.textContent = [
+        "aside:not(.is-expanded) ul,",
+        "aside:not(.is-expanded) .overflow-y-auto,",
+        "aside:not(.is-expanded) [class*=\"overflow-y\"],",
+        "aside:not(.is-expanded) span.truncate,",
+        "aside:not(.is-expanded) kbd {",
+        "  display: none !important;",
+        "}",
+        "aside:not(.is-expanded) {",
+        "  width: 3rem !important;",
+        "  min-width: 3rem !important;",
+        "  max-width: 3rem !important;",
+        "  position: sticky !important;",
+        "  pointer-events: auto !important;",
+        "}",
+        "aside.is-expanded {",
+        "  width: 18rem !important;",
+        "  min-width: 18rem !important;",
+        "  position: sticky !important;",
+        "  pointer-events: auto !important;",
+        "}",
+        "aside.is-expanded::before {",
+        "  display: none !important;",
+        "}",
+        "div.flex.flex-col:has(> aside) {",
+        "  flex-direction: row !important;",
+        "}",
+        ".chat-tabs-fade {",
+        "  display: block !important;",
+        "}"
+      ].join("\n");
+      target.appendChild(style);
+    } catch (e) {}
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", injectDesktopStyles);
+  } else {
+    injectDesktopStyles();
+  }
 })();
 "##;
 
@@ -1133,7 +1228,7 @@ fn configure_main_window(app: &mut tauri::App) -> tauri::Result<()> {
         .first()
         .cloned()
         .ok_or_else(|| tauri::Error::WindowNotFound)?;
-    tauri::WebviewWindowBuilder::from_config(app.handle(), &window_config)?
+    let window = tauri::WebviewWindowBuilder::from_config(app.handle(), &window_config)?
         .enable_clipboard_access()
         .initialization_script_for_all_frames(IFRAME_BRIDGE_SCRIPT)
         .on_navigation(move |url| {
@@ -1150,6 +1245,75 @@ fn configure_main_window(app: &mut tauri::App) -> tauri::Result<()> {
             NewWindowResponse::Deny
         })
         .build()?;
+
+    let win = window.clone();
+    let app_handle = app.handle().clone();
+    window.on_window_event(move |event| {
+        if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+            let config = read_config(&app_handle).unwrap_or_default();
+            if config.minimize_to_tray_on_close.unwrap_or(true) {
+                api.prevent_close();
+                let _ = win.hide();
+            }
+        }
+    });
+
+    Ok(())
+}
+
+fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
+    let show_item = MenuItem::with_id(app, "show", "显示 CookLLM", true, None::<&str>)?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let quit_item = MenuItem::with_id(app, "quit", "退出 CookLLM", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&show_item, &separator, &quit_item])?;
+
+    let icon = app.default_window_icon().cloned();
+
+    let mut builder = TrayIconBuilder::with_id("main-tray")
+        .tooltip("CookLLM · 本地大模型管理器")
+        .menu(&menu)
+        .show_menu_on_left_click(false)
+        .on_menu_event(|app, event| {
+            match event.id.as_ref() {
+                "show" => {
+                    if let Some(window) = app.get_webview_window("main") {
+                        let _ = window.show();
+                        let _ = window.unminimize();
+                        let _ = window.set_focus();
+                    }
+                }
+                "quit" => {
+                    app.exit(0);
+                }
+                _ => {}
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                let app = tray.app_handle();
+                if let Some(window) = app.get_webview_window("main") {
+                    if window.is_visible().unwrap_or(false) {
+                        let _ = window.hide();
+                    } else {
+                        let _ = window.show();
+                        let _ = window.unminimize();
+                        let _ = window.set_focus();
+                    }
+                }
+            }
+        });
+
+    if let Some(icon) = icon {
+        builder = builder.icon(icon);
+    }
+
+    builder.build(app)?;
+
     Ok(())
 }
 
@@ -2637,20 +2801,106 @@ fn version_number(value: &str) -> Vec<u64> {
 fn is_newer_version(candidate: &str, current: &str) -> bool {
     let candidate = version_number(candidate);
     let current = version_number(current);
-    (0..candidate.len().max(current.len())).any(|index| {
+    let max_len = candidate.len().max(current.len());
+    for index in 0..max_len {
         let left = candidate.get(index).copied().unwrap_or(0);
         let right = current.get(index).copied().unwrap_or(0);
-        left != right && left > right
-    })
+        if left != right {
+            return left > right;
+        }
+    }
+    false
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AppInstallKind {
+    Msi,
+    Nsis,
+}
+
+#[cfg(target_os = "windows")]
+fn is_msi_in_registry() -> bool {
+    use std::os::windows::process::CommandExt;
+    let check1 = std::process::Command::new("reg")
+        .args(["query", "HKCU\\Software\\cookllm\\CookLLM", "/v", "Uninstaller Shortcut"])
+        .creation_flags(0x08000000)
+        .output();
+    if let Ok(out) = check1 {
+        if out.status.success() && String::from_utf8_lossy(&out.stdout).contains("0x1") {
+            return true;
+        }
+    }
+    let check2 = std::process::Command::new("reg")
+        .args(["query", "HKCU\\Software\\cookllm\\CookLLM", "/v", "InstallDir"])
+        .creation_flags(0x08000000)
+        .output();
+    if let Ok(out) = check2 {
+        if out.status.success() {
+            return true;
+        }
+    }
+    false
+}
+
+#[cfg(target_os = "windows")]
+fn detect_app_install_kind() -> AppInstallKind {
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(parent) = exe_path.parent() {
+            // 1. NSIS 安装器在安装目录下必然生成实体的卸载程序 uninstall.exe
+            if parent.join("uninstall.exe").is_file() {
+                return AppInstallKind::Nsis;
+            }
+            // 2. WiX MSI 安装器在安装目录下生成卸载快捷方式 Uninstall CookLLM.lnk
+            if parent.join("Uninstall CookLLM.lnk").is_file() {
+                return AppInstallKind::Msi;
+            }
+        }
+    }
+
+    // 3. 注册表检测：WiX MSI 会在 HKCU\Software\cookllm\CookLLM 写入专属的 InstallDir 或快捷方式键值
+    if is_msi_in_registry() {
+        return AppInstallKind::Msi;
+    }
+
+    // 默认回退为 NSIS EXE 安装包
+    AppInstallKind::Nsis
+}
+
+#[cfg(not(target_os = "windows"))]
+fn detect_app_install_kind() -> AppInstallKind {
+    AppInstallKind::Nsis
 }
 
 fn app_installer_from_value(value: &serde_json::Value) -> Option<(String, String, u64, Option<String>)> {
     let assets = value.get("assets")?.as_array()?;
+    let install_kind = detect_app_install_kind();
+
     assets.iter().filter_map(|item| {
         let name = item.get("name")?.as_str()?.to_string();
         let lower = name.to_lowercase();
-        let rank = if lower.ends_with(".exe") && (lower.contains("setup") || lower.contains("nsis")) { 0 } else if lower.ends_with(".msi") { 1 } else { return None };
         if lower.contains("arm64") || lower.contains("aarch64") { return None; }
+
+        let rank = match install_kind {
+            AppInstallKind::Msi => {
+                if lower.ends_with(".msi") {
+                    0 // MSI 用户优先匹配下载 MSI，原地覆盖升级
+                } else if lower.ends_with(".exe") && (lower.contains("setup") || lower.contains("nsis")) {
+                    1 // 兜底使用 EXE
+                } else {
+                    return None;
+                }
+            }
+            AppInstallKind::Nsis => {
+                if lower.ends_with(".exe") && (lower.contains("setup") || lower.contains("nsis")) {
+                    0 // EXE 用户优先匹配下载 EXE Setup，原地覆盖升级
+                } else if lower.ends_with(".msi") {
+                    1 // 兜底使用 MSI
+                } else {
+                    return None;
+                }
+            }
+        };
+
         let url = item.get("browser_download_url")?.as_str()?.to_string();
         if url.is_empty() { return None; }
         let size = item.get("size").and_then(serde_json::Value::as_u64).unwrap_or(0);
@@ -3358,9 +3608,10 @@ pub fn run() {
             reported: false,
         })))
         .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_whoami, hf_avatar, hf_download, hf_download_url, hf_cancel_download, hf_pause_download, hf_pause_downloads, hf_clear_download, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, pick_files, pick_folder, pick_server_dir, expand_paths, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
-        .setup(|app| match configure_main_window(app) {
-            Ok(()) => Ok(()),
-            Err(error) => Err(error.into()),
+        .setup(|app| {
+            configure_main_window(app)?;
+            setup_tray(app)?;
+            Ok(())
         });
 
     let app = builder

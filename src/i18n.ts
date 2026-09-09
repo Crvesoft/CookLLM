@@ -27,6 +27,10 @@ const zh = {
   "win.maximize": "最大化",
   "win.restore": "还原",
   "win.close": "关闭",
+  "zen.enter": "沉浸模式 (F11)",
+  "zen.exit": "退出沉浸 (F11)",
+  "zen.btn": "沉浸",
+  "openInBrowser": "在浏览器中打开 (WebUI)",
 
   // ---- 顶栏 / 服务状态 ----
   "runningPrefix": "正在运行：{label}",
@@ -253,6 +257,10 @@ const zh = {
   "disableLabel": "关闭",
   "toast.gpuOn": "已开启 GPU 性能监测",
   "toast.gpuOff": "已关闭 GPU 性能监测",
+  "st.trayTitle": "关闭时最小化到托盘",
+  "st.trayDesc": "点击窗口右上角关闭按钮时，将应用最小化至系统托盘并保持后台服务运行",
+  "toast.trayOn": "已开启关闭时最小化到托盘",
+  "toast.trayOff": "已关闭最小化到托盘，关闭窗口将直接退出",
   "st.langTitle": "界面语言",
   "st.langDesc": "切换界面显示语言，立即生效并持久化。",
   "toast.languageSet": "已切换为{label}",
@@ -604,6 +612,10 @@ const en: typeof zh = {
   "win.maximize": "Maximize",
   "win.restore": "Restore",
   "win.close": "Close",
+  "zen.enter": "Focus Mode (F11)",
+  "zen.exit": "Exit Focus Mode (F11)",
+  "zen.btn": "Focus",
+  "openInBrowser": "Open in browser (WebUI)",
 
   // ---- Community Explore (HuggingFace) ----
   "nav.explore": "Explore",
@@ -1015,6 +1027,10 @@ const en: typeof zh = {
   "disableLabel": "Disable",
   "toast.gpuOn": "GPU monitor enabled",
   "toast.gpuOff": "GPU monitor disabled",
+  "st.trayTitle": "Minimize to Tray on Close",
+  "st.trayDesc": "Keep background services running and minimize to system tray when clicking the close button",
+  "toast.trayOn": "Minimize to tray enabled",
+  "toast.trayOff": "Minimize to tray disabled (close button will exit app)",
   "st.langTitle": "Interface language",
   "st.langDesc": "Switch the interface language — applied instantly and persisted.",
   "toast.languageSet": "Language set to {label}",

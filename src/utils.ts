@@ -56,8 +56,11 @@ export function isNewerVersion(release: string, current: string): boolean {
   const nums = (value: string) => value.replace(/^v/i, "").split(".").map((seg) => parseInt(seg, 10) || 0);
   const releaseNums = nums(release);
   const currentNums = nums(current);
-  for (let index = Math.max(releaseNums.length, currentNums.length) - 1; index >= 0; index--) {
-    if ((releaseNums[index] ?? 0) !== (currentNums[index] ?? 0)) return (releaseNums[index] ?? 0) > (currentNums[index] ?? 0);
+  const maxLen = Math.max(releaseNums.length, currentNums.length);
+  for (let index = 0; index < maxLen; index++) {
+    const left = releaseNums[index] ?? 0;
+    const right = currentNums[index] ?? 0;
+    if (left !== right) return left > right;
   }
   // 各段数值相等（含版本相同）不算更新；带预发布后缀（-beta 等）的一方按旧版处理
   const releasePre = /[-+]/.test(release.replace(/^v/i, ""));

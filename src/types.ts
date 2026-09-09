@@ -92,6 +92,8 @@ export interface AppConfig {
   modelsDir?: string;
   /** 启动时自动检测应用更新（默认开启） */
   autoUpdateEnabled?: boolean;
+  /** 关闭主窗口时是否最小化到托盘（默认开启） */
+  minimizeToTrayOnClose?: boolean;
 }
 
 export interface ServerStatus {
