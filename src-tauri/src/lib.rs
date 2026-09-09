@@ -2048,7 +2048,10 @@ async fn hf_download(app: AppHandle, state: State<'_, DownloadRegistry>, repo: S
         let mut last_emit_ms = start_ms;
         loop {
             if task.cancel.load(Ordering::Relaxed) {
+                drop(file_handle);
                 let _ = fs::remove_file(&dest);
+                let _ = fs::remove_file(dest.with_extension("part"));
+                emit_model_progress(&app, &closure_task_id, &repo, &file, "cancelled", 0, 0, 0, 0, "下载已取消");
                 return Err("下载已取消".into());
             }
             if task.pause.load(Ordering::Relaxed) {
@@ -2145,7 +2148,10 @@ async fn hf_download_url(app: AppHandle, state: State<'_, DownloadRegistry>, url
         let mut last_emit_ms = start_ms;
         loop {
             if task.cancel.load(Ordering::Relaxed) {
+                drop(file_handle);
                 let _ = fs::remove_file(&dest);
+                let _ = fs::remove_file(dest.with_extension("part"));
+                emit_model_progress(&app, &closure_task_id, repo_id, &file_name, "cancelled", 0, 0, 0, 0, "下载已取消");
                 return Err("下载已取消".into());
             }
             if task.pause.load(Ordering::Relaxed) {

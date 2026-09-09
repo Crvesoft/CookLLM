@@ -80,6 +80,17 @@ export default function App() {
   /** 下载任务镜像（供进度回调读取，避免闭包过期） */
   const downloadsRef = useRef<ActiveDownload[]>([]);
   const pauseRequestedRef = useRef<Set<string>>(new Set());
+  const cancelledTaskIdsRef = useRef<Set<string>>(new Set());
+
+  const clearProgressKey = (repo: string, file: string) => {
+    const key = repo + "::" + file;
+    setModelProgress((previous) => {
+      if (!previous[key]) return previous;
+      const next = { ...previous };
+      delete next[key];
+      return next;
+    });
+  };
   const [menuModelId, setMenuModelId] = useState<string | null>(null);
   const [quickModelId, setQuickModelId] = useState("");
   const [importOpen, setImportOpen] = useState(false);
@@ -218,11 +229,24 @@ export default function App() {
       appendLog(t("explore.downloaded") + ": " + result.path, "system");
       void importDownloadedModel(entry, result.path, result.sizeBytes);
     }).catch((error) => {
+      const isCancelled = cancelledTaskIdsRef.current.has(entry.taskId);
+      cancelledTaskIdsRef.current.delete(entry.taskId);
       const raw = error instanceof Error ? error.message : String(error);
+      if (isCancelled || raw.includes("取消") || raw.includes("cancelled")) {
+        clearProgressKey(entry.repo, entry.file);
+        setDownloads((previous) => previous.filter((item) => item.taskId !== entry.taskId));
+        downloadsRef.current = downloadsRef.current.filter((item) => item.taskId !== entry.taskId);
+        return;
+      }
+      if (raw.includes("暂停")) {
+        clearProgressKey(entry.repo, entry.file);
+        patchByTaskId(entry.taskId, { status: "cancelled", error: t("explore.statusPaused"), speedBps: 0, finishedAt: Date.now() });
+        return;
+      }
+      clearProgressKey(entry.repo, entry.file);
       const kind = raw.startsWith("HF_GATED_NEED_TOKEN") ? "needs-token" : raw.startsWith("HF_GATED_NO_PERMISSION") ? "no-permission" : undefined;
       const failed = settleEntry(entry, raw, kind);
-      if (failed.status === "cancelled") { setToast(t("toast.downloadCancelled")); }
-      else { appendLog(t("explore.error", { error: failed.error ?? raw }), "stderr"); }
+      appendLog(t("explore.error", { error: failed.error ?? raw }), "stderr");
       patchByTaskId(entry.taskId, failed);
     });
   };
@@ -255,22 +279,25 @@ export default function App() {
     void onModelDownloadProgress((payload) => {
       // 展示用进度表仍按 仓库::文件名 索引（FileModal / 模型仓库下载占位共用），任务状态则按 taskId 精确命中
       const key = payload.repo + "::" + payload.file;
-      setModelProgress((previous) => ({ ...previous, [key]: payload }));
       if (payload.phase === "done") {
+        setModelProgress((previous) => ({ ...previous, [key]: payload }));
         patchTask(payload.taskId, { status: "done", percent: 100, downloaded: payload.downloaded, total: payload.total, speedBps: 0, finishedAt: Date.now() });
         window.setTimeout(() => {
-          setModelProgress((previous) => {
-            const next = { ...previous };
-            delete next[key];
-            return next;
-          });
+          clearProgressKey(payload.repo, payload.file);
         }, 1800);
       } else if (payload.phase === "paused") {
+        clearProgressKey(payload.repo, payload.file);
         // 单任务 / 全部暂停：归入「暂停」Tab（保留 .part 断点，可继续）
         patchTask(payload.taskId, { status: "cancelled", error: t("explore.statusPaused"), speedBps: 0, finishedAt: Date.now() });
+      } else if (payload.phase === "cancelled") {
+        clearProgressKey(payload.repo, payload.file);
+        setDownloads((previous) => previous.filter((item) => item.taskId !== payload.taskId));
+        downloadsRef.current = downloadsRef.current.filter((item) => item.taskId !== payload.taskId);
       } else if (payload.phase === "error") {
+        clearProgressKey(payload.repo, payload.file);
         patchTask(payload.taskId, { status: "error", error: payload.message || "download failed", speedBps: 0, finishedAt: Date.now() });
       } else {
+        setModelProgress((previous) => ({ ...previous, [key]: payload }));
         patchTask(payload.taskId, { status: "active", percent: payload.percent, downloaded: payload.downloaded, total: payload.total, speedBps: payload.speedBps });
       }
     }).then((fn) => { unlisten = fn; }).catch(() => undefined);
@@ -305,12 +332,24 @@ export default function App() {
     return { ...entry, status: "error", error: display || t("explore.statusError"), errorKind: kind, speedBps: 0, finishedAt: Date.now() };
   };
 
+  const getTaskFilePath = (task: ActiveDownload): string => {
+    if (task.path) return task.path;
+    if (!diskUsage?.path) return "";
+    const root = diskUsage.path.replace(/[\\/]+$/, "");
+    if (task.repo === "direct-url") {
+      return root + "/" + task.file;
+    }
+    const repoDir = task.repo.split("/").pop() || task.repo;
+    const sanitized = repoDir.replace(/[^a-zA-Z0-9\-_.]/g, "_") || "model";
+    return root + "/" + sanitized + "/" + task.file;
+  };
+
   /** 清理某任务在本地的缓存文件：目标文件 + .part 断点文件（已入库的完成任务由调用方跳过） */
   const removeTaskFiles = (task: ActiveDownload) => {
-    const base = task.path || (diskUsage?.path ? diskUsage.path.replace(/[\\/]+$/, "") + (task.repo !== "direct-url" ? "/" + (task.repo.split("/").pop() || "") : "") : "");
-    if (base) {
-      void removeLocalFile(base).catch(() => undefined);
-      void removeLocalFile(base + ".part").catch(() => undefined);
+    const file = getTaskFilePath(task);
+    if (file) {
+      void removeLocalFile(file).catch(() => undefined);
+      void removeLocalFile(file + ".part").catch(() => undefined);
     }
   };
 
@@ -350,16 +389,7 @@ export default function App() {
     const entry: ActiveDownload = { taskId: uid("download"), repo, file, sizeBytes, startedAt: Date.now(), status: "active", percent: 0, downloaded: 0, total: sizeBytes, speedBps: 0 };
     setDownloads((previous) => [...previous.filter((item) => !(item.repo === repo && item.file === file)), entry]);
     downloadsRef.current = [...downloadsRef.current.filter((item) => !(item.repo === repo && item.file === file)), entry];
-    void hfDownload(repo, file, entry.taskId).then((result) => {
-      appendLog(t("explore.downloaded") + ": " + result.path, "system");
-      void importDownloadedModel(entry, result.path, result.sizeBytes);
-    }).catch((error) => {
-      const raw = error instanceof Error ? error.message : String(error);
-      const failed = settleEntry(entry, raw);
-      if (failed.status === "cancelled") { setToast(t("toast.downloadCancelled")); }
-      else { appendLog(t("explore.error", { error: failed.error ?? raw }), "stderr"); }
-      patchByTaskId(entry.taskId, failed);
-    });
+    launchDownload(entry);
     setToast(t("toast.downloadStarted"));
   };
 
@@ -369,39 +399,46 @@ export default function App() {
   const relaunchTask = (task: ActiveDownload) => {
     const entry: ActiveDownload = { ...task, startedAt: Date.now(), status: "active" as const, percent: 0, downloaded: 0, total: task.total ?? task.sizeBytes, speedBps: 0 };
     patchByTaskId(task.taskId, entry);
-    void hfClearDownload(task.taskId).catch(() => undefined);
-    const run = task.url ? hfDownloadUrl(task.url, task.taskId) : hfDownload(task.repo, task.file, task.taskId);
-    void run.then((result) => {
-      appendLog(t("explore.downloaded") + ": " + result.path, "system");
-      void importDownloadedModel(entry, result.path, result.sizeBytes);
-    }).catch((error) => {
-      const raw = error instanceof Error ? error.message : String(error);
-      const kind = raw.startsWith("HF_GATED_NEED_TOKEN") ? "needs-token" : raw.startsWith("HF_GATED_NO_PERMISSION") ? "no-permission" : undefined;
-      const failed = settleEntry(entry, raw, kind);
-      if (failed.status === "cancelled") { setToast(t("toast.downloadCancelled")); }
-      else { appendLog(t("explore.error", { error: failed.error ?? raw }), "stderr"); }
-      patchByTaskId(task.taskId, failed);
-    });
+    launchDownload(entry);
   };
 
-  /** 取消单个任务：只按该 taskId 中止对应下载线程，其他任务不受影响 */
-  const cancelTaskImpl = (task: ActiveDownload, withDelete: boolean) => {
-    void hfCancelDownload(task.taskId).catch(() => undefined);
-    patchByTaskId(task.taskId, { status: "cancelled", error: t("explore.statusCancelled"), speedBps: 0, finishedAt: Date.now() });
-    if (withDelete) removeTaskFiles(task);
+  /** 取消单个任务：直接从列表删除任务并清理未完成缓存文件，不移入「暂停」界面 */
+  const cancelTaskImpl = (task: ActiveDownload, withDelete = true) => {
+    const matched = task.taskId
+      ? downloadsRef.current.find((item) => item.taskId === task.taskId)
+      : downloadsRef.current.find((item) => item.repo === task.repo && item.file === task.file);
+    const targetTask = matched || task;
+
+    if (targetTask.taskId) {
+      cancelledTaskIdsRef.current.add(targetTask.taskId);
+      void hfCancelDownload(targetTask.taskId).catch(() => undefined);
+    }
+    setDownloads((previous) => previous.filter((item) =>
+      (targetTask.taskId ? item.taskId !== targetTask.taskId : !(item.repo === targetTask.repo && item.file === targetTask.file))
+    ));
+    downloadsRef.current = downloadsRef.current.filter((item) =>
+      (targetTask.taskId ? item.taskId !== targetTask.taskId : !(item.repo === targetTask.repo && item.file === targetTask.file))
+    );
+
+    if (withDelete) removeTaskFiles(targetTask);
+    clearProgressKey(targetTask.repo, targetTask.file);
     setToast(t("toast.downloadCancelled"));
   };
-  /** 暂停单个任务（保留 .part 断点，可继续）；只作用于该 taskId */
+  /** 暂停单个任务（保留 .part 断点，可继续）；只作用于该 taskId，归入「暂停」界面 */
   const handlePauseTask = (task: ActiveDownload) => {
     void hfPauseDownload(task.taskId).catch(() => undefined);
     patchByTaskId(task.taskId, { status: "cancelled", error: t("explore.statusPaused"), speedBps: 0, finishedAt: Date.now() });
-    setToast(t("toast.pausedAll"));
+    clearProgressKey(task.repo, task.file);
+    setToast(t("toast.taskPaused"));
   };
   /** 暂停全部（对每个已注册任务置位暂停标志，下载循环下一轮退出并保留 .part） */
   const handlePauseAll = () => {
     void hfPauseDownloads().catch(() => undefined);
     for (const task of downloadsRef.current) {
-      if (task.status === "active") patchByTaskId(task.taskId, { status: "cancelled", error: t("explore.statusPaused"), speedBps: 0, finishedAt: Date.now() });
+      if (task.status === "active") {
+        patchByTaskId(task.taskId, { status: "cancelled", error: t("explore.statusPaused"), speedBps: 0, finishedAt: Date.now() });
+        clearProgressKey(task.repo, task.file);
+      }
     }
     setToast(t("toast.pausedAll"));
   };
@@ -425,6 +462,7 @@ export default function App() {
     for (const task of targets) {
       void hfPauseDownload(task.taskId).catch(() => undefined);
       patchByTaskId(task.taskId, { status: "cancelled", error: t("explore.statusPaused"), speedBps: 0, finishedAt: Date.now() });
+      clearProgressKey(task.repo, task.file);
     }
     if (targets.length) setToast(t("toast.batchPaused", { count: targets.length }));
   };
@@ -436,6 +474,8 @@ export default function App() {
     if (!targets.length) return;
     // 先按 taskId 中止仍在下载的任务，再清缓存、移记录
     for (const task of targets) {
+      cancelledTaskIdsRef.current.add(task.taskId);
+      clearProgressKey(task.repo, task.file);
       if (task.status === "active") void hfCancelDownload(task.taskId).catch(() => undefined);
     }
     setDownloads((previous) => previous.filter((item) => !idSet.has(item.taskId)));

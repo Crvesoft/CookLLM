@@ -1,4 +1,4 @@
-import { AlertCircle, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clock, Database, Download, EllipsisVertical, ExternalLink, FolderOpen, Globe, HardDrive, KeyRound, Loader2, PauseCircle, PlayCircle, RefreshCw, Search, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
+import { AlertCircle, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clock, Compass, Database, Download, EllipsisVertical, ExternalLink, Flame, FolderOpen, Globe, HardDrive, KeyRound, Loader2, PauseCircle, PlayCircle, RefreshCw, Search, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ConfirmModal from "./ConfirmModal";
 import { useI18n } from "../i18n";
@@ -197,39 +197,70 @@ interface FileRowProps {
   queued: boolean;
   preferred?: boolean;
   onDownload: (file: HfFile) => void;
+  onCancel?: (file: HfFile) => void;
 }
 
-function FileRow({ file, progress, disabled, queued, preferred, onDownload }: FileRowProps) {
+function FileRow({ file, progress, disabled, queued, preferred, onDownload, onCancel }: FileRowProps) {
   const { t } = useI18n();
-  const active = progress !== undefined;
+  const active = progress !== undefined && progress.phase !== "paused" && progress.phase !== "cancelled" && progress.phase !== "error";
   const quant = quantBadge(file.name);
-  return <div className={cn("hf-file-row", preferred && "hf-file-row-preferred")}>
-    <div className="hf-file-main">
-      {preferred && <Star size={12} className="hf-file-star" fill="currentColor" />}
-      {quant && <span className={cn("hf-quant-badge", preferred && "preferred")}>{quant}</span>}
-      <span className="hf-file-quant" title={file.name}>{fileName(file.name)}</span>
+  const speed = active ? humanSpeed(progress.speedBps) : "";
+
+  return (
+    <div className={cn("hf-file-row", preferred && "hf-file-row-preferred", active && "downloading")}>
+      <div className="hf-file-main">
+        {preferred && <Star size={12} className="hf-file-star" fill="currentColor" />}
+        {quant && <span className={cn("hf-quant-badge", preferred && "preferred")}>{quant}</span>}
+        <span className="hf-file-quant" title={file.name}>{fileName(file.name)}</span>
+      </div>
+      <div className="hf-file-side">
+        <span className="hf-file-size">{formatBytes(file.sizeBytes)}</span>
+        {speed ? <span className="hf-file-speed">{speed}</span> : null}
+        {vramTag(file, t) ? <span className="hf-vram-tag">{vramTag(file, t)}</span> : null}
+        {active ? (
+          <button
+            type="button"
+            className="hf-download-btn downloading"
+            title={t("explore.cancel")}
+            onClick={() => onCancel?.(file)}
+          >
+            <span
+              className="btn-progress-fill"
+              style={{ width: `${Math.min(100, Math.max(0, progress.percent))}%` }}
+            />
+            <span className="btn-content-downloading">
+              <Loader2 size={12} className="spin" />
+              <em>{progress.percent}%</em>
+            </span>
+            <span className="btn-content-cancel">
+              <X size={13} />
+              <span>{t("explore.cancel")}</span>
+            </span>
+          </button>
+        ) : queued ? (
+          <button
+            type="button"
+            className="hf-download-btn queued"
+            title={t("explore.cancel")}
+            onClick={() => onCancel?.(file)}
+          >
+            <span className="btn-content-queued">
+              <Check size={12} />
+              <span>{t("explore.inQueue")}</span>
+            </span>
+            <span className="btn-content-cancel">
+              <X size={13} />
+              <span>{t("explore.cancel")}</span>
+            </span>
+          </button>
+        ) : (
+          <button className="hf-download-btn" disabled={disabled} onClick={() => onDownload(file)}>
+            ⤓ {t("explore.downloadShort")}
+          </button>
+        )}
+      </div>
     </div>
-    <div className="hf-file-side">
-      <span className="hf-file-size">{formatBytes(file.sizeBytes)}</span>
-      {vramTag(file, t) ? <span className="hf-vram-tag">{vramTag(file, t)}</span> : null}
-    {!active ? (
-      queued ? (
-        <button className="hf-download-btn queued" disabled>
-          <Check size={13} />{t("explore.inQueue")}
-        </button>
-      ) : (
-        <button className="hf-download-btn" disabled={disabled} onClick={() => onDownload(file)}>
-          ⤓ {t("explore.downloadShort")}
-        </button>
-      )
-    ) : (
-      <span className="hf-file-progress">
-        <span className="hf-file-bar"><span style={{ width: progress.percent + "%" }} /></span>
-        <em>{progress.percent}% {humanSpeed(progress.speedBps)}</em>
-      </span>
-      )}
-    </div>
-  </div>;
+  );
 }
 
 /* ---------------- HF 作者头像（组织 / 用户 logo） ---------------- */
@@ -278,10 +309,11 @@ function ModelAvatar({ author }: { author: string }) {
 interface ModelRowProps {
   model: HfModel;
   preferredQuant: boolean;
+  rank?: number;
   onViewFiles: () => void;
 }
 
-function ModelRow({ model, preferredQuant, onViewFiles }: ModelRowProps) {
+function ModelRow({ model, preferredQuant, rank, onViewFiles }: ModelRowProps) {
   const { t } = useI18n();
   const parameter = paramLabel(model);
   const quant = quantLabel(model);
@@ -295,12 +327,18 @@ function ModelRow({ model, preferredQuant, onViewFiles }: ModelRowProps) {
   ].filter(Boolean);
   if (quantSpecs.length > 1) metaBits.push(t("explore.quantSpecs", { quants: quantSpecs.join("/") }));
   return (
-    <div className={cn("hf-model-row", preferredQuant && "hf-model-row-preferred")}>
+    <div className={cn("hf-model-row", preferredQuant && "hf-model-row-preferred", rank != null && `hf-model-ranked rank-${rank}`)}>
       <div className="hf-model-row-body">
+        {rank != null && (
+          <div className={cn("model-rank-badge", rank === 1 ? "top-1" : rank === 2 ? "top-2" : rank === 3 ? "top-3" : "top-n")} title={`TOP ${rank}`}>
+            {rank <= 3 && <Flame size={12} className="rank-flame" />}
+            <span>{rank <= 3 ? `TOP ${rank}` : rank < 10 ? `#0${rank}` : `#${rank}`}</span>
+          </div>
+        )}
         <div className="hf-model-main-col">
           <div className="hf-model-title-row">
             <ModelAvatar author={model.author} />
-            <strong>{model.id}</strong>
+            <strong title={model.id}>{model.id}</strong>
             {preferredQuant && <span className="hf-quant-badge preferred" title={t("explore.quantPreferred", { quant: quant || "" })}><Star size={10} fill="currentColor" />{quant}</span>}
             {parameter && <span className="hf-param-badge" title={t("explore.facetParams")}>{parameter}</span>}
             {quant && !preferredQuant && <span className="hf-quant-badge" title={t("explore.facetQuant")}>{quant}</span>}
@@ -334,12 +372,13 @@ interface FileModalProps {
   progressMap: Record<string, ModelDownloadProgress>;
   queuedKeys: Set<string>;
   onDownloadFile: (file: HfFile) => void;
+  onCancelDownloadFile?: (file: HfFile) => void;
   onPickModelsDir: () => Promise<void>;
   onClose: () => void;
 }
 
 /** 通用文件下载弹窗：热门卡 / 模型列表共用，页面不滚动、卡片不内嵌展开 */
-function FileModal({ model, files, filesLoading, filesError, preferredBits, diskUsage, progressMap, queuedKeys, onDownloadFile, onPickModelsDir, onClose }: FileModalProps) {
+function FileModal({ model, files, filesLoading, filesError, preferredBits, diskUsage, progressMap, queuedKeys, onDownloadFile, onCancelDownloadFile, onPickModelsDir, onClose }: FileModalProps) {
   const { t } = useI18n();
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); };
@@ -381,7 +420,7 @@ function FileModal({ model, files, filesLoading, filesError, preferredBits, disk
               : (
                 <div className="hf-files-list">
                   {ordered.map((file) => (
-                    <FileRow key={file.name} file={file} disabled={false} preferred={isPreferredFile(file.name)} queued={queuedKeys.has(model.id + "::" + file.name)} progress={progressMap[model.id + "::" + file.name]} onDownload={onDownloadFile} />
+                    <FileRow key={file.name} file={file} disabled={false} preferred={isPreferredFile(file.name)} queued={queuedKeys.has(model.id + "::" + file.name)} progress={progressMap[model.id + "::" + file.name]} onDownload={onDownloadFile} onCancel={onCancelDownloadFile} />
                   ))}
                 </div>
               )
@@ -515,7 +554,7 @@ export default function ExplorePage(props: Props) {
   const [filesLoading, setFilesLoading] = useState<Record<string, boolean>>({});
   const [filesError, setFilesError] = useState<Record<string, string | null>>({});
   const [trendingLoading, setTrendingLoading] = useState(false);
-  const [trendCollapsed, setTrendCollapsed] = useState(false);
+  const [discoverTab, setDiscoverTab] = useState<"trending" | "all">("trending");
   const [taskFilter, setTaskFilter] = useState<"all" | "active" | "done" | "failed">("all");
   /** 多选：任务卡片勾选集合（按 taskId）；切分类时清空避免隐藏勾选 */
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -541,6 +580,7 @@ export default function ExplorePage(props: Props) {
 
 
   const searchRef = useRef<HTMLInputElement>(null);
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
 
   /** 量化偏好（多选）：同时用于服务端过滤参数与文件弹窗高亮 / 列表星标 */
   const quantPreferredBits = quantBits.length > 0 ? quantBits : null;
@@ -596,7 +636,7 @@ export default function ExplorePage(props: Props) {
   const refreshTrending = async () => {
     setTrendingLoading(true);
     try {
-      const result = await hfTrending(8, true);
+      const result = await hfTrending(10, ggufOnly);
       setTrending(result);
       return true;
     } catch (err) {
@@ -609,6 +649,7 @@ export default function ExplorePage(props: Props) {
     const seq = ++searchSeq.current;
     const keyword = effectiveKeyword;
     setLoading(true); setError(null);
+    scrollAreaRef.current?.scrollTo({ top: 0 });
     let ok = false;
     let failMessage = "";
     try {
@@ -733,6 +774,34 @@ export default function ExplorePage(props: Props) {
     }, 2400);
   };
 
+  const cancelDownloadFile = (model: HfModel, file: HfFile) => {
+    const task = props.activeDownloads.find(
+      (t) => t.repo === model.id && t.file === file.name
+    );
+    if (task) {
+      props.onCancelTask(task, true);
+    } else {
+      props.onCancelTask({
+        taskId: "",
+        repo: model.id,
+        file: file.name,
+        sizeBytes: file.sizeBytes,
+        startedAt: Date.now(),
+        status: "active",
+        percent: 0,
+        downloaded: 0,
+        total: file.sizeBytes,
+        speedBps: 0,
+      }, true);
+    }
+    const key = model.id + "::" + file.name;
+    setQueued((previous) => {
+      const next = new Set(previous);
+      next.delete(key);
+      return next;
+    });
+  };
+
   const handleParamMin = (value: number) => {
     setParamMin(Math.min(value, paramMax));
   };
@@ -851,12 +920,30 @@ export default function ExplorePage(props: Props) {
           tasks={tasks}
           paramMin={paramMin}
           paramMax={paramMax}
-          onSelectFamily={setFamily}
-          onToggleQuant={toggleQuant}
-          onSelectAllQuant={selectAllQuant}
-          onToggleTask={toggleTask}
-          onParamMin={handleParamMin}
-          onParamMax={handleParamMax}
+          onSelectFamily={(fam) => {
+            setFamily(fam);
+            if (fam !== "all" && discoverTab !== "all") setDiscoverTab("all");
+          }}
+          onToggleQuant={(q) => {
+            toggleQuant(q);
+            if (discoverTab !== "all") setDiscoverTab("all");
+          }}
+          onSelectAllQuant={() => {
+            selectAllQuant();
+            if (discoverTab !== "all") setDiscoverTab("all");
+          }}
+          onToggleTask={(tk) => {
+            toggleTask(tk);
+            if (discoverTab !== "all") setDiscoverTab("all");
+          }}
+          onParamMin={(min) => {
+            handleParamMin(min);
+            if (discoverTab !== "all") setDiscoverTab("all");
+          }}
+          onParamMax={(max) => {
+            handleParamMax(max);
+            if (discoverTab !== "all") setDiscoverTab("all");
+          }}
           onResetParams={resetParams}
           onResetAll={resetAll}
           onToggleCollapsed={toggleCollapsed}
@@ -872,7 +959,18 @@ export default function ExplorePage(props: Props) {
             <label className="search-box explore-search" title="Ctrl+K 快速聚焦">
               <span className="explore-source"><span>🤗</span> HuggingFace<ChevronDown size={12} /></span>
               <Search size={14} />
-              <input ref={searchRef} value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t("explore.searchPlaceholder")} />
+              <input
+                ref={searchRef}
+                value={query}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setQuery(val);
+                  if (val.trim() && discoverTab !== "all") {
+                    setDiscoverTab("all");
+                  }
+                }}
+                placeholder={t("explore.searchPlaceholder")}
+              />
               <kbd>Ctrl+K</kbd>
             </label>
             <div className="explore-search-tools">
@@ -892,83 +990,124 @@ export default function ExplorePage(props: Props) {
             </div>
           </div>
 
-          <div className="facet-scroll-area">
-          <div className={cn("hf-list-refresh-veil", loading && "visible")} aria-hidden={!loading}>{loading ? <Loader2 size={20} className="spin" /> : null}</div>
-          {!searching && facetCount === 0 && (
-            <div className="section-title-row">
-              <div><h2>🔥 {t("explore.trendingTitle")}</h2></div>
-              <div className="library-tools">
-                <span className="explore-updated">2026.09</span>
-                <button className="ghost-icon hf-icon-button" title={trendCollapsed ? t("explore.trendingExpand") : t("explore.trendingCollapse")} aria-label={trendCollapsed ? t("explore.trendingExpand") : t("explore.trendingCollapse")} onClick={() => setTrendCollapsed((v) => !v)}>
-                  {trendCollapsed ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                </button>
+          <div className="facet-scroll-wrap">
+            <div className={cn("hf-list-refresh-veil", (loading || trendingLoading) && "visible")} aria-hidden={!loading && !trendingLoading}>
+              {(loading || trendingLoading) ? <Loader2 size={24} className="spin" /> : null}
+            </div>
+
+            <div className="facet-scroll-area" ref={scrollAreaRef}>
+              {/* 发现页二级分栏：本周热门趋势 vs 全部模型库 */}
+              <div className="discover-segment-bar">
+                <div className="discover-segments" role="tablist">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={discoverTab === "trending"}
+                    className={cn("discover-segment-btn", discoverTab === "trending" && "active")}
+                    onClick={() => {
+                      setDiscoverTab("trending");
+                      scrollAreaRef.current?.scrollTo({ top: 0 });
+                    }}
+                  >
+                    <Flame size={14} className="segment-flame" />
+                    <span>{t("explore.tabTrending")}</span>
+                    {trending.length > 0 && <span className="segment-badge">{trending.length}</span>}
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={discoverTab === "all"}
+                    className={cn("discover-segment-btn", discoverTab === "all" && "active")}
+                    onClick={() => {
+                      setDiscoverTab("all");
+                      scrollAreaRef.current?.scrollTo({ top: 0 });
+                    }}
+                  >
+                    <Compass size={14} />
+                    <span>{t("explore.tabAllModels")}</span>
+                    {models.length > 0 && <span className="segment-badge">{models.length}</span>}
+                  </button>
+                </div>
+                <div className="discover-segment-meta">
+              {discoverTab === "trending" ? (
+                <span className="explore-updated">{t("explore.trendingWeeklyBadge")}</span>
+              ) : searching ? (
+                <span className="explore-updated">{t("explore.searchResults", { query: query.trim(), count: models.length })}</span>
+              ) : facetCount > 0 ? (
+                <span className="explore-updated">{t("explore.facetSidebar")} × {facetCount}</span>
+              ) : null}
+            </div>
+          </div>
+
+          {discoverTab === "trending" ? (
+            /* ==================== 本周热门趋势专属榜单 ==================== */
+            <div className="hf-trending-list">
+              {trendingLoading && trending.length === 0 ? (
+                <div className="hf-skeleton-list">
+                  {Array.from({ length: 5 }, (_, index) => (
+                    <div className="hf-model-row hf-skeleton-row" key={index}>
+                      <div className="hf-model-row-body">
+                        <span className="hf-model-icon hf-skeleton-block" />
+                        <div className="hf-model-main-col">
+                          <div className="hf-skeleton-line title" />
+                          <div className="hf-skeleton-line text" />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : trending.length === 0 ? (
+                <div className="hf-empty">
+                  <h3>{t("explore.noResults")}</h3>
+                  <p>{t("explore.noResultsDesc")}</p>
+                </div>
+              ) : (
+                trending.map((model, index) => (
+                  <ModelRow
+                    key={model.id}
+                    model={model}
+                    rank={index + 1}
+                    preferredQuant={quantPreferredBits != null && modelQuantBits(model) != null && quantPreferredBits.includes(modelQuantBits(model)!)}
+                    onViewFiles={() => openFiles(model)}
+                  />
+                ))
+              )}
+            </div>
+          ) : (
+            /* ==================== 全部模型库与搜索列表 ==================== */
+            <div className="hf-all-models-list">
+              {loading && models.length === 0 ? (
+                <div className="hf-skeleton-list">
+                  {Array.from({ length: 5 }, (_, index) => (
+                    <div className="hf-model-row hf-skeleton-row" key={index}>
+                      <div className="hf-model-row-body">
+                        <span className="hf-model-icon hf-skeleton-block" />
+                        <div className="hf-model-main-col">
+                          <div className="hf-skeleton-line title" />
+                          <div className="hf-skeleton-line text" />
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              {error && !loading && <div className="hf-empty err"><p>{error}</p><span className="hf-net-hint">{t("explore.netErrorHint")}</span></div>}
+              {!loading && !error && sorted.length === 0 && <div className="hf-empty"><h3>{t("explore.noResults")}</h3><p>{t("explore.noResultsDesc")}</p></div>}
+              {sorted.map((model) => (
+                <ModelRow
+                  key={model.id}
+                  model={model}
+                  preferredQuant={quantPreferredBits != null && modelQuantBits(model) != null && quantPreferredBits.includes(modelQuantBits(model)!)}
+                  onViewFiles={() => openFiles(model)}
+                />
+              ))}
+              <div ref={loadMoreRef} className="hf-list-foot">
+                {loadingMore && <><Loader2 size={14} className="spin" />{t("explore.loadingMore")}</>}
+                {!loadingMore && !hasMore && models.length > 0 && <span>{t("explore.loadedAll")}</span>}
               </div>
             </div>
           )}
-          {!searching && facetCount === 0 && !trendCollapsed && (trendingLoading && trending.length === 0 ? (
-            <div className="hf-trending">
-              {Array.from({ length: 4 }, (_, index) => (
-                <div className="hf-trend-card hf-skeleton-card" key={index}>
-                  <div className="hf-skeleton-line title" />
-                  <div className="hf-skeleton-line text" />
-                  <div className="hf-skeleton-line short" />
-                </div>
-              ))}
             </div>
-          ) : (
-            <div className="hf-trending">
-              {trending.map((model) => (
-                <div className="hf-trend-card" key={model.id}>
-                  <div className="hf-model-title-row">
-                    <ModelAvatar author={model.author} />
-                    <strong>{model.id}</strong>
-                    <button className="ghost-icon hf-icon-button" title={t("explore.openOnHf")} onClick={() => void openHf(model.id)}><ExternalLink size={14} /></button>
-                  </div>
-                  <span className="hf-model-desc">{model.name}</span>
-                  <div className="hf-trend-meta">
-                    <span title={model.likes.toLocaleString()}><Star size={12} fill="currentColor" />{formatCount(model.likes)}</span>
-                    <span title={model.downloads.toLocaleString()}><Download size={12} />{formatCount(model.downloads)}</span>
-                  </div>
-                  {model.sampleQuant ? <span className="hf-quant-badge hf-trend-quant">{model.sampleQuant}</span> : null}
-                  <div className="hf-trend-actions">
-                    <button className="secondary-button compact" onClick={() => openFiles(model)}><Download size={13} />{t("explore.viewFilesShort")}</button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ))}
-
-          {/* 模型列表标题 */}
-          <div className="section-title-row">
-            <div><h2>{searching ? t("explore.searchResults", { query: query.trim(), count: models.length }) : t("explore.modelList", { count: models.length })}</h2></div>
-            <div className="library-tools">
-              {facetCount > 0 && <span className="explore-updated">{t("explore.facetSidebar")} × {facetCount}</span>}
-            </div>
-          </div>
-          {loading && models.length === 0 ? (
-            <div className="hf-skeleton-list">
-              {Array.from({ length: 5 }, (_, index) => (
-                <div className="hf-model-row hf-skeleton-row" key={index}>
-                  <div className="hf-model-row-body">
-                    <span className="hf-model-icon hf-skeleton-block" />
-                    <div className="hf-model-main-col">
-                      <div className="hf-skeleton-line title" />
-                      <div className="hf-skeleton-line text" />
-                    </div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          ) : null}
-          {error && !loading && <div className="hf-empty err"><p>{error}</p><span className="hf-net-hint">{t("explore.netErrorHint")}</span></div>}
-          {!loading && !error && sorted.length === 0 && <div className="hf-empty"><h3>{t("explore.noResults")}</h3><p>{t("explore.noResultsDesc")}</p></div>}
-          {sorted.map((model) => (
-            <ModelRow key={model.id} model={model} preferredQuant={quantPreferredBits != null && modelQuantBits(model) != null && quantPreferredBits.includes(modelQuantBits(model)!)} onViewFiles={() => openFiles(model)} />
-          ))}
-          <div ref={loadMoreRef} className="hf-list-foot">
-            {loadingMore && <><Loader2 size={14} className="spin" />{t("explore.loadingMore")}</>}
-            {!loadingMore && !hasMore && models.length > 0 && <span>{t("explore.loadedAll")}</span>}
-          </div>
           </div>
         </div>
       </div>
@@ -1039,7 +1178,7 @@ export default function ExplorePage(props: Props) {
                 <div className="task-card-actions">
                   {/* 单任务暂停：只暂停该 taskId，不再误触全局「全部暂停」 */}
                   <button className="task-icon-action" title={t("explore.pause")} aria-label={t("explore.pause")} onClick={() => props.onPauseTask(item)}><PauseCircle size={16} /></button>
-                  <button className="task-icon-action danger" title={t("explore.cancelDelete")} aria-label={t("explore.cancelDelete")} onClick={() => props.onCancelTask(item, true)}><Trash2 size={16} /></button>
+                  <button className="task-icon-action danger" title={t("explore.cancelDelete")} aria-label={t("explore.cancelDelete")} onClick={() => { setTaskToDelete(item); setDeleteLocalFile(false); }}><Trash2 size={16} /></button>
                 </div>
               </div>
               <div className="task-progress-row">
@@ -1104,7 +1243,7 @@ export default function ExplorePage(props: Props) {
                 )}
                 <button className="task-icon-action" title={t("explore.resume")} aria-label={t("explore.resume")} onClick={() => props.onRetry(item)}><RefreshCw size={16} /></button>
                 {/* 暂停/异常状态下的红色按钮语义为「删除」：彻底移除记录并清理本地缓存 */}
-                <button className="task-icon-action danger" title={t("explore.delete")} aria-label={t("explore.delete")} onClick={() => props.onDeleteTask(item)}><Trash2 size={16} /></button>
+                <button className="task-icon-action danger" title={t("explore.delete")} aria-label={t("explore.delete")} onClick={() => { setTaskToDelete(item); setDeleteLocalFile(false); }}><Trash2 size={16} /></button>
               </div>
             </div>
           </div>
@@ -1148,10 +1287,18 @@ export default function ExplorePage(props: Props) {
   )}
   {taskToDelete && (
     <ConfirmModal
-      title={t("explore.deleteTaskTitle")}
+      title={
+        taskToDelete.status === "active"
+          ? t("explore.confirmCancelActiveTaskTitle")
+          : t("explore.deleteTaskTitle")
+      }
       description={
         <div className="delete-task-dialog">
-          <p>{t("explore.deleteTaskDesc", { file: taskToDelete.file })}</p>
+          <p>
+            {taskToDelete.status === "active"
+              ? t("explore.confirmCancelActiveTaskDesc", { file: taskToDelete.file })
+              : t("explore.deleteTaskDesc", { file: taskToDelete.file })}
+          </p>
           {taskToDelete.status === "done" && (
             <label className="delete-file-checkbox">
               <input
@@ -1164,9 +1311,17 @@ export default function ExplorePage(props: Props) {
           )}
         </div>
       }
-      confirmLabel={deleteLocalFile ? t("explore.deleteTaskAndFile") : t("explore.deleteRecordOnly")}
+      confirmLabel={
+        taskToDelete.status === "active"
+          ? t("explore.confirmCancelActiveTaskBtn")
+          : (deleteLocalFile ? t("explore.deleteTaskAndFile") : (taskToDelete.status === "done" ? t("explore.deleteRecordOnly") : t("explore.delete")))
+      }
       onConfirm={() => {
-        props.onDeleteTask(taskToDelete, deleteLocalFile);
+        if (taskToDelete.status === "active") {
+          props.onCancelTask(taskToDelete, true);
+        } else {
+          props.onDeleteTask(taskToDelete, deleteLocalFile);
+        }
         setTaskToDelete(null);
         setDeleteLocalFile(false);
       }}
@@ -1199,6 +1354,7 @@ export default function ExplorePage(props: Props) {
       progressMap={props.progressMap}
       queuedKeys={queuedKeys}
       onDownloadFile={(file) => downloadFile(modalModel, file)}
+      onCancelDownloadFile={(file) => cancelDownloadFile(modalModel, file)}
       onPickModelsDir={props.onPickModelsDir}
       onClose={() => setModalModel(null)}
     />

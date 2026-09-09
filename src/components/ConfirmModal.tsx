@@ -24,7 +24,7 @@ export default function ConfirmModal({ title, description, confirmLabel, onConfi
   return <div className="modal-backdrop" onClick={(event) => event.target === event.currentTarget && onClose()}>
     <div className="confirm-modal">
       <header><h2>{title}</h2><button className="ghost-icon" aria-label={t("ariaClose")} onClick={onClose}><X size={18} /></button></header>
-      <p>{description}</p>
+      <div className="confirm-modal-body">{description}</div>
       <footer><button className="secondary-button" onClick={onClose}>{t("cancel")}</button><button className="danger-button" onClick={onConfirm}>{confirmLabel ?? t("confirmDeleteLabel")}</button></footer>
     </div>
   </div>;
