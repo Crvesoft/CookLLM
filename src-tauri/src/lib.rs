@@ -3264,7 +3264,14 @@ fn stream_download(client: &reqwest::blocking::Client, url: &str, dest: &Path, a
         if now_ms().saturating_sub(last_emit_ms) >= 200 {
             let speed = if elapsed > 0 { downloaded * 1000 / elapsed } else { 0 };
             let percent = if total > 0 { ((downloaded as f64 / total as f64) * 100.0) as u32 } else { 0 };
-            emit_download_progress(app, "download", percent, downloaded, total, speed, format!("{downloaded}/{total}"));
+            let downloaded_mb = (downloaded as f64) / (1024.0 * 1024.0);
+            let total_mb = (total as f64) / (1024.0 * 1024.0);
+            let size_msg = if total > 0 {
+                format!("{:.1} MB / {:.1} MB", downloaded_mb, total_mb)
+            } else {
+                format!("{:.1} MB", downloaded_mb)
+            };
+            emit_download_progress(app, "download", percent, downloaded, total, speed, size_msg);
             last_emit_ms = now_ms();
         }
     }

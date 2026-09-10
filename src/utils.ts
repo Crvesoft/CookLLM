@@ -10,10 +10,21 @@ export function modelTitle(model: ModelAsset) {
   return custom || model.name;
 }
 
-export function formatBytes(bytes: number) {
-  if (!bytes) return formatMessage(getLocale(), "bytes.unknown");
-  const gb = bytes / 1024 / 1024 / 1024;
+/** 格式化字节（自适应 B / KB / MB / GB） */
+export function formatBytes(bytes: number): string {
+  if (!bytes || bytes <= 0) return formatMessage(getLocale(), "bytes.unknown");
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  const gb = bytes / (1024 * 1024 * 1024);
   return `${gb.toFixed(gb >= 10 ? 1 : 2)} GB`;
+}
+
+/** 转换为以 MB 为单位（如 "20.7 MB"） */
+export function formatMB(bytes: number): string {
+  if (!bytes || bytes <= 0) return "0.0 MB";
+  const mb = bytes / (1024 * 1024);
+  return `${mb.toFixed(mb >= 100 ? 0 : 1)} MB`;
 }
 
 export function fileName(path: string) {
@@ -56,8 +67,6 @@ export function isNewerVersion(release: string, current: string): boolean {
   const nums = (value: string) => value.replace(/^v/i, "").split(".").map((seg) => parseInt(seg, 10) || 0);
   const releaseNums = nums(release);
   const currentNums = nums(current);
-  for (let index = Math.max(releaseNums.length, currentNums.length) - 1; index >= 0; index--) {
-    if ((releaseNums[index] ?? 0) !== (currentNums[index] ?? 0)) return (releaseNums[index] ?? 0) > (currentNums[index] ?? 0);
   const maxLen = Math.max(releaseNums.length, currentNums.length);
   for (let index = 0; index < maxLen; index++) {
     const left = releaseNums[index] ?? 0;

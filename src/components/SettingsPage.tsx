@@ -1,8 +1,8 @@
-import { Activity, AlertTriangle, ArrowRight, Check, Database, Download, Eye, EyeOff, FolderOpen, Gauge, Github, KeyRound, Languages, Loader2, Moon, RefreshCw, RotateCw, SlidersHorizontal, SquareTerminal, Sun, Wifi, Wrench, X } from "lucide-react";
+import { Activity, AlertTriangle, ArrowRight, Check, Cpu, Database, Download, DownloadCloud, Eye, EyeOff, FolderOpen, Gauge, Github, KeyRound, Languages, Layers, Loader2, Moon, RefreshCw, RotateCw, SlidersHorizontal, SquareTerminal, Sun, Terminal, Wifi, Wrench, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { APP_REPO, PROJECT_URL } from "../data";
 import { useI18n } from "../i18n";
-import { cn, formatBytes } from "../utils";
+import { cn, formatBytes, formatMB } from "../utils";
 import { cancelLlamaCppUpdate, checkLlamaCppUpdate, detectHardware, downloadLlamaCpp, getAppVersion, getGpuInfo, getLlamaCppStatus, getModelsDir, getSystemProxy, hfWhoami, onDownloadProgress, openConfigDir, openExternal, pickModelsDir, pickServerDir, testProxyConnection, type DownloadProgress, type GpuInfo, type HardwareSuggestion, type LlamaCppLocalStatus, type LlamaCppRelease, type ProxyTestResult, type UpdateCheckResult } from "../tauri";
 import type { AppConfig, DiskUsage, LlamaLogPayload } from "../types";
 
@@ -293,9 +293,13 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
   const isUpToDate = remote !== null && remote.upToDate === true;
 
   const speedText = progress && progress.speedBps > 0
-    ? progress.speedBps >= 1024 * 1024
-      ? (progress.speedBps / 1024 / 1024).toFixed(1) + " MB"
-      : Math.round(progress.speedBps / 1024) + " KB"
+    ? `${formatBytes(progress.speedBps)}/s`
+    : "";
+
+  const sizeText = progress && (progress.downloaded > 0 || progress.total > 0)
+    ? progress.total > 0
+      ? `${formatMB(progress.downloaded)} / ${formatMB(progress.total)}`
+      : formatMB(progress.downloaded)
     : "";
 
   const progressPercent = progress ? Math.min(100, progress.percent) : 0;
@@ -556,20 +560,93 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
         </div>
       </section>
 
-{/* 下载进度弹窗（可取消） */}
+      {/* 下载进度弹窗（极简设计） */}
       {progress && (
         <div className="modal-backdrop">
-          <div className="import-modal download-modal">
-            <header><div><span>{t("llama.title")}</span><h2>{progressLabel}</h2></div></header>
-            <div className="download-body">
-              <div className="download-bar"><div className="download-bar-inner" style={{ width: progressPercent + "%" }} /></div>
-              <div className="download-meta">
-                <span>{progressLabel}</span>
-                <span>{speedText ? speedText + "/s" : ""}</span>
+          <div className="import-modal download-modal" role="dialog" aria-modal="true">
+            <header className="update-modal-header">
+              <div className="update-modal-title">
+                <Cpu size={17} className="update-modal-icon" />
+                <h2>{t("llama.title")}</h2>
+                {remote?.tag && <span className="update-modal-tag">{remote.tag}</span>}
               </div>
-              <p className="download-message">{progress.message}</p>
-              {updating && <button className="secondary-button" onClick={() => void cancelUpdate()} disabled={progress.phase === "done"}><X size={15} />{t("llama.cancelUpdate")}</button>}
+              {updating && progress.phase !== "done" && (
+                <button className="ghost-icon" onClick={() => void cancelUpdate()} title={t("llama.cancelUpdate")}>
+                  <X size={18} />
+                </button>
+              )}
+            </header>
+
+            <div className="download-body">
+              {progress.phase === "done" ? (
+                <div className="download-done-simple">
+                  <div className="download-done-icon">
+                    <Check size={24} strokeWidth={2.4} />
+                  </div>
+                  <div className="download-done-info">
+                    <h3>llama.cpp 运行时更新完成</h3>
+                    <p>{remote?.tag ? `${remote.tag} · ` : ""}已完成部署并热替换</p>
+                  </div>
+                </div>
+              ) : (
+                <div className="download-minimal">
+                  <div className="download-minimal-header">
+                    <div className="download-minimal-left">
+                      <span className="download-status-dot" />
+                      <span className="download-status-title">
+                        {progress.phase === "extract"
+                          ? "正在解压部署…"
+                          : progress.phase === "install"
+                            ? "正在覆盖安装…"
+                            : "正在下载"}
+                      </span>
+                      {speedText && progress.phase === "download" && (
+                        <span className="download-status-speed">{speedText}</span>
+                      )}
+                    </div>
+                    <div className="download-minimal-right">
+                      {sizeText && progress.phase === "download" && (
+                        <span className="download-status-size">{sizeText}</span>
+                      )}
+                      <span className="download-status-percent">{progressPercent}%</span>
+                    </div>
+                  </div>
+
+                  <div className="download-bar">
+                    <div className="download-bar-inner" style={{ width: `${progressPercent}%` }} />
+                  </div>
+
+                  <div className="download-minimal-sub">
+                    <span className="download-minimal-hint">
+                      {progress.phase === "extract"
+                        ? "解压部署中，请稍候…"
+                        : progress.phase === "install"
+                          ? "正在替换运行时文件…"
+                          : "更新中请保持应用开启，完成后自动替换"}
+                    </span>
+                    <span className="download-minimal-tag">
+                      {backend.toUpperCase()}{backend === "cuda" && cudaVersion && cudaVersion !== "auto" ? ` · CUDA ${cudaVersion}` : ""}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
+
+            <footer>
+              {progress.phase === "done" ? (
+                <button className="primary-button" onClick={() => setProgress(null)}>
+                  <Check size={14} />完成
+                </button>
+              ) : updating ? (
+                <button className="secondary-button" onClick={() => void cancelUpdate()}>
+                  <X size={14} />{t("llama.cancelUpdate")}
+                </button>
+              ) : (
+                <button className="secondary-button" onClick={() => setProgress(null)}>
+                  <X size={14} />关闭
+                </button>
+              )}
+            </footer>
           </div>
         </div>
       )}
