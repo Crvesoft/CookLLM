@@ -22,3 +22,4 @@ windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "stream", "system-proxy", "http2", "native-tls"] }
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+tauri-plugin-single-instance = "2.4.4"

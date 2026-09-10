@@ -56,6 +56,8 @@ export function isNewerVersion(release: string, current: string): boolean {
   const nums = (value: string) => value.replace(/^v/i, "").split(".").map((seg) => parseInt(seg, 10) || 0);
   const releaseNums = nums(release);
   const currentNums = nums(current);
+  for (let index = Math.max(releaseNums.length, currentNums.length) - 1; index >= 0; index--) {
+    if ((releaseNums[index] ?? 0) !== (currentNums[index] ?? 0)) return (releaseNums[index] ?? 0) > (currentNums[index] ?? 0);
   const maxLen = Math.max(releaseNums.length, currentNums.length);
   for (let index = 0; index < maxLen; index++) {
     const left = releaseNums[index] ?? 0;

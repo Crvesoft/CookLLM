@@ -33,6 +33,8 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
+          VERSION=$(grep -m1 '^version' src-tauri/Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
+          TAG="v$VERSION"
           if [ -n "$GITHUB_REF_NAME" ] && [[ "$GITHUB_REF_NAME" == v* ]]; then
             TAG="$GITHUB_REF_NAME"
             VERSION="${TAG#v}"
@@ -77,6 +79,7 @@ jobs:
           else
             gh release create "$TAG" \
               --title "CookLLM $TAG" \
+              --target master \
               "${NOTES_ARGS[@]}" \
               "${ARTIFACTS[@]}"
           fi
