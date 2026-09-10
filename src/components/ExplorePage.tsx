@@ -1,4 +1,34 @@
-import { AlertCircle, Check, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clock, Compass, Database, Download, EllipsisVertical, ExternalLink, Flame, FolderOpen, Globe, HardDrive, KeyRound, Loader2, PauseCircle, PlayCircle, RefreshCw, Search, SlidersHorizontal, Star, Trash2, X } from "lucide-react";
+import {
+  AlertCircle,
+  ArrowDown,
+  Check,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  ChevronUp,
+  Clock,
+  Compass,
+  Database,
+  Download,
+  EllipsisVertical,
+  ExternalLink,
+  FileText,
+  Flame,
+  FolderOpen,
+  Globe,
+  HardDrive,
+  KeyRound,
+  ListChecks,
+  Loader2,
+  Pause,
+  Play,
+  RefreshCw,
+  Search,
+  SlidersHorizontal,
+  Star,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import ConfirmModal from "./ConfirmModal";
 import { useI18n } from "../i18n";
@@ -48,10 +78,8 @@ interface Props {
   onDownload: (repo: string, file: string, sizeBytes: number) => void;
   activeDownloads: ActiveDownload[];
   progressMap: Record<string, ModelDownloadProgress>;
-  onPauseAll: () => void;
   /** 单任务暂停：仅中止该 taskId 的下载 */
   onPauseTask: (task: ActiveDownload) => void;
-  onResumeFailed: () => void;
   /** 批量恢复选中的任务 */
   onResumeTasks: (ids: string[]) => void;
   /** 批量暂停选中的进行中任务 */
@@ -558,6 +586,7 @@ export default function ExplorePage(props: Props) {
   const [taskFilter, setTaskFilter] = useState<"all" | "active" | "done" | "failed">("all");
   /** 多选：任务卡片勾选集合（按 taskId）；切分类时清空避免隐藏勾选 */
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [batchMode, setBatchMode] = useState(false);
   const [confirmBatchDelete, setConfirmBatchDelete] = useState(false);
   /** 顶栏「⋮」更多操作菜单与「清空异常任务」确认框 */
   const [tasksMenuOpen, setTasksMenuOpen] = useState(false);
@@ -840,28 +869,91 @@ export default function ExplorePage(props: Props) {
   const sidebarHidden = isNarrow ? !mobileSidebarOpen : sidebarCollapsed;
   const facetCount = (family !== "all" ? 1 : 0) + (quantBits.length > 0 ? 1 : 0) + tasks.length + (paramMin > 0 || paramMax < PARAM_LAST_INDEX ? 1 : 0);
 
-  const activeCount = props.activeDownloads.filter((item) => item.status === "active").length;
-  const tasksActive = props.activeDownloads.filter((item) => item.status === "active");
-  const tasksDone = props.activeDownloads.filter((item) => item.status === "done");
-  const tasksFailed = props.activeDownloads.filter((item) => item.status === "error" || item.status === "cancelled");
-  const shownTasks = taskFilter === "active" ? tasksActive : taskFilter === "done" ? tasksDone : taskFilter === "failed" ? tasksFailed : props.activeDownloads;
-  const totalSpeed = tasksActive.reduce((sum, item) => sum + (item.speedBps || 0), 0);
+  const { tasksActive, tasksDone, tasksFailed } = useMemo(() => {
+    const active: ActiveDownload[] = [];
+    const done: ActiveDownload[] = [];
+    const failed: ActiveDownload[] = [];
+    for (const item of props.activeDownloads) {
+      if (item.status === "active") active.push(item);
+      else if (item.status === "done") done.push(item);
+      else if (item.status === "error" || item.status === "cancelled") failed.push(item);
+    }
+    return { tasksActive: active, tasksDone: done, tasksFailed: failed };
+  }, [props.activeDownloads]);
+
+  const activeCount = tasksActive.length;
+
+  const shownTasks = useMemo(() => {
+    if (taskFilter === "active") return tasksActive;
+    if (taskFilter === "done") return tasksDone;
+    if (taskFilter === "failed") return tasksFailed;
+    return props.activeDownloads;
+  }, [taskFilter, tasksActive, tasksDone, tasksFailed, props.activeDownloads]);
+
+  const totalSpeed = useMemo(() => {
+    return tasksActive.reduce((sum, item) => {
+      const key = item.repo + "::" + item.file;
+      const speed = props.progressMap[key]?.speedBps ?? item.speedBps ?? 0;
+      return sum + speed;
+    }, 0);
+  }, [tasksActive, props.progressMap]);
 
   /** 勾选集合随任务列表自动收敛（清除完成 / 删除后残留的 id 不再生效） */
-  const selectedTasks = props.activeDownloads.filter((item) => selectedIds.has(item.taskId));
-  const allVisibleSelected = shownTasks.length > 0 && shownTasks.every((item) => selectedIds.has(item.taskId));
+  const selectedTasks = useMemo(
+    () => props.activeDownloads.filter((item) => selectedIds.has(item.taskId)),
+    [props.activeDownloads, selectedIds]
+  );
+  const selectedInShownCount = useMemo(
+    () => shownTasks.filter((item) => selectedIds.has(item.taskId)).length,
+    [shownTasks, selectedIds]
+  );
+  const isAllSelected = shownTasks.length > 0 && selectedInShownCount === shownTasks.length;
+  const isIndeterminate = selectedInShownCount > 0 && selectedInShownCount < shownTasks.length;
+
   const toggleSelect = (taskId: string) => setSelectedIds((previous) => {
     const next = new Set(previous);
     if (next.has(taskId)) next.delete(taskId); else next.add(taskId);
     return next;
   });
+
   const toggleSelectAll = () => setSelectedIds((previous) => {
     const next = new Set(previous);
-    if (allVisibleSelected) { for (const item of shownTasks) next.delete(item.taskId); }
-    else { for (const item of shownTasks) next.add(item.taskId); }
+    if (isAllSelected) {
+      for (const item of shownTasks) next.delete(item.taskId);
+    } else {
+      for (const item of shownTasks) next.add(item.taskId);
+    }
     return next;
   });
-  // 切换分类过滤时清空勾选，避免「全选当前分类」与隐藏勾选混淆
+
+  const canResumeSelected = useMemo(
+    () => selectedTasks.some((item) => item.status === "error" || item.status === "cancelled"),
+    [selectedTasks]
+  );
+  const canPauseSelected = useMemo(
+    () => selectedTasks.some((item) => item.status === "active"),
+    [selectedTasks]
+  );
+
+  const handleBatchResume = () => {
+    const targets = selectedTasks
+      .filter((item) => item.status === "error" || item.status === "cancelled")
+      .map((item) => item.taskId);
+    if (targets.length > 0) {
+      props.onResumeTasks(targets);
+    }
+  };
+
+  const handleBatchPause = () => {
+    const targets = selectedTasks
+      .filter((item) => item.status === "active")
+      .map((item) => item.taskId);
+    if (targets.length > 0) {
+      props.onPauseTasks(targets);
+    }
+  };
+
+  // 切换分类过滤时清空勾选，避免隐藏勾选混淆
   useEffect(() => { setSelectedIds(new Set()); setConfirmBatchDelete(false); }, [taskFilter]);
 
   // 列表不再做本地刻面过滤：查询关键字已由 effectiveKeyword 携带至服务端，防止「假过滤」只显示 1 个模型。
@@ -1115,48 +1207,117 @@ export default function ExplorePage(props: Props) {
       /* ==================== 任务管理视图 ==================== */
       <div className="tasks-view">
         <div className="tasks-filterbar">
-          {/* 全选当前分类：勾选切到批量操作模式；无勾选时全局按钮保持快捷保底 */}
-          <label className="tasks-select-all" title={t("explore.selectAllFilter")}>
-            <input type="checkbox" checked={allVisibleSelected} disabled={!shownTasks.length} onChange={toggleSelectAll} />
-            <span>{t("explore.selectAllFilter")}</span>
-          </label>
-          <div className="explore-filters">
-            {([["all", t("explore.tasksAll") + (props.activeDownloads.length ? " (" + props.activeDownloads.length + ")" : "")], ["active", t("explore.tasksActive") + (tasksActive.length ? " (" + tasksActive.length + ")" : "")], ["done", t("explore.tasksDone") + (tasksDone.length ? " (" + tasksDone.length + ")" : "")], ["failed", t("explore.tasksFailed") + (tasksFailed.length ? " (" + tasksFailed.length + ")" : "")]] as const).map(([key, label]) => (
-              <button key={key} className={cn("explore-filter", taskFilter === key && "active")} onClick={() => setTaskFilter(key)}>{label}</button>
-            ))}
-          </div>
-          {/* 右端响应式工具区：无勾选 = 极简图标组（全局暂停 / 全局恢复 / 更多菜单）；有勾选 = 选中项批量操作 */}
-          {selectedTasks.length > 0 ? (
-            <div className="tasks-batch-inline">
-              <span className="task-batch-count">{t("explore.batchSelected", { count: selectedTasks.length })}</span>
-              <span className="tasks-tools-sep" aria-hidden="true" />
-              <button className="task-inline-action" disabled={!selectedTasks.some((item) => item.status === "active")} onClick={() => props.onPauseTasks(selectedTasks.map((item) => item.taskId))}><PauseCircle size={14} />{t("explore.batchPause")}</button>
-              <button className="task-inline-action danger" onClick={() => setConfirmBatchDelete(true)}><Trash2 size={14} />{t("explore.batchDelete")}</button>
-              <button className="ghost-icon hf-icon-button" title={t("clearSelection")} aria-label={t("clearSelection")} onClick={() => setSelectedIds(new Set())}><X size={15} /></button>
-            </div>
-          ) : (
-            <div className="tasks-tools">
-              <button className="ghost-icon hf-icon-button" title={t("explore.pauseAll")} aria-label={t("explore.pauseAll")} disabled={!tasksActive.length} onClick={props.onPauseAll}><PauseCircle size={16} /></button>
-              <button className="ghost-icon hf-icon-button" title={t("explore.resumeAll")} aria-label={t("explore.resumeAll")} disabled={!tasksFailed.length} onClick={props.onResumeFailed}><PlayCircle size={16} /></button>
-              <span className="tasks-tools-sep" aria-hidden="true" />
-              <div className="task-menu-wrap">
-                <button className="ghost-icon hf-icon-button" title={t("explore.moreActions")} aria-label={t("explore.moreActions")} onClick={() => setTasksMenuOpen((value) => !value)}><EllipsisVertical size={16} /></button>
-                {tasksMenuOpen && <div className="menu-backdrop" onClick={() => setTasksMenuOpen(false)} />}
-                {tasksMenuOpen && (
-                  <div className="context-menu tasks-menu">
-                    <button onClick={() => { setTasksMenuOpen(false); props.onClearDone(); }}><Trash2 size={14} />{t("explore.clearDone")}</button>
-                    <button className="danger" disabled={!tasksFailed.length} onClick={() => { setTasksMenuOpen(false); setConfirmClearFailed(true); }}><Trash2 size={14} />{t("explore.clearFailedTasks")}</button>
-                  </div>
-                )}
+          {batchMode ? (
+            <>
+              {/* 批量选择模式：左侧全选 + 选中数量 */}
+              <div className="tasks-filterbar-left">
+                <label className="tasks-select-all" title={t("explore.selectAll")}>
+                  <input
+                    type="checkbox"
+                    ref={(el) => {
+                      if (el) el.indeterminate = isIndeterminate;
+                    }}
+                    checked={isAllSelected}
+                    disabled={!shownTasks.length}
+                    onChange={toggleSelectAll}
+                  />
+                  <span>{t("explore.selectAll")}</span>
+                </label>
+                <span className="task-batch-count">{t("explore.batchSelected", { count: selectedTasks.length })}</span>
               </div>
-            </div>
+              {/* 批量选择模式：右侧智能操作按钮组 + 退出批量 */}
+              <div className="tasks-batch-inline">
+                <button
+                  type="button"
+                  className="task-inline-action"
+                  disabled={!canResumeSelected}
+                  onClick={handleBatchResume}
+                >
+                  <Play size={14} />
+                  <span>{t("explore.start")}</span>
+                </button>
+                <button
+                  type="button"
+                  className="task-inline-action"
+                  disabled={!canPauseSelected}
+                  onClick={handleBatchPause}
+                >
+                  <Pause size={14} />
+                  <span>{t("explore.pause")}</span>
+                </button>
+                <button
+                  type="button"
+                  className="task-inline-action danger"
+                  disabled={selectedTasks.length === 0}
+                  onClick={() => setConfirmBatchDelete(true)}
+                >
+                  <Trash2 size={14} />
+                  <span>{t("explore.delete")}</span>
+                </button>
+                <span className="tasks-tools-sep" aria-hidden="true" />
+                <button
+                  type="button"
+                  className="task-batch-exit-btn"
+                  title={t("explore.exitBatchManage")}
+                  onClick={() => {
+                    setBatchMode(false);
+                    setSelectedIds(new Set());
+                  }}
+                >
+                  <X size={14} />
+                  <span>{t("explore.exitBatchManage")}</span>
+                </button>
+              </div>
+            </>
+          ) : (
+            <>
+              {/* 普通状态：左侧分类标签 */}
+              <div className="explore-filters">
+                {([
+                  ["all", t("explore.tasksAll") + (props.activeDownloads.length ? ` (${props.activeDownloads.length})` : "")],
+                  ["active", t("explore.tasksActive") + (tasksActive.length ? ` (${tasksActive.length})` : "")],
+                  ["done", t("explore.tasksDone") + (tasksDone.length ? ` (${tasksDone.length})` : "")],
+                  ["failed", t("explore.tasksFailed") + (tasksFailed.length ? ` (${tasksFailed.length})` : "")]
+                ] as const).map(([key, label]) => (
+                  <button key={key} className={cn("explore-filter", taskFilter === key && "active")} onClick={() => setTaskFilter(key)}>{label}</button>
+                ))}
+              </div>
+              {/* 普通状态：右侧仅保留 [批量操作] 及更多菜单 (⋮) */}
+              <div className="tasks-tools">
+                <button
+                  type="button"
+                  className="task-batch-toggle-btn"
+                  title={t("explore.batchManage")}
+                  disabled={!shownTasks.length}
+                  onClick={() => setBatchMode(true)}
+                >
+                  <ListChecks size={15} />
+                  <span>{t("explore.batchManage")}</span>
+                </button>
+                <span className="tasks-tools-sep" aria-hidden="true" />
+                <div className="task-menu-wrap">
+                  <button className="ghost-icon hf-icon-button" title={t("explore.moreActions")} aria-label={t("explore.moreActions")} onClick={() => setTasksMenuOpen((value) => !value)}><EllipsisVertical size={16} /></button>
+                  {tasksMenuOpen && <div className="menu-backdrop" onClick={() => setTasksMenuOpen(false)} />}
+                  {tasksMenuOpen && (
+                    <div className="context-menu tasks-menu">
+                      <button onClick={() => { setTasksMenuOpen(false); props.onClearDone(); }}><Trash2 size={14} />{t("explore.clearDone")}</button>
+                      <button className="danger" disabled={!tasksFailed.length} onClick={() => { setTasksMenuOpen(false); setConfirmClearFailed(true); }}><Trash2 size={14} />{t("explore.clearFailedTasks")}</button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </>
           )}
         </div>
 
-        {tasksActive.length > 0 && (
-          <div className="tasks-section-title"><h2>{t("explore.tasksActive", { count: tasksActive.length })}</h2><span>{t("explore.totalSpeed", { speed: humanSpeed(totalSpeed) })}</span></div>
+        {/* 进行中任务分段 */}
+        {(taskFilter === "all" || taskFilter === "active") && tasksActive.length > 0 && (
+          <div className="tasks-section-title">
+            <h2>{t("explore.tasksActive", { count: tasksActive.length })}</h2>
+            <span>{t("explore.totalSpeed", { speed: humanSpeed(totalSpeed) })}</span>
+          </div>
         )}
-        {shownTasks.filter((item) => item.status === "active").map((item) => {
+        {(taskFilter === "all" || taskFilter === "active") && tasksActive.map((item) => {
           const key = item.repo + "::" + item.file;
           const progress = props.progressMap[key];
           const percent = progress?.percent ?? item.percent ?? 0;
@@ -1164,67 +1325,225 @@ export default function ExplorePage(props: Props) {
           const total = progress?.total ?? item.total ?? item.sizeBytes ?? 0;
           const speed = progress?.speedBps ?? item.speedBps ?? 0;
           const etaSeconds = speed > 0 && total > downloaded ? Math.ceil((total - downloaded) / speed) : 0;
-          const eta = etaSeconds > 0 ? String(Math.floor(etaSeconds / 60)).padStart(2, "0") + ":" + String(etaSeconds % 60).padStart(2, "0") : "--:--";
-          const targetDir = props.diskUsage ? props.diskUsage.path + (item.repo !== "direct-url" ? "/" + (item.repo.split("/").pop() || "") : "") : "";
+          let eta = "--:--";
+          if (etaSeconds > 0) {
+            const hours = Math.floor(etaSeconds / 3600);
+            const mins = Math.floor((etaSeconds % 3600) / 60);
+            const secs = etaSeconds % 60;
+            eta = hours > 0
+              ? `${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`
+              : `${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")}`;
+          }
+          const percentFormatted = typeof percent === "number"
+            ? (percent % 1 === 0 ? String(percent) : percent.toFixed(1))
+            : "0";
           return (
-            <div className="task-card" key={item.taskId}>
-              <div className="task-card-head">
-                <label className="task-card-check" title={t("explore.selectTask")}><input type="checkbox" checked={selectedIds.has(item.taskId)} onChange={() => toggleSelect(item.taskId)} /></label>
-                <span className="task-file-icon dl"><Database size={16} /></span>
-                <div className="task-file-info">
-                  <strong>{item.file}</strong>
-                  <span>{t("explore.source", { repo: item.repo })} · {t("explore.target", { path: item.path ?? targetDir })}</span>
+            <div className="task-card task-card-active" key={item.taskId}>
+              {/* 底层融合淡色半透进度条 */}
+              <div
+                className="task-card-bg-progress"
+                style={{ width: `${Math.min(100, Math.max(0, percent))}%` }}
+              />
+
+              {/* 卡片主内容（处于上层，不受半透背景干扰） */}
+              <div className="task-card-active-content">
+                {/* 1. 左侧文件信息与多选 */}
+                <div className="task-active-left">
+                  {batchMode && (
+                    <label className="task-card-check" title={t("explore.selectTask")}>
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.has(item.taskId)}
+                        onChange={() => toggleSelect(item.taskId)}
+                      />
+                    </label>
+                  )}
+                  <span className="task-file-icon dl">
+                    <Database size={16} />
+                  </span>
+                  <div className="task-file-info">
+                    <strong className="task-active-filename" title={item.file}>{item.file}</strong>
+                    <div className="task-active-meta">
+                      <span className="task-active-size">
+                        <FileText size={12} className="task-meta-icon" />
+                        <span>{formatBytes(downloaded)} / {formatBytes(total)}</span>
+                      </span>
+                    </div>
+                  </div>
                 </div>
-                <div className="task-card-actions">
-                  {/* 单任务暂停：只暂停该 taskId，不再误触全局「全部暂停」 */}
-                  <button className="task-icon-action" title={t("explore.pause")} aria-label={t("explore.pause")} onClick={() => props.onPauseTask(item)}><PauseCircle size={16} /></button>
-                  <button className="task-icon-action danger" title={t("explore.cancelDelete")} aria-label={t("explore.cancelDelete")} onClick={() => { setTaskToDelete(item); setDeleteLocalFile(false); }}><Trash2 size={16} /></button>
+
+                {/* 竖线分割 */}
+                <div className="task-stat-divider" />
+
+                {/* 2. 当前速度列 */}
+                <div className="task-stat-col col-speed">
+                  <div className="task-stat-val task-stat-speed">
+                    <ArrowDown size={14} className="task-speed-arrow" />
+                    <span>{humanSpeed(speed) || "0 KB/s"}</span>
+                  </div>
                 </div>
-              </div>
-              <div className="task-progress-row">
-                <div className="hf-file-bar"><span style={{ width: percent + "%" }} /></div>
-                <em>{percent}%</em>
-              </div>
-              <div className="task-meta-row">
-                <span>{t("explore.progressLabel", { down: formatBytes(downloaded), total: formatBytes(total) })}</span>
-                <span className="task-speed"><Download size={12} />{humanSpeed(speed)}</span>
-                <span className="task-eta"><Clock size={12} />{t("explore.eta", { eta })}</span>
+
+                {/* 竖线分割 */}
+                <div className="task-stat-divider" />
+
+                {/* 3. 百分比完成度列 */}
+                <div className="task-stat-col col-percent">
+                  <div className="task-stat-val task-stat-percent">
+                    <span>{percentFormatted}%</span>
+                  </div>
+                </div>
+
+                {/* 竖线分割 */}
+                <div className="task-stat-divider" />
+
+                {/* 4. 预计剩余时间列 */}
+                <div className="task-stat-col col-eta">
+                  <div className="task-stat-val task-stat-eta">
+                    <Clock size={13} className="task-eta-clock" />
+                    <span>{eta !== "--:--" ? t("explore.statEtaVal", { eta }) : "--:--"}</span>
+                  </div>
+                </div>
+
+                {/* 5. 右侧操作按钮组 */}
+                <div className="task-active-actions">
+                  <button
+                    type="button"
+                    className="task-circle-btn"
+                    title={t("explore.pause")}
+                    aria-label={t("explore.pause")}
+                    onClick={() => props.onPauseTask(item)}
+                  >
+                    <Pause size={15} />
+                  </button>
+                  {(item.repo !== "direct-url" || item.url) && (
+                    <button
+                      type="button"
+                      className="task-circle-btn"
+                      title={t("explore.openOnHf")}
+                      aria-label={t("explore.openOnHf")}
+                      onClick={() => {
+                        if (item.repo !== "direct-url") {
+                          openHf(item.repo);
+                        } else if (item.url) {
+                          void openExternal(item.url);
+                        }
+                      }}
+                    >
+                      <ExternalLink size={15} />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="task-circle-btn danger"
+                    title={t("explore.cancelDelete")}
+                    aria-label={t("explore.cancelDelete")}
+                    onClick={() => {
+                      setTaskToDelete(item);
+                      setDeleteLocalFile(false);
+                    }}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                </div>
               </div>
             </div>
           );
         })}
 
-        {tasksDone.length > 0 && (
-          <div className="tasks-section-title"><h2>{t("explore.tasksDone")} ({tasksDone.length})</h2></div>
+        {/* 已完成任务分段 */}
+        {(taskFilter === "all" || taskFilter === "done") && tasksDone.length > 0 && (
+          <div className="tasks-section-title">
+            <h2>{t("explore.tasksDone")} ({tasksDone.length})</h2>
+          </div>
         )}
-        {tasksDone.length === 0 && taskFilter !== "active" && taskFilter !== "failed" && (
+        {taskFilter === "done" && tasksDone.length === 0 && (
           <div className="tasks-empty"><span>{t("explore.noDoneTasks")}</span></div>
         )}
-        {shownTasks.filter((item) => item.status === "done").map((item) => (
+        {(taskFilter === "all" || taskFilter === "done") && tasksDone.map((item) => (
           <div className="task-card task-card-done" key={item.taskId}>
             <div className="task-card-head">
-              <label className="task-card-check" title={t("explore.selectTask")}><input type="checkbox" checked={selectedIds.has(item.taskId)} onChange={() => toggleSelect(item.taskId)} /></label>
+              {batchMode && (
+                <label className="task-card-check" title={t("explore.selectTask")}>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(item.taskId)}
+                    onChange={() => toggleSelect(item.taskId)}
+                  />
+                </label>
+              )}
               <span className="task-file-icon ok"><Check size={16} /></span>
               <div className="task-file-info">
                 <strong>{item.file}</strong>
                 <span>{t("explore.syncedToLibrary")}</span>
               </div>
-              <div className="task-card-actions">
+              <div className="task-card-actions task-active-actions">
                 {item.finishedAt ? <span className="task-done-time">{new Date(item.finishedAt).toLocaleString()}</span> : null}
-                {item.path && <button type="button" className="task-icon-action" title={t("explore.openFolder")} aria-label={t("explore.openFolder")} onClick={() => void props.onReveal(item.path!)}><FolderOpen size={16} /></button>}
-                <button type="button" className="task-icon-action danger" title={t("explore.delete")} aria-label={t("explore.delete")} onClick={() => { setTaskToDelete(item); setDeleteLocalFile(false); }}><Trash2 size={16} /></button>
+                {item.path && (
+                  <button
+                    type="button"
+                    className="task-circle-btn"
+                    title={t("explore.openFolder")}
+                    aria-label={t("explore.openFolder")}
+                    onClick={() => void props.onReveal(item.path!)}
+                  >
+                    <FolderOpen size={15} />
+                  </button>
+                )}
+                {(item.repo !== "direct-url" || item.url) && (
+                  <button
+                    type="button"
+                    className="task-circle-btn"
+                    title={t("explore.openOnHf")}
+                    aria-label={t("explore.openOnHf")}
+                    onClick={() => {
+                      if (item.repo !== "direct-url") {
+                        openHf(item.repo);
+                      } else if (item.url) {
+                        void openExternal(item.url);
+                      }
+                    }}
+                  >
+                    <ExternalLink size={15} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="task-circle-btn danger"
+                  title={t("explore.delete")}
+                  aria-label={t("explore.delete")}
+                  onClick={() => {
+                    setTaskToDelete(item);
+                    setDeleteLocalFile(false);
+                  }}
+                >
+                  <Trash2 size={15} />
+                </button>
               </div>
             </div>
           </div>
         ))}
 
-        {shownTasks.filter((item) => item.status === "error" || item.status === "cancelled").length > 0 && (
-          <div className="tasks-section-title"><h2>{t("explore.tasksFailed")} ({shownTasks.filter((item) => item.status === "error" || item.status === "cancelled").length})</h2></div>
+        {/* 失败/暂停任务分段 */}
+        {(taskFilter === "all" || taskFilter === "failed") && tasksFailed.length > 0 && (
+          <div className="tasks-section-title">
+            <h2>{t("explore.tasksFailed")} ({tasksFailed.length})</h2>
+          </div>
         )}
-        {shownTasks.filter((item) => item.status === "error" || item.status === "cancelled").map((item) => (
+        {taskFilter === "failed" && tasksFailed.length === 0 && (
+          <div className="tasks-empty"><span>{t("explore.noTasks")}</span></div>
+        )}
+        {(taskFilter === "all" || taskFilter === "failed") && tasksFailed.map((item) => (
           <div className="task-card task-card-error" key={item.taskId}>
             <div className="task-card-head">
-              <label className="task-card-check" title={t("explore.selectTask")}><input type="checkbox" checked={selectedIds.has(item.taskId)} onChange={() => toggleSelect(item.taskId)} /></label>
+              {batchMode && (
+                <label className="task-card-check" title={t("explore.selectTask")}>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(item.taskId)}
+                    onChange={() => toggleSelect(item.taskId)}
+                  />
+                </label>
+              )}
               <span className="task-file-icon err"><AlertCircle size={16} /></span>
               <div className="task-file-info">
                 <strong>{item.file}</strong>
@@ -1234,23 +1553,69 @@ export default function ExplorePage(props: Props) {
                       : item.error || (item.status === "cancelled" ? t("explore.statusPaused") : t("explore.statusError"))}
                 </span>
               </div>
-              <div className="task-card-actions">
+              <div className="task-card-actions task-active-actions">
                 {item.errorKind === "needs-token" && (
-                  <button className="task-icon-action accent" title={t("st.hfGatedNeedToken")} aria-label={t("st.hfGatedNeedToken")} onClick={props.onGoSettings}><KeyRound size={16} /></button>
+                  <button
+                    type="button"
+                    className="task-circle-btn accent"
+                    title={t("st.hfGatedNeedToken")}
+                    aria-label={t("st.hfGatedNeedToken")}
+                    onClick={props.onGoSettings}
+                  >
+                    <KeyRound size={15} />
+                  </button>
                 )}
-                {item.errorKind === "no-permission" && (
-                  <button className="task-icon-action accent" title={t("st.hfGatedNoPermission")} aria-label={t("st.hfGatedNoPermission")} onClick={() => void openExternal(hfLicenseUrl(item.repo))}><ExternalLink size={16} /></button>
+                <button
+                  type="button"
+                  className="task-circle-btn"
+                  title={t("explore.resume")}
+                  aria-label={t("explore.resume")}
+                  onClick={() => props.onRetry(item)}
+                >
+                  <Play size={15} />
+                </button>
+                {(item.repo !== "direct-url" || item.url) && (
+                  <button
+                    type="button"
+                    className="task-circle-btn"
+                    title={item.errorKind === "no-permission" ? t("st.hfGatedNoPermission") : t("explore.openOnHf")}
+                    aria-label={item.errorKind === "no-permission" ? t("st.hfGatedNoPermission") : t("explore.openOnHf")}
+                    onClick={() => {
+                      if (item.errorKind === "no-permission" && item.repo) {
+                        void openExternal(hfLicenseUrl(item.repo));
+                      } else if (item.repo !== "direct-url") {
+                        openHf(item.repo);
+                      } else if (item.url) {
+                        void openExternal(item.url);
+                      }
+                    }}
+                  >
+                    <ExternalLink size={15} />
+                  </button>
                 )}
-                <button className="task-icon-action" title={t("explore.resume")} aria-label={t("explore.resume")} onClick={() => props.onRetry(item)}><RefreshCw size={16} /></button>
-                {/* 暂停/异常状态下的红色按钮语义为「删除」：彻底移除记录并清理本地缓存 */}
-                <button className="task-icon-action danger" title={t("explore.delete")} aria-label={t("explore.delete")} onClick={() => { setTaskToDelete(item); setDeleteLocalFile(false); }}><Trash2 size={16} /></button>
+                <button
+                  type="button"
+                  className="task-circle-btn danger"
+                  title={t("explore.delete")}
+                  aria-label={t("explore.delete")}
+                  onClick={() => {
+                    setTaskToDelete(item);
+                    setDeleteLocalFile(false);
+                  }}
+                >
+                  <Trash2 size={15} />
+                </button>
               </div>
             </div>
           </div>
         ))}
 
+        {/* 无任务空状态 */}
         {shownTasks.length === 0 && (
-          <div className="hf-empty"><h3>{t("explore.noTasks")}</h3><p>{t("explore.noTasksDesc")}</p></div>
+          <div className="hf-empty">
+            <h3>{t("explore.noTasks")}</h3>
+            <p>{t("explore.noTasksDesc")}</p>
+          </div>
         )}
       </div>
     )}

@@ -2210,6 +2210,9 @@ async fn hf_download(app: AppHandle, state: State<'_, DownloadRegistry>, repo: S
         let mut buffer = [0u8; 128 * 1024];
         let start_ms = now_ms();
         let mut last_emit_ms = start_ms;
+        let mut last_speed_ms = start_ms;
+        let mut last_speed_bytes = downloaded;
+        let mut current_speed: u64 = 0;
         loop {
             if task.cancel.load(Ordering::Relaxed) {
                 drop(file_handle);
@@ -2235,12 +2238,19 @@ async fn hf_download(app: AppHandle, state: State<'_, DownloadRegistry>, repo: S
             }
             file_handle.write_all(&buffer[..count]).map_err(|error| format!("写入下载文件失败：{}", error))?;
             downloaded += count as u64;
-            let elapsed = now_ms().saturating_sub(start_ms);
-            if now_ms().saturating_sub(last_emit_ms) >= 200 {
-                let speed = if elapsed > 0 { downloaded * 1000 / elapsed } else { 0 };
+            let now = now_ms();
+            let speed_dt = now.saturating_sub(last_speed_ms);
+            if speed_dt >= 500 {
+                let bytes_delta = downloaded.saturating_sub(last_speed_bytes);
+                let instant = bytes_delta * 1000 / speed_dt;
+                current_speed = if current_speed == 0 { instant } else { (current_speed * 3 + instant * 7) / 10 };
+                last_speed_ms = now;
+                last_speed_bytes = downloaded;
+            }
+            if now.saturating_sub(last_emit_ms) >= 200 {
                 let percent = if full_total > 0 { ((downloaded as f64 / full_total as f64) * 100.0) as u32 } else { 0 };
-                emit_model_progress(&app, &closure_task_id, &repo, &file, "download", percent, downloaded, full_total, speed, format!("{downloaded}/{full_total}"));
-                last_emit_ms = now_ms();
+                emit_model_progress(&app, &closure_task_id, &repo, &file, "download", percent, downloaded, full_total, current_speed, format!("{downloaded}/{full_total}"));
+                last_emit_ms = now;
             }
         }
         file_handle.flush().map_err(|error| error.to_string())?;
@@ -2310,6 +2320,9 @@ async fn hf_download_url(app: AppHandle, state: State<'_, DownloadRegistry>, url
         let mut buffer = [0u8; 128 * 1024];
         let start_ms = now_ms();
         let mut last_emit_ms = start_ms;
+        let mut last_speed_ms = start_ms;
+        let mut last_speed_bytes = downloaded;
+        let mut current_speed: u64 = 0;
         loop {
             if task.cancel.load(Ordering::Relaxed) {
                 drop(file_handle);
@@ -2334,12 +2347,19 @@ async fn hf_download_url(app: AppHandle, state: State<'_, DownloadRegistry>, url
             }
             file_handle.write_all(&buffer[..count]).map_err(|error| format!("写入下载文件失败：{}", error))?;
             downloaded += count as u64;
-            let elapsed = now_ms().saturating_sub(start_ms);
-            if now_ms().saturating_sub(last_emit_ms) >= 200 {
-                let speed = if elapsed > 0 { downloaded * 1000 / elapsed } else { 0 };
+            let now = now_ms();
+            let speed_dt = now.saturating_sub(last_speed_ms);
+            if speed_dt >= 500 {
+                let bytes_delta = downloaded.saturating_sub(last_speed_bytes);
+                let instant = bytes_delta * 1000 / speed_dt;
+                current_speed = if current_speed == 0 { instant } else { (current_speed * 3 + instant * 7) / 10 };
+                last_speed_ms = now;
+                last_speed_bytes = downloaded;
+            }
+            if now.saturating_sub(last_emit_ms) >= 200 {
                 let percent = if full_total > 0 { ((downloaded as f64 / full_total as f64) * 100.0) as u32 } else { 0 };
-                emit_model_progress(&app, &closure_task_id, repo_id, &file_name, "download", percent, downloaded, full_total, speed, format!("{downloaded}/{full_total}"));
-                last_emit_ms = now_ms();
+                emit_model_progress(&app, &closure_task_id, repo_id, &file_name, "download", percent, downloaded, full_total, current_speed, format!("{downloaded}/{full_total}"));
+                last_emit_ms = now;
             }
         }
         file_handle.flush().map_err(|error| error.to_string())?;
@@ -3249,6 +3269,9 @@ fn stream_download(client: &reqwest::blocking::Client, url: &str, dest: &Path, a
     let mut buffer = [0u8; 128 * 1024];
     let start_ms = now_ms();
     let mut last_emit_ms = start_ms;
+    let mut last_speed_ms = start_ms;
+    let mut last_speed_bytes = downloaded;
+    let mut current_speed: u64 = 0;
     loop {
         if UPDATE_CANCEL_FLAG.load(Ordering::Relaxed) {
             let _ = fs::remove_file(dest);
@@ -3260,9 +3283,16 @@ fn stream_download(client: &reqwest::blocking::Client, url: &str, dest: &Path, a
         }
         file.write_all(&buffer[..count]).map_err(|error| format!("写入下载文件失败：{}", error))?;
         downloaded += count as u64;
-        let elapsed = now_ms().saturating_sub(start_ms);
-        if now_ms().saturating_sub(last_emit_ms) >= 200 {
-            let speed = if elapsed > 0 { downloaded * 1000 / elapsed } else { 0 };
+        let now = now_ms();
+        let speed_dt = now.saturating_sub(last_speed_ms);
+        if speed_dt >= 500 {
+            let bytes_delta = downloaded.saturating_sub(last_speed_bytes);
+            let instant = bytes_delta * 1000 / speed_dt;
+            current_speed = if current_speed == 0 { instant } else { (current_speed * 3 + instant * 7) / 10 };
+            last_speed_ms = now;
+            last_speed_bytes = downloaded;
+        }
+        if now.saturating_sub(last_emit_ms) >= 200 {
             let percent = if total > 0 { ((downloaded as f64 / total as f64) * 100.0) as u32 } else { 0 };
             let downloaded_mb = (downloaded as f64) / (1024.0 * 1024.0);
             let total_mb = (total as f64) / (1024.0 * 1024.0);
@@ -3271,8 +3301,8 @@ fn stream_download(client: &reqwest::blocking::Client, url: &str, dest: &Path, a
             } else {
                 format!("{:.1} MB", downloaded_mb)
             };
-            emit_download_progress(app, "download", percent, downloaded, total, speed, size_msg);
-            last_emit_ms = now_ms();
+            emit_download_progress(app, "download", percent, downloaded, total, current_speed, size_msg);
+            last_emit_ms = now;
         }
     }
     file.flush().map_err(|error| error.to_string())?;
