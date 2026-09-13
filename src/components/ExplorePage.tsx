@@ -29,12 +29,12 @@ import {
   Trash2,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ConfirmModal from "./ConfirmModal";
 import { useI18n } from "../i18n";
 import { hfAvatar, hfListFiles, hfSearch, hfTrending, openExternal } from "../tauri";
 import type { AppConfig, DiskUsage, HfFile, HfModel, ModelDownloadProgress } from "../types";
-import { cn, formatBytes, fileName } from "../utils";
+import { cn, formatBytes, fileName, humanSpeed } from "../utils";
 
 /** 模型仓库的 HF 许可协议签署页（gated 模型无访问权限时引导用户前往同意）。 */
 function hfLicenseUrl(repo: string): string {
@@ -92,7 +92,6 @@ interface Props {
   onDeleteTasks: (ids: string[], deleteLocalFiles?: boolean) => void;
   onRetry: (task: ActiveDownload) => void;
   onReveal: (path: string) => Promise<void>;
-  onGoModels: () => void;
   /** 跳转到「设置」页（gated 需配置 Token 时一键跳转） */
   onGoSettings: () => void;
 }
@@ -197,12 +196,6 @@ const HF_SORT: Record<SortKey, string> = {
 };
 type SortKey = (typeof SORT_KEYS)[number];
 
-export function humanSpeed(speedBps: number): string {
-  if (speedBps <= 0) return "";
-  if (speedBps >= 1024 * 1024) return (speedBps / 1024 / 1024).toFixed(1) + " MB/s";
-  return Math.round(speedBps / 1024) + " KB/s";
-}
-
 /** 从文件名提取量化标签（如 Q4_K_M / IQ3_M / Q8_0） */
 function quantBadge(name: string): string {
   const match = name.match(/[IQ]?\d(?:_[A-Z0-9]+)+/i);
@@ -244,7 +237,7 @@ function FileRow({ file, progress, disabled, queued, preferred, onDownload, onCa
       <div className="hf-file-side">
         <span className="hf-file-size">{formatBytes(file.sizeBytes)}</span>
         {speed ? <span className="hf-file-speed">{speed}</span> : null}
-        {vramTag(file, t) ? <span className="hf-vram-tag">{vramTag(file, t)}</span> : null}
+        {(() => { const tag = vramTag(file, t); return tag ? <span className="hf-vram-tag">{tag}</span> : null; })()}
         {active ? (
           <button
             type="button"
@@ -338,10 +331,11 @@ interface ModelRowProps {
   model: HfModel;
   preferredQuant: boolean;
   rank?: number;
-  onViewFiles: () => void;
+  onViewFiles: (model: HfModel) => void;
 }
 
-function ModelRow({ model, preferredQuant, rank, onViewFiles }: ModelRowProps) {
+/** memo：进度轮询/悬浮等引起的父级重渲染不再逐行重算 paramLabel/quantSpecsOf */
+const ModelRow = memo(function ModelRow({ model, preferredQuant, rank, onViewFiles }: ModelRowProps) {
   const { t } = useI18n();
   const parameter = paramLabel(model);
   const quant = quantLabel(model);
@@ -382,13 +376,13 @@ function ModelRow({ model, preferredQuant, rank, onViewFiles }: ModelRowProps) {
             <span title={model.downloads.toLocaleString()}><Download size={12} />{formatCount(model.downloads)}</span>
           </div>
           <div className="hf-model-actions">
-            <button className="secondary-button compact" onClick={onViewFiles}><Download size={13} />{t("explore.viewFilesShort")}</button>
+            <button className="secondary-button compact" onClick={() => onViewFiles(model)}><Download size={13} />{t("explore.viewFilesShort")}</button>
           </div>
         </div>
       </div>
     </div>
   );
-}
+});
 
 interface FileModalProps {
   model: HfModel;
@@ -606,8 +600,8 @@ export default function ExplorePage(props: Props) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => props.config.exploreSidebarCollapsed ?? false);
   const [isNarrow, setIsNarrow] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width:1180px)").matches);
   const searchSeq = useRef(0);
-
-
+  /** 趋势榜单是否已首次加载（切入本页时才请求，只加载一次） */
+  const trendingLoadedRef = useRef(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
@@ -636,8 +630,9 @@ export default function ExplorePage(props: Props) {
     return [...new Set(parts)].join(" ");
   }, [query, family, tasks, quantBits, paramMin, paramMax]);
 
-  // Ctrl+K 聚焦搜索
+  // Ctrl+K 聚焦搜索（仅本页可见时监听，避免与模型页搜索框的快捷键重复抢占焦点）
   useEffect(() => {
+    if (!props.visible) return;
     const onKey = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
@@ -647,12 +642,15 @@ export default function ExplorePage(props: Props) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, []);
+  }, [props.visible]);
 
-  // 初始化：加载趋势榜单 + 探测本机硬件
+  // 初始化：加载趋势榜单 + 探测本机硬件（首次切入本页时才请求，避免启动即发起网络请求）
   useEffect(() => {
-    void refreshTrending();
-  }, []);
+    if (props.visible && !trendingLoadedRef.current) {
+      trendingLoadedRef.current = true;
+      void refreshTrending();
+    }
+  }, [props.visible]);
 
   // Narrow screens (<=1180px) switch the facet sidebar into a drawer
   useEffect(() => {
@@ -712,12 +710,20 @@ export default function ExplorePage(props: Props) {
     if (notify) showToast(listOk && trendingOk ? t("explore.refreshed") : t("explore.refreshFailed"));
   };
 
-  // 搜索防抖 300ms：文本 / 刻面 / 量化偏好 / 参数档位变化时向服务端重查并重置列表
+  // 搜索防抖 300ms：文本 / 刻面 / 量化偏好 / 参数档位变化时向服务端重查并重置列表；
+  // 仅本页可见时发起（含首次切入），避免应用启动即产生网络请求。
+  // 切页返回时若搜索条件未变且已有数据 → 直接复用已加载列表，不再白屏转圈重查。
+  const searchKeyRef = useRef<string | null>(null);
+  const searchSignature = `${effectiveKeyword}|${ggufOnly}|${sortKey}|${quantBits.join(",")}`;
   useEffect(() => {
-    const timer = window.setTimeout(() => { void runSearch(); }, 300);
+    if (!props.visible) return;
+    if (searchKeyRef.current === searchSignature && models.length > 0) return;
+    const timer = window.setTimeout(() => {
+      void runSearch().then((ok) => { searchKeyRef.current = ok ? searchSignature : null; });
+    }, 300);
     return () => window.clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [effectiveKeyword, ggufOnly, sortKey, quantBits]);
+  }, [searchSignature, props.visible]);
 
   /** 触底分页：追加下一页，而不是覆盖列表 */
   const loadMore = async () => {
@@ -770,8 +776,10 @@ export default function ExplorePage(props: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [models.length, hasMore, loadingMore, effectiveKeyword, ggufOnly]);
 
-  /** 打开通用文件弹窗：热门卡 / 列表项共用，页面不滚动、卡片不内嵌展开 */
-  const openFiles = (model: HfModel) => {
+  /** 打开通用文件弹窗：热门卡 / 列表项共用，页面不滚动、卡片不内嵌展开。
+   *  经 ref 转发保持引用稳定（内部逻辑每次渲染取最新），使 memo 的 ModelRow 在进度刷新时得以跳过重渲染 */
+  const openFilesRef = useRef((model: HfModel) => {});
+  openFilesRef.current = (model: HfModel) => {
     setModalModel(model);
     if (filesMap[model.id] === undefined && !filesLoading[model.id]) {
       setFilesLoading((previous) => ({ ...previous, [model.id]: true }));
@@ -785,6 +793,7 @@ export default function ExplorePage(props: Props) {
       });
     }
   };
+  const openFiles = useCallback((model: HfModel) => openFilesRef.current(model), []);
 
   const diskGuard = (sizeBytes: number): boolean => {
     if (!props.diskUsage || sizeBytes <= 0) return true;
@@ -957,12 +966,13 @@ export default function ExplorePage(props: Props) {
   useEffect(() => { setSelectedIds(new Set()); setConfirmBatchDelete(false); }, [taskFilter]);
 
   // 列表不再做本地刻面过滤：查询关键字已由 effectiveKeyword 携带至服务端，防止「假过滤」只显示 1 个模型。
-  const sorted = [...models].sort((a, b) => {
+  // 排序仅在 models / sortKey 变化时重算（分页追加与轮询重渲染不再重复排序整表）。
+  const sorted = useMemo(() => [...models].sort((a, b) => {
     if (sortKey === "likes") return b.likes - a.likes;
     if (sortKey === "updated") return (b.updatedAt || "").localeCompare(a.updatedAt || "");
     if (sortKey === "downloads") return b.downloads - a.downloads;
     return (b.downloads * 4 + b.likes) - (a.downloads * 4 + a.likes);
-  });
+  }), [models, sortKey]);
   const searching = query.trim().length > 0;
   const queuedKeys = queued;
 
@@ -1160,7 +1170,7 @@ export default function ExplorePage(props: Props) {
                     model={model}
                     rank={index + 1}
                     preferredQuant={quantPreferredBits != null && modelQuantBits(model) != null && quantPreferredBits.includes(modelQuantBits(model)!)}
-                    onViewFiles={() => openFiles(model)}
+                    onViewFiles={openFiles}
                   />
                 ))
               )}
@@ -1190,7 +1200,7 @@ export default function ExplorePage(props: Props) {
                   key={model.id}
                   model={model}
                   preferredQuant={quantPreferredBits != null && modelQuantBits(model) != null && quantPreferredBits.includes(modelQuantBits(model)!)}
-                  onViewFiles={() => openFiles(model)}
+                  onViewFiles={openFiles}
                 />
               ))}
               <div ref={loadMoreRef} className="hf-list-foot">

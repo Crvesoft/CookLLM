@@ -8,7 +8,7 @@ import type { PickedFile } from "./tauri";
 import { onModelDownloadProgress } from "./tauri";
 import type { DiskUsage, ModelDownloadProgress } from "./types";
 import { PAGE_LOG_MODE, type AppConfig, type GpuStats, type LlamaLogPayload, type ModelAsset, type Page, type Profile, type ServerStatus, type TokSample } from "./types";
-import { ACCENTS, EMPTY_STATUS, cn, fileName, formatBytes, modelTitle, newLog, parseTokPerSec } from "./utils";
+import { ACCENTS, EMPTY_STATUS, cn, fileName, formatBytes, modelTitle, newLog, parseTokPerSec, shallowEqualFields } from "./utils";
 import LogDock from "./components/LogDock";
 import { LogsPage, Sidebar, Toast, Topbar } from "./components/Layout";
 import ImportModelModal from "./components/ImportModelModal";
@@ -41,6 +41,9 @@ export default function App() {
   /** 界面语言：文案经 t() 查当前 locale；locale 由 AppConfig.language 驱动（adopt/persist 时同步） */
   const { t } = useI18n();
   const [config, setConfig] = useState<AppConfig>(DEMO_CONFIG);
+  /** config 镜像：下载完成回调等长周期闭包读取最新配置，避免用过期快照覆盖用户中途的修改 */
+  const configRef = useRef(config);
+  configRef.current = config;
   /** GPU 性能监测开关（默认开启，设置页可关闭） */
   const gpuMonitorEnabled = config.gpuMonitorEnabled !== false;
   const [page, setPage] = useState<Page>("models");
@@ -79,6 +82,14 @@ export default function App() {
   const [justImportedIds, setJustImportedIds] = useState<Set<string>>(new Set());
   /** 下载任务镜像（供进度回调读取，避免闭包过期） */
   const downloadsRef = useRef<ActiveDownload[]>([]);
+  /** 任务列表唯一变更入口：state 与镜像 ref 在同一处更新，所有下载任务的增删改都走它（消除成对双写） */
+  const mutateDownloads = (updater: (previous: ActiveDownload[]) => ActiveDownload[]) => {
+    setDownloads((previous) => {
+      const next = updater(previous);
+      downloadsRef.current = next;
+      return next;
+    });
+  };
   const pauseRequestedRef = useRef<Set<string>>(new Set());
   const cancelledTaskIdsRef = useRef<Set<string>>(new Set());
 
@@ -101,7 +112,21 @@ export default function App() {
   /** 配置加载完成前不启用 GPU/状态轮询，避免「关闭监测」用户首次挂载闪现图表 */
   const [configReady, setConfigReady] = useState(false);
 
-  const appendLog = (line: string, stream: LlamaLogPayload["stream"] = "system") => setLogs((previous) => [...previous.slice(-999), newLog(line, stream)]);
+  /** 日志批量 flush：缓冲 100ms 聚合一次 setState，llama-server 启动期逐行刷日志不再触发全树重渲染 */
+  const logBufferRef = useRef<LlamaLogPayload[]>([]);
+  const logTimerRef = useRef<number | null>(null);
+  const flushLogs = () => {
+    logTimerRef.current = null;
+    if (!logBufferRef.current.length) return;
+    const batch = logBufferRef.current;
+    logBufferRef.current = [];
+    setLogs((previous) => [...previous, ...batch].slice(-1000));
+  };
+  const queueLogs = (entries: LlamaLogPayload[]) => {
+    logBufferRef.current.push(...entries);
+    if (logTimerRef.current === null) logTimerRef.current = window.setTimeout(flushLogs, 100);
+  };
+  const appendLog = (line: string, stream: LlamaLogPayload["stream"] = "system") => queueLogs([newLog(line, stream)]);
 
   const adopt = (cfg: AppConfig) => {
     const usable = migrateConfig(cfg);
@@ -128,7 +153,7 @@ export default function App() {
           const current = await getServerStatus(); if (active) setStatus(current);
           unlisten = await onLlamaLog((payload) => {
             if (!active) return;
-            setLogs((previous) => [...previous.slice(-999), payload]);
+            queueLogs([payload]);
             // 检测到服务就绪 → 自动收起 Dock（仅启动期间武装，避免误关用户手动打开的 Dock）
             if (dockAutoCollapseRef.current && /is listening|listening on/i.test(payload.line)) { dockAutoCollapseRef.current = false; setLogDockOpen(false); }
             const tps = parseTokPerSec(payload.line); if (tps !== null) setTokSample({ rate: tps, at: Date.now() });
@@ -147,11 +172,15 @@ export default function App() {
     if (!isTauri() || !configReady) return;
     let active = true;
     const refresh = () => {
-      void getServerStatus().then((st) => { if (active) setStatus(st); }).catch(() => undefined);
+      // 浅比较后去重：数据未变化时保持旧引用，避免每 2s 的轮询触发全树重渲染
+      void getServerStatus().then((st) => { if (active) setStatus((prev) => (shallowEqualFields(prev, st) ? prev : st)); }).catch(() => undefined);
       // GPU 指标独立轮询：查询失败 / 无 NVIDIA 驱动 → null，卡片显示 "--"
       if (gpuMonitorEnabled) {
         // 响应到达时若已被关闭或 effect 已重跑（配置加载完成 / 用户切换），丢弃过期数据
-        void getGpuStats().then((stats) => { if (active && gpuMonitorEnabled) setGpuStats(stats); }).catch(() => { if (active) setGpuStats(null); });
+        void getGpuStats().then((stats) => {
+          if (!active || !gpuMonitorEnabled) return;
+          setGpuStats((prev) => (prev === null && stats === null) || (prev !== null && stats !== null && shallowEqualFields(prev, stats)) ? prev : stats);
+        }).catch(() => { if (active) setGpuStats((prev) => (prev === null ? prev : null)); });
       } else {
         setGpuStats(null);
       }
@@ -232,9 +261,12 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [configReady, config.autoUpdateEnabled]);
 
-  // 持久化任务列表：任何变更自动写盘（localStorage），重开程序后恢复
+  // 持久化任务列表：变更后 400ms 无新变更才写盘（下载进度高频 patch 不会逐次 stringify 落盘）
   useEffect(() => {
-    try { localStorage.setItem(DOWNLOADS_STORAGE_KEY, JSON.stringify(downloads)); } catch { /* 忽略写入失败 */ }
+    const timer = window.setTimeout(() => {
+      try { localStorage.setItem(DOWNLOADS_STORAGE_KEY, JSON.stringify(downloads)); } catch { /* 忽略写入失败 */ }
+    }, 400);
+    return () => window.clearTimeout(timer);
   }, [downloads]);
 
   // 任务镜像随 state 同步（集中兜底，覆盖恢复初始值与所有 setDownloads 路径）
@@ -244,32 +276,41 @@ export default function App() {
    *  每次都以唯一 taskId 发起，后端按 taskId 注册独立控制器，取消 / 暂停不会串扰其他任务。 */
   const launchDownload = (entry: ActiveDownload) => {
     pauseRequestedRef.current.delete(entry.taskId);
-    void hfClearDownload(entry.taskId).catch(() => undefined);
-    const run = entry.url ? hfDownloadUrl(entry.url, entry.taskId) : hfDownload(entry.repo, entry.file, entry.taskId);
-    void run.then((result) => {
-      appendLog(t("explore.downloaded") + ": " + result.path, "system");
-      void importDownloadedModel(entry, result.path, result.sizeBytes);
-    }).catch((error) => {
-      const isCancelled = cancelledTaskIdsRef.current.has(entry.taskId);
-      cancelledTaskIdsRef.current.delete(entry.taskId);
-      const raw = error instanceof Error ? error.message : String(error);
-      if (isCancelled || raw.includes("取消") || raw.includes("cancelled")) {
+    void (async () => {
+      // 必须先等摘除旧控制器完成、再发起下载：两个 invoke 若乱序，hf_clear_download 会把
+      // 刚注册的新控制器摘掉，此后暂停 / 取消永远找不到控制器（孤儿循环停不下来）
+      try { await hfClearDownload(entry.taskId); } catch { /* 旧控制器不存在时忽略 */ }
+      const run = entry.url ? hfDownloadUrl(entry.url, entry.taskId) : hfDownload(entry.repo, entry.file, entry.taskId);
+      void run.then((result) => {
+        appendLog(t("explore.downloaded") + ": " + result.path, "system");
+        void importDownloadedModel(entry, result.path, result.sizeBytes);
+      }).catch((error) => {
+        const isCancelled = cancelledTaskIdsRef.current.has(entry.taskId);
+        cancelledTaskIdsRef.current.delete(entry.taskId);
+        const raw = error instanceof Error ? error.message : String(error);
+        if (raw.includes("已被接管")) {
+          // 该 taskId 已被新一轮下载接管：旧循环静默退出，状态由新循环负责
+          return;
+        }
+        if (isCancelled || raw.includes("取消") || raw.includes("cancelled")) {
+          cancelPendingProgress(entry.taskId);
+          clearProgressKey(entry.repo, entry.file);
+          mutateDownloads((previous) => previous.filter((item) => item.taskId !== entry.taskId));
+          return;
+        }
+        if (raw.includes("暂停")) {
+          cancelPendingProgress(entry.taskId);
+          clearProgressKey(entry.repo, entry.file);
+          patchByTaskId(entry.taskId, { status: "cancelled", error: t("explore.statusPaused"), speedBps: 0, finishedAt: Date.now() });
+          return;
+        }
         clearProgressKey(entry.repo, entry.file);
-        setDownloads((previous) => previous.filter((item) => item.taskId !== entry.taskId));
-        downloadsRef.current = downloadsRef.current.filter((item) => item.taskId !== entry.taskId);
-        return;
-      }
-      if (raw.includes("暂停")) {
-        clearProgressKey(entry.repo, entry.file);
-        patchByTaskId(entry.taskId, { status: "cancelled", error: t("explore.statusPaused"), speedBps: 0, finishedAt: Date.now() });
-        return;
-      }
-      clearProgressKey(entry.repo, entry.file);
-      const kind = raw.startsWith("HF_GATED_NEED_TOKEN") ? "needs-token" : raw.startsWith("HF_GATED_NO_PERMISSION") ? "no-permission" : undefined;
-      const failed = settleEntry(entry, raw, kind);
-      appendLog(t("explore.error", { error: failed.error ?? raw }), "stderr");
-      patchByTaskId(entry.taskId, failed);
-    });
+        const kind = raw.startsWith("HF_GATED_NEED_TOKEN") ? "needs-token" : raw.startsWith("HF_GATED_NO_PERMISSION") ? "no-permission" : undefined;
+        const failed = settleEntry(entry, raw, kind);
+        appendLog(t("explore.error", { error: failed.error ?? raw }), "stderr");
+        patchByTaskId(entry.taskId, failed);
+      });
+    })();
   };
 
   // 启动后自动续传：恢复的任务中以 active 开场（上次退出时未完成）→ 重新发起下载（后端 .part 断点续传）
@@ -281,7 +322,7 @@ export default function App() {
     const timer = window.setTimeout(() => {
       for (const task of pending) {
         const entry: ActiveDownload = { ...task, startedAt: Date.now(), status: "active", percent: 0, downloaded: 0, total: task.total ?? task.sizeBytes, speedBps: 0 };
-        setDownloads((previous) => [...previous.filter((item) => !(item.repo === task.repo && item.file === task.file)), entry]);
+        mutateDownloads((previous) => [...previous.filter((item) => !(item.repo === task.repo && item.file === task.file)), entry]);
         launchDownload(entry);
       }
       if (pending.length) setToast(t("toast.downloadQueued"));
@@ -290,39 +331,74 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [configReady]);
 
-  // 订阅模型下载进度：同步任务状态（percent/speed/status），完成时标记 done 并延迟清理 progressMap
+  // 订阅模型下载进度：同步任务状态（percent/speed/status），完成时标记 done 并延迟清理 progressMap。
+  // 进行中进度按 200ms/任务 节流合并（事件频率≈网络吞吐，逐条 setState 会让整树跟着进度刷屏）；
+  // done/paused/cancelled/error 等结构性状态立即生效。
+  /** 进行中进度的节流挂起表（taskId → 待刷新进度）：任务进入终态 / 用户暂停取消时必须清掉，
+   *  否则挂起的旧进度会在 200ms 后把已暂停的任务写回「进行中」，出现速度冻结的假进行中 */
+  const pendingProgressRef = useRef(new Map<string, { timer: number; payload: ModelDownloadProgress }>());
+  const cancelPendingProgress = (taskId: string) => {
+    const pending = pendingProgressRef.current.get(taskId);
+    if (!pending) return;
+    window.clearTimeout(pending.timer);
+    pendingProgressRef.current.delete(taskId);
+  };
   useEffect(() => {
     let unlisten: (() => void) | undefined;
+    const pendingProgress = pendingProgressRef.current;
+    const flushProgress = (taskId: string) => {
+      const pending = pendingProgress.get(taskId);
+      if (!pending) return;
+      pendingProgress.delete(taskId);
+      const payload = pending.payload;
+      const key = payload.repo + "::" + payload.file;
+      setModelProgress((previous) => ({ ...previous, [key]: payload }));
+      mutateDownloads((previous) => previous.map((item) => (item.taskId === taskId ? { ...item, status: "active" as const, percent: payload.percent, downloaded: payload.downloaded, total: payload.total, speedBps: payload.speedBps } : item)));
+    };
     const patchTask = (taskId: string, patch: Partial<ActiveDownload>) => {
-      setDownloads((previous) => previous.map((item) => (item.taskId === taskId ? { ...item, ...patch } : item)));
-      downloadsRef.current = downloadsRef.current.map((item) => (item.taskId === taskId ? { ...item, ...patch } : item));
+      mutateDownloads((previous) => previous.map((item) => (item.taskId === taskId ? { ...item, ...patch } : item)));
     };
     void onModelDownloadProgress((payload) => {
       // 展示用进度表仍按 仓库::文件名 索引（FileModal / 模型仓库下载占位共用），任务状态则按 taskId 精确命中
       const key = payload.repo + "::" + payload.file;
       if (payload.phase === "done") {
+        cancelPendingProgress(payload.taskId);
         setModelProgress((previous) => ({ ...previous, [key]: payload }));
         patchTask(payload.taskId, { status: "done", percent: 100, downloaded: payload.downloaded, total: payload.total, speedBps: 0, finishedAt: Date.now() });
         window.setTimeout(() => {
           clearProgressKey(payload.repo, payload.file);
         }, 1800);
       } else if (payload.phase === "paused") {
+        cancelPendingProgress(payload.taskId);
         clearProgressKey(payload.repo, payload.file);
         // 单任务 / 全部暂停：归入「暂停」Tab（保留 .part 断点，可继续）
         patchTask(payload.taskId, { status: "cancelled", error: t("explore.statusPaused"), speedBps: 0, finishedAt: Date.now() });
       } else if (payload.phase === "cancelled") {
+        cancelPendingProgress(payload.taskId);
         clearProgressKey(payload.repo, payload.file);
-        setDownloads((previous) => previous.filter((item) => item.taskId !== payload.taskId));
-        downloadsRef.current = downloadsRef.current.filter((item) => item.taskId !== payload.taskId);
+        mutateDownloads((previous) => previous.filter((item) => item.taskId !== payload.taskId));
       } else if (payload.phase === "error") {
+        cancelPendingProgress(payload.taskId);
         clearProgressKey(payload.repo, payload.file);
         patchTask(payload.taskId, { status: "error", error: payload.message || "download failed", speedBps: 0, finishedAt: Date.now() });
       } else {
-        setModelProgress((previous) => ({ ...previous, [key]: payload }));
-        patchTask(payload.taskId, { status: "active", percent: payload.percent, downloaded: payload.downloaded, total: payload.total, speedBps: payload.speedBps });
+        // 已暂停 / 已取消 / 已删除的任务忽略其迟到的「进行中」事件，防止假复活
+        const current = downloadsRef.current.find((item) => item.taskId === payload.taskId);
+        if (!current || current.status !== "active") return;
+        const pending = pendingProgress.get(payload.taskId);
+        if (pending) {
+          pending.payload = payload;
+        } else {
+          const timer = window.setTimeout(() => flushProgress(payload.taskId), 200);
+          pendingProgress.set(payload.taskId, { timer, payload });
+        }
       }
     }).then((fn) => { unlisten = fn; }).catch(() => undefined);
-    return () => { unlisten?.(); };
+    return () => {
+      unlisten?.();
+      for (const pending of pendingProgress.values()) window.clearTimeout(pending.timer);
+      pendingProgress.clear();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -335,10 +411,9 @@ export default function App() {
   };
 
 
-  /** 按唯一 taskId 合并更新单个下载任务（state + 镜像双写，进度回调/取消/暂停/删除共用） */
+  /** 按唯一 taskId 合并更新单个下载任务（进度回调/取消/暂停/删除共用） */
   const patchByTaskId = (taskId: string, patch: Partial<ActiveDownload>) => {
-    setDownloads((previous) => previous.map((item) => (item.taskId === taskId ? { ...item, ...patch } : item)));
-    downloadsRef.current = downloadsRef.current.map((item) => (item.taskId === taskId ? { ...item, ...patch } : item));
+    mutateDownloads((previous) => previous.map((item) => (item.taskId === taskId ? { ...item, ...patch } : item)));
   };
 
   /** 下载异常分类：取消 / 暂停（手动中断）归入「暂停」Tab，其余为真实错误 */
@@ -377,7 +452,10 @@ export default function App() {
   /** 下载完成：仅把文件登记为本地资产（不自动创建预设、不自动启动），badge 打上「刚刚下载」 */
   const importDownloadedModel = async (download: ActiveDownload, path: string, sizeBytes?: number) => {
     try {
-      const existing = new Set(config.models.map((model) => model.path.toLowerCase()));
+      // 下载耗时数分钟，期间用户可能改过设置：读最新 config 而非发起下载时的闭包快照，
+      // 否则 persist 会把用户中途修改的主题 / 语言 / 代理等一并回滚
+      const currentConfig = configRef.current;
+      const existing = new Set(currentConfig.models.map((model) => model.path.toLowerCase()));
       if (existing.has(path.toLowerCase())) {
         patchByTaskId(download.taskId, { status: "done" as const, path, finishedAt: Date.now() });
         return;
@@ -394,12 +472,12 @@ export default function App() {
         quantization: path.match(/Q\d(?:_[A-Z0-9]+)+/i)?.[0]?.toUpperCase() || t("model.unknownQuant"),
         parameters,
         profiles: [],
-        accent: ACCENTS[config.models.length % ACCENTS.length],
+        accent: ACCENTS[currentConfig.models.length % ACCENTS.length],
       };
       setJustImportedIds((previous) => new Set(previous).add(model.id));
       window.setTimeout(() => { setJustImportedIds((previous) => { const next = new Set(previous); next.delete(model.id); return next; }); }, 6000);
       patchByTaskId(download.taskId, { status: "done" as const, path, finishedAt: Date.now() });
-      await persist({ ...config, models: [...config.models, model] }, t("toast.downloadImported", { name }));
+      await persist({ ...currentConfig, models: [...currentConfig.models, model] }, t("toast.downloadImported", { name }));
     } catch (error) {
       appendLog(t("log.saveConfigFailed", { error: String(error) }), "stderr");
     }
@@ -408,8 +486,7 @@ export default function App() {
   /** 社区探索：点击下载 → 登记任务（task 池，附唯一 taskId）+ 提示，进度由后端事件推送 */
   const handleModelDownload = (repo: string, file: string, sizeBytes: number) => {
     const entry: ActiveDownload = { taskId: uid("download"), repo, file, sizeBytes, startedAt: Date.now(), status: "active", percent: 0, downloaded: 0, total: sizeBytes, speedBps: 0 };
-    setDownloads((previous) => [...previous.filter((item) => !(item.repo === repo && item.file === file)), entry]);
-    downloadsRef.current = [...downloadsRef.current.filter((item) => !(item.repo === repo && item.file === file)), entry];
+    mutateDownloads((previous) => [...previous.filter((item) => !(item.repo === repo && item.file === file)), entry]);
     launchDownload(entry);
     setToast(t("toast.downloadStarted"));
   };
@@ -432,14 +509,12 @@ export default function App() {
 
     if (targetTask.taskId) {
       cancelledTaskIdsRef.current.add(targetTask.taskId);
+      cancelPendingProgress(targetTask.taskId);
       void hfCancelDownload(targetTask.taskId).catch(() => undefined);
     }
-    setDownloads((previous) => previous.filter((item) =>
+    mutateDownloads((previous) => previous.filter((item) =>
       (targetTask.taskId ? item.taskId !== targetTask.taskId : !(item.repo === targetTask.repo && item.file === targetTask.file))
     ));
-    downloadsRef.current = downloadsRef.current.filter((item) =>
-      (targetTask.taskId ? item.taskId !== targetTask.taskId : !(item.repo === targetTask.repo && item.file === targetTask.file))
-    );
 
     if (withDelete) removeTaskFiles(targetTask);
     clearProgressKey(targetTask.repo, targetTask.file);
@@ -448,6 +523,7 @@ export default function App() {
   /** 暂停单个任务（保留 .part 断点，可继续）；只作用于该 taskId，归入「暂停」界面 */
   const handlePauseTask = (task: ActiveDownload) => {
     void hfPauseDownload(task.taskId).catch(() => undefined);
+    cancelPendingProgress(task.taskId);
     patchByTaskId(task.taskId, { status: "cancelled", error: t("explore.statusPaused"), speedBps: 0, finishedAt: Date.now() });
     clearProgressKey(task.repo, task.file);
     setToast(t("toast.taskPaused"));
@@ -466,6 +542,7 @@ export default function App() {
     const targets = downloadsRef.current.filter((item) => idSet.has(item.taskId) && item.status === "active");
     for (const task of targets) {
       void hfPauseDownload(task.taskId).catch(() => undefined);
+      cancelPendingProgress(task.taskId);
       patchByTaskId(task.taskId, { status: "cancelled", error: t("explore.statusPaused"), speedBps: 0, finishedAt: Date.now() });
       clearProgressKey(task.repo, task.file);
     }
@@ -480,11 +557,11 @@ export default function App() {
     // 先按 taskId 中止仍在下载的任务，再清缓存、移记录
     for (const task of targets) {
       cancelledTaskIdsRef.current.add(task.taskId);
+      cancelPendingProgress(task.taskId);
       clearProgressKey(task.repo, task.file);
       if (task.status === "active") void hfCancelDownload(task.taskId).catch(() => undefined);
     }
-    setDownloads((previous) => previous.filter((item) => !idSet.has(item.taskId)));
-    downloadsRef.current = downloadsRef.current.filter((item) => !idSet.has(item.taskId));
+    mutateDownloads((previous) => previous.filter((item) => !idSet.has(item.taskId)));
 
     if (deleteLocalFiles) {
       const removedPaths = new Set<string>();
@@ -513,8 +590,7 @@ export default function App() {
   const handleDeleteTask = (task: ActiveDownload, deleteLocalFile = false) => void deleteTasksImpl([task.taskId], deleteLocalFile);
   /** 清除完成记录 */
   const handleClearDone = () => {
-    setDownloads((previous) => previous.filter((item) => item.status !== "done"));
-    downloadsRef.current = downloadsRef.current.filter((item) => item.status !== "done");
+    mutateDownloads((previous) => previous.filter((item) => item.status !== "done"));
     setToast(t("toast.queueCleared"));
   };
   /** 单任务：暂停 / 取消并删除缓存 */
@@ -522,7 +598,6 @@ export default function App() {
   /** 单任务重试 */
   const handleRetry = (task: ActiveDownload) => relaunchTask(task);
   const handleReveal = async (path: string) => { await revealInFolder(path); };
-  const goModels = () => { setPage("models"); };
 
   /** 设置页 / 社区探索共用：选择模型存储目录 */
   const pickModelsDirFlow = async () => {
@@ -726,8 +801,8 @@ export default function App() {
   return <div className={cn("app-shell", sidebarCollapsed && "sidebar-collapsed", zenMode && "zen-mode")}>
     <Sidebar page={page} onPage={setPage} downloadBadge={exploreBadge} updateAvailable={appUpdate?.status === "available"} status={status} abnormal={serviceAbnormal} gpuStats={gpuStats} tokSample={tokSample} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed((value) => !value)} theme={theme} onToggleTheme={() => void persist({ ...config, theme: theme === "dark" ? "light" : "dark" })} />
     <div className={cn("workspace", isDockPage && "dock-mode")}><Topbar page={page} status={status} busy={busy} onToggleService={status.running ? handleStop : startQuick} models={config.models} modelId={quickModelId || config.preferredModelId || config.models[0]?.id || ""} onSelectModel={setQuickModelId} zenMode={zenMode} onToggleZenMode={() => setZenMode((v) => !v)} /><main className="main-content">
-      {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} query={query} onQuery={setQuery} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onAddProfile={(model) => setProfileEditing({ modelId: model.id, profile: { ...DEFAULT_PROFILES[0], id: uid("profile"), name: t("newProfile") } })} onRenameModel={renameModel} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} downloads={downloads} modelProgress={modelProgress} justImportedIds={justImportedIds} />}
-      <ExplorePage visible={page === "explore"} config={config} onPersist={persist} onToast={setToast} onLog={appendLog} diskUsage={diskUsage} onPickModelsDir={pickModelsDirFlow} onDownload={handleModelDownload} activeDownloads={downloads} progressMap={modelProgress} onPauseTask={handlePauseTask} onResumeTasks={handleResumeTasks} onPauseTasks={handlePauseTasks} onClearDone={handleClearDone} onCancelTask={handleCancelTask} onDeleteTask={handleDeleteTask} onDeleteTasks={deleteTasksImpl} onRetry={handleRetry} onReveal={handleReveal} onGoModels={goModels} onGoSettings={() => setPage("settings")} />
+      {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} query={query} onQuery={setQuery} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onAddProfile={(model) => setProfileEditing({ modelId: model.id, profile: { ...DEFAULT_PROFILES[0], id: uid("profile"), name: t("newProfile") } })} onRenameModel={renameModel} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} justImportedIds={justImportedIds} />}
+      <ExplorePage visible={page === "explore"} config={config} onPersist={persist} onToast={setToast} onLog={appendLog} diskUsage={diskUsage} onPickModelsDir={pickModelsDirFlow} onDownload={handleModelDownload} activeDownloads={downloads} progressMap={modelProgress} onPauseTask={handlePauseTask} onResumeTasks={handleResumeTasks} onPauseTasks={handlePauseTasks} onClearDone={handleClearDone} onCancelTask={handleCancelTask} onDeleteTask={handleDeleteTask} onDeleteTasks={deleteTasksImpl} onRetry={handleRetry} onReveal={handleReveal} onGoSettings={() => setPage("settings")} />
       {page === "profiles" && <ProfilesPage models={config.models} onEdit={(modelId, profile) => setProfileEditing({ modelId, profile })} onDelete={deleteProfile} onDuplicate={duplicateProfile} onSetDefault={setDefaultProfile} onReorderProfile={reorderProfiles} onDeleteProfiles={deleteMultipleProfiles} />}
       {/* 会话页保持常驻（隐藏而非卸载）：切换菜单不销毁内嵌 WebUI，回来时无需从聊天记录重新进入；WebUI 始终填满 Dock 下全部剩余高度 */}
       <Playground visible={page === "playground"} status={status} webUiUrl={webUiUrl} modelName={activeModel ? modelTitle(activeModel) : undefined} onOpenWebUi={openWebUi} zenMode={zenMode} onToggleZenMode={() => setZenMode((v) => !v)} />

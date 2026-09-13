@@ -261,13 +261,39 @@ fn config_path(app: &AppHandle) -> Result<PathBuf, String> {
     Ok(directory.join("config.json"))
 }
 
+/// 配置读取缓存：按（路径, mtime）命中，避免每个命令都重新读盘解析 JSON
+/// （hf_avatar 每个作者一次、hf_download / start_server 等十余处高频调用）。
+/// save_config 落盘后 mtime 变化，缓存自动失效，无需手动清理。
+struct ConfigCacheEntry {
+    path: PathBuf,
+    modified: Option<SystemTime>,
+    config: AppConfig,
+}
+static CONFIG_CACHE: OnceLock<Mutex<Option<ConfigCacheEntry>>> = OnceLock::new();
+
+fn file_mtime(path: &Path) -> Option<SystemTime> {
+    fs::metadata(path).and_then(|meta| meta.modified()).ok()
+}
+
 fn read_config(app: &AppHandle) -> Result<AppConfig, String> {
     let path = config_path(app)?;
     if !path.exists() {
         return Ok(AppConfig::default());
     }
-    let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
-    serde_json::from_str(&contents).map_err(|error| error.to_string())
+    let modified = file_mtime(&path);
+    if let Ok(guard) = CONFIG_CACHE.get_or_init(|| Mutex::new(None)).lock() {
+        if let Some(entry) = guard.as_ref() {
+            if entry.path == path && entry.modified == modified {
+                return Ok(entry.config.clone());
+            }
+        }
+    }
+    let contents = fs::read_to_string(&path).map_err(|error| error.to_string())?;
+    let config: AppConfig = serde_json::from_str(&contents).map_err(|error| error.to_string())?;
+    if let Ok(mut guard) = CONFIG_CACHE.get_or_init(|| Mutex::new(None)).lock() {
+        *guard = Some(ConfigCacheEntry { path: path.clone(), modified, config: config.clone() });
+    }
+    Ok(config)
 }
 
 fn emit_log(app: &AppHandle, stream: &str, line: impl Into<String>) {
@@ -358,12 +384,19 @@ fn set_window_theme(window: tauri::WebviewWindow, dark: bool) -> Result<(), Stri
 fn save_config(app: AppHandle, config: AppConfig) -> Result<(), String> {
     let path = config_path(&app)?;
     let temporary = path.with_extension("json.tmp");
+    let backup = path.with_extension("json.bak");
     let contents = serde_json::to_vec_pretty(&config).map_err(|error| error.to_string())?;
-    fs::write(&temporary, contents).map_err(|error| error.to_string())?;
+    fs::write(&temporary, &contents).map_err(|error| error.to_string())?;
+    // Windows 的 rename 不能覆盖已存在目标：旧文件先挪为 .bak，rename 失败立即回滚，任何一步中断都不会丢配置
     if path.exists() {
-        fs::remove_file(&path).map_err(|error| error.to_string())?;
+        fs::rename(&path, &backup).map_err(|error| error.to_string())?;
     }
-    fs::rename(&temporary, &path).map_err(|error| error.to_string())
+    if let Err(error) = fs::rename(&temporary, &path) {
+        let _ = fs::rename(&backup, &path);
+        return Err(error.to_string());
+    }
+    let _ = fs::remove_file(&backup);
+    Ok(())
 }
 
 fn update_tray_status(app: &AppHandle, running_model: Option<&str>) {
@@ -375,6 +408,10 @@ fn update_tray_status(app: &AppHandle, running_model: Option<&str>) {
         let _ = tray.set_tooltip(Some(tooltip));
     }
 }
+
+/// start/stop 专用串行化锁：kill 旧进程最长 5 秒的等待只占用这把锁，
+/// 不再长时间持有 ProcessState 锁，避免重启/停止期间状态轮询全部卡住。
+static PROCESS_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
 
 #[tauri::command]
 fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, profile_id: String) -> Result<ServerStatus, String> {
@@ -405,8 +442,10 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
         }
     }
 
-    let mut guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
-    if let Some(mut running) = guard.take() {
+    // 进程生命周期串行化：kill 旧进程的等待在专用锁内进行，ProcessState 锁只做短暂存取
+    let lifecycle = PROCESS_LIFECYCLE_LOCK.lock().map_err(|_| "进程生命周期锁已损坏")?;
+    let previous = { state.0.lock().map_err(|_| "进程状态锁已损坏")?.take() };
+    if let Some(mut running) = previous {
         kill_managed_child(&mut running);
     }
 
@@ -482,20 +521,26 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
         started_at: Some(now_ms()),
     };
     let model_name_display = model.name;
-    *guard = Some(ManagedProcess { child, status: status.clone() });
+    {
+        let mut guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
+        *guard = Some(ManagedProcess { child, status: status.clone() });
+    }
+    drop(lifecycle);
     update_tray_status(&app, Some(&model_name_display));
     Ok(status)
 }
 
 #[tauri::command]
 fn stop_server(app: AppHandle, state: State<ProcessState>) -> Result<ServerStatus, String> {
-    let mut guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
-    if let Some(mut managed) = guard.take() {
+    let lifecycle = PROCESS_LIFECYCLE_LOCK.lock().map_err(|_| "进程生命周期锁已损坏")?;
+    let managed = { state.0.lock().map_err(|_| "进程状态锁已损坏")?.take() };
+    if let Some(mut managed) = managed {
         kill_managed_child(&mut managed);
         emit_log(&app, "system", "llama-server 已停止");
     } else {
         emit_log(&app, "system", "llama-server 未在运行");
     }
+    drop(lifecycle);
     update_tray_status(&app, None);
     Ok(ServerStatus::default())
 }
@@ -954,16 +999,22 @@ fn dedup_gguf(items: Vec<PickedFile>) -> Vec<PickedFile> {
 fn open_config_dir(app: AppHandle) -> Result<(), String> {
     let directory = app.path().app_config_dir().map_err(|error| error.to_string())?;
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    open_url(app, directory.to_string_lossy().to_string())
+    reveal_in_folder(directory.to_string_lossy().to_string())
 }
 
 #[tauri::command]
 fn open_url(_app: AppHandle, url: String) -> Result<(), String> {
+    // 只放行 http/https 链接：open_url 的来源包含页面内任意外链，必须挡掉 file:/cmd 注入与协议滥用
+    let lower = url.trim().to_lowercase();
+    if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+        return Err(format!("不支持的链接协议：{}", url));
+    }
     #[cfg(target_os = "windows")]
     {
+        // 走 explorer.exe 而非 `cmd /C start`：cmd 的元字符解析（& | ^ %VAR%）无法被 std::process 的引号转义覆盖，存在拼接执行风险
         use std::os::windows::process::CommandExt;
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", &url])
+        std::process::Command::new("explorer.exe")
+            .arg(&url)
             .creation_flags(0x08000000)
             .spawn()
             .map_err(|error| error.to_string())?;
@@ -1343,7 +1394,7 @@ fn direct_client() -> &'static reqwest::blocking::Client {
     static CLIENT: OnceLock<reqwest::blocking::Client> = OnceLock::new();
     CLIENT.get_or_init(|| {
         reqwest::blocking::Client::builder()
-            .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+            .user_agent(HF_UA)
             .connect_timeout(std::time::Duration::from_secs(10))
             .no_proxy()
             .build()
@@ -1376,18 +1427,38 @@ fn hf_response_json(response: reqwest::blocking::Response) -> Result<serde_json:
     response.json().map_err(|error| format!("解析 HuggingFace API 响应失败：{}", error))
 }
 
-/// 探测本机正在监听的代理端口（Clash 7897 / Clash 7890 / V2rayN 10809 等），返回可用地址
+/// 探测本机正在监听的代理端口（Clash 7897 / Clash 7890 / V2rayN 10809 等），返回可用地址。
+/// 结果缓存 60 秒：本机代理端口在一次会话内几乎不变，而每次全量探测最坏 8×150ms，
+/// 该函数被 fetch/download/avatar 等高频兜底链路反复调用。
 fn probe_local_proxy() -> Option<String> {
     use std::net::{SocketAddr, TcpStream};
+    use std::sync::atomic::AtomicU64;
     use std::time::Duration;
     const PORTS: &[u16] = &[7897, 7890, 7891, 10809, 10808, 1080, 8888, 2080];
-    for port in PORTS {
-        let address = SocketAddr::from(([127, 0, 0, 1], *port));
-        if TcpStream::connect_timeout(&address, Duration::from_millis(400)).is_ok() {
-            return Some(format!("http://127.0.0.1:{}", port));
-        }
+    const PROBE_TIMEOUT_MS: u64 = 150;
+    const CACHE_TTL_MS: u64 = 60_000;
+    struct ProbeCache {
+        at_ms: AtomicU64,
+        value: Mutex<Option<Option<String>>>,
     }
-    None
+    static CACHE: OnceLock<ProbeCache> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| ProbeCache { at_ms: AtomicU64::new(0), value: Mutex::new(None) });
+    let now = now_ms();
+    let cached = cache.value.lock().ok().and_then(|guard| guard.as_ref().cloned()).filter(|_| {
+        now.saturating_sub(cache.at_ms.load(Ordering::Relaxed)) < CACHE_TTL_MS
+    });
+    if let Some(value) = cached {
+        return value;
+    }
+    let fresh = PORTS.iter().find_map(|port| {
+        let address = SocketAddr::from(([127, 0, 0, 1], *port));
+        TcpStream::connect_timeout(&address, Duration::from_millis(PROBE_TIMEOUT_MS)).is_ok().then(|| format!("http://127.0.0.1:{}", port))
+    });
+    if let Ok(mut guard) = cache.value.lock() {
+        *guard = Some(fresh.clone());
+        cache.at_ms.store(now, Ordering::Relaxed);
+    }
+    fresh
 }
 
 /// 带指定代理地址的客户端
@@ -1410,30 +1481,28 @@ fn hf_mirror_url(url: &str) -> Option<String> {
     }
 }
 
-/// 查询 HF API：多通道自动兜底（配置代理 → 直连 → 本机代理端口 → hf-mirror 镜像）
-fn fetch_hf_json(client: &reqwest::blocking::Client, url: &str) -> Result<serde_json::Value, String> {
+/// 通用多通道兜底（原四处逐行复制的通道切换逻辑）：配置代理 → 直连 → 本机探测代理端口 →
+/// mirror=true 时追加 hf-mirror 镜像通道。`attempt` 为单通道尝试（url 参数已按通道替换为镜像地址）；
+/// 返回第一个成功的通道结果，全部失败时返回各通道的错误明细，由调用方拼接最终提示文案。
+fn with_net_fallback<T>(
+    config_client: &reqwest::blocking::Client,
+    url: &str,
+    mirror: bool,
+    mut attempt: impl FnMut(&reqwest::blocking::Client, &str) -> Result<T, String>,
+) -> Result<T, Vec<String>> {
     let mut errors: Vec<String> = Vec::new();
-    match hf_send(client, url) {
-        Ok(response) => match hf_response_json(response) {
-            Ok(value) => return Ok(value),
-            Err(error) => errors.push(format!("配置代理通道：{}", error)),
-        },
+    match attempt(config_client, url) {
+        Ok(value) => return Ok(value),
         Err(error) => errors.push(format!("配置代理通道：{}", error)),
     }
-    match hf_send(direct_client(), url) {
-        Ok(response) => match hf_response_json(response) {
-            Ok(value) => return Ok(value),
-            Err(error) => errors.push(format!("直连：{}", error)),
-        },
+    match attempt(direct_client(), url) {
+        Ok(value) => return Ok(value),
         Err(error) => errors.push(format!("直连：{}", error)),
     }
     if let Some(proxy_url) = probe_local_proxy() {
         match proxied_client(&proxy_url) {
-            Ok(proxied) => match hf_send(&proxied, url) {
-                Ok(response) => match hf_response_json(response) {
-                    Ok(value) => return Ok(value),
-                    Err(error) => errors.push(format!("本地代理 {}：{}", proxy_url, error)),
-                },
+            Ok(proxied) => match attempt(&proxied, url) {
+                Ok(value) => return Ok(value),
                 Err(error) => errors.push(format!("本地代理 {}：{}", proxy_url, error)),
             },
             Err(error) => errors.push(format!("初始化本地代理 {} 失败：{}", proxy_url, error)),
@@ -1441,16 +1510,23 @@ fn fetch_hf_json(client: &reqwest::blocking::Client, url: &str) -> Result<serde_
     } else {
         errors.push("未探测到本机代理端口".into());
     }
-    if let Some(mirror) = hf_mirror_url(url) {
-        match hf_send(direct_client(), &mirror) {
-            Ok(response) => match hf_response_json(response) {
+    if mirror {
+        if let Some(mirror_url) = hf_mirror_url(url) {
+            match attempt(direct_client(), &mirror_url) {
                 Ok(value) => return Ok(value),
                 Err(error) => errors.push(format!("镜像 hf-mirror.com：{}", error)),
-            },
-            Err(error) => errors.push(format!("镜像 hf-mirror.com：{}", error)),
+            }
         }
     }
-    Err(format!("HuggingFace 连接失败（{}）。请在「设置 → 网络与代理」选择手动代理（Clash 端口 7897 / V2rayN 10809）后重试", errors.join("；")))
+    Err(errors)
+}
+
+/// 查询 HF API：多通道自动兜底（配置代理 → 直连 → 本机代理端口 → hf-mirror 镜像）
+fn fetch_hf_json(client: &reqwest::blocking::Client, url: &str) -> Result<serde_json::Value, String> {
+    with_net_fallback(client, url, true, |client, url| {
+        hf_response_json(hf_send(client, url).map_err(|error| error.to_string())?)
+    })
+    .map_err(|errors| format!("HuggingFace 连接失败（{}）。请在「设置 → 网络与代理」选择手动代理（Clash 端口 7897 / V2rayN 10809）后重试", errors.join("；")))
 }
 
 /// 拉取候选模型并按量化位过滤（服务端二次过滤：HF filter 不支持按 bit 查询）。
@@ -1756,6 +1832,25 @@ impl DownloadRegistry {
         self.0.lock().ok()?.get(task_id).cloned()
     }
 
+    /// 校验 controller 仍是该 taskId 当前注册的控制器。
+    /// 用于下载循环自检：若自己已被新一轮下载接管（register 覆盖）或被摘除（unregister），
+    /// 说明自己已成孤儿循环，应立即退出，否则暂停 / 取消永远送不到它手上。
+    fn is_current(&self, task_id: &str, controller: &Arc<DownloadTaskControl>) -> bool {
+        self.0.lock().ok()
+            .and_then(|guard| guard.get(task_id).map(|slot| Arc::ptr_eq(slot, controller)))
+            .unwrap_or(false)
+    }
+
+    /// 摘除控制器，但仅当注册表里的仍是 controller 本人时才摘。
+    /// 无条件的 unregister 在「新循环接管旧循环」时会误删新循环的控制器，让它变成新的孤儿。
+    fn unregister_if_current(&self, task_id: &str, controller: &Arc<DownloadTaskControl>) {
+        if let Ok(mut guard) = self.0.lock() {
+            if guard.get(task_id).map(|slot| Arc::ptr_eq(slot, controller)).unwrap_or(false) {
+                guard.remove(task_id);
+            }
+        }
+    }
+
     /// 移除任务控制器（下载循环结束 / 前端删除任务后调用）。
     fn unregister(&self, task_id: &str) {
         if let Ok(mut guard) = self.0.lock() {
@@ -1811,17 +1906,6 @@ fn hf_pause_download(state: State<DownloadRegistry>, task_id: String) -> Result<
     Ok(())
 }
 
-/// 暂停全部正在进行的模型下载：对每个已注册任务置位暂停标志（保留 .part 断点文件）。
-#[tauri::command]
-fn hf_pause_downloads(state: State<DownloadRegistry>) -> Result<(), String> {
-    if let Ok(guard) = state.0.lock() {
-        for slot in guard.values() {
-            slot.pause.store(true, Ordering::Relaxed);
-        }
-    }
-    Ok(())
-}
-
 /// 清除 / 摘除指定任务的控制器（前端重新发起下载或删除任务时调用，防止残留标志影响下一轮）。
 #[tauri::command]
 fn hf_clear_download(state: State<DownloadRegistry>, task_id: String) -> Result<(), String> {
@@ -1830,11 +1914,20 @@ fn hf_clear_download(state: State<DownloadRegistry>, task_id: String) -> Result<
 }
 
 /// 删除本地文件（下载管理中「取消任务并删除缓存」用）。
+/// 出于防御只允许删除模型库目录内的目标，拒绝任意路径的删除请求。
 #[tauri::command]
-fn remove_local_file(path: String) -> Result<(), String> {
+fn remove_local_file(app: AppHandle, path: String) -> Result<(), String> {
     let target = PathBuf::from(path.trim());
     if !target.exists() {
         return Ok(());
+    }
+    let config = read_config(&app)?;
+    let root = models_root(&app, &config)?;
+    // 双方都 canonicalize（解析相对段与大小写差异）后再比较前缀，避免绕过
+    let canonical_target = target.canonicalize().map_err(|error| error.to_string())?;
+    let canonical_root = root.canonicalize().unwrap_or(root);
+    if !canonical_target.starts_with(&canonical_root) {
+        return Err(format!("拒绝删除模型库目录之外的路径：{}", path));
     }
     if target.is_dir() {
         fs::remove_dir_all(&target).map_err(|error| format!("删除目录失败：{}", error))
@@ -1876,49 +1969,19 @@ fn reveal_in_folder(path: String) -> Result<(), String> {
 /// 下载 HF 文件：多通道自动兜底（配置代理 → 直连 → 本地探测代理 → hf-mirror 镜像）。
 /// 返回 (客户端, 实际 URL, 是否已降级)。
 fn download_hf_with_fallback(config_client: &reqwest::blocking::Client, url: &str) -> Result<(reqwest::blocking::Client, String), String> {
-    let base_candidates: Vec<(reqwest::blocking::Client, String)> = std::iter::once((config_client.clone(), url.to_string()))
-        .chain(std::iter::once((direct_client().clone(), url.to_string())))
-        .collect();
-    for (candidate, candidate_url) in base_candidates {
-        if let Ok(response) = candidate
-            .get(&candidate_url)
+    // 只要某通道连接成功（含 4xx 授权类）就返回该通道；由调用者处理状态码
+    let attempt = |client: &reqwest::blocking::Client, url: &str| -> Result<(reqwest::blocking::Client, String), String> {
+        let response = client
+            .get(url)
             .header("user-agent", HF_UA)
             .timeout(std::time::Duration::from_secs(30))
             .send()
-        {
-            // 只要连接成功（含 4xx 授权类），就返回该通道；由调用者处理状态码
-            drop(response);
-            return Ok((candidate, candidate_url));
-        }
-    }
-    // 本地探测代理
-    if let Some(proxy_url) = probe_local_proxy() {
-        if let Ok(proxied) = proxied_client(&proxy_url) {
-            if proxied
-                .get(url)
-                .header("user-agent", HF_UA)
-                .timeout(std::time::Duration::from_secs(30))
-                .send()
-                .is_ok()
-            {
-                return Ok((proxied, url.to_string()));
-            }
-        }
-    }
-    // hf-mirror 镜像
-    if let Some(mirror) = hf_mirror_url(url) {
-        let client = direct_client().clone();
-        if client
-            .get(&mirror)
-            .header("user-agent", HF_UA)
-            .timeout(std::time::Duration::from_secs(30))
-            .send()
-            .is_ok()
-        {
-            return Ok((client, mirror));
-        }
-    }
-    Err("无法访问 HuggingFace（配置代理 / 直连 / 本地代理 / hf-mirror 镜像均失败）".into())
+            .map_err(|error| error.to_string())?;
+        drop(response);
+        Ok((client.clone(), url.to_string()))
+    };
+    with_net_fallback(config_client, url, true, attempt)
+        .map_err(|_| "无法访问 HuggingFace（配置代理 / 直连 / 本地代理 / hf-mirror 镜像均失败）".to_string())
 }
 
 /// 判断下载 URL 是否属于 HuggingFace（官方站或 hf-mirror 镜像），决定是否附加 Token。
@@ -1939,40 +2002,17 @@ async fn hf_whoami(app: AppHandle, token: String) -> Result<String, String> {
 /// 多通道自动兜底验证 HF Token（配置代理 → 直连 → 本地探测代理 → hf-mirror 镜像），与 fetch_hf_json 的通道顺序一致。
 fn verify_hf_token(config_client: reqwest::blocking::Client, token: String) -> Result<String, String> {
     let url = format!("{}/whoami-v2", HF_API_BASE);
-    let mut errors: Vec<String> = Vec::new();
-
-    // 任一通道到达服务端（含 4xx 授权类）即直接返回该结果；仅连接失败才降级到下一通道。
-    if let Some(result) = hf_token_once(&config_client, &url, &token) {
-        return result;
-    } else {
-        errors.push("配置代理".into());
+    // 任一通道到达服务端（含 4xx 授权类）即视为通道成功并返回确定性结果；仅连接失败才降级到下一通道
+    let outcome = with_net_fallback::<Result<String, String>>(&config_client, &url, true, |client, url| {
+        hf_token_once(client, url, &token).ok_or_else(|| "连接失败".to_string())
+    });
+    match outcome {
+        Ok(result) => result,
+        Err(errors) => Err(format!(
+            "无法连接 HuggingFace（{}）。请在「设置 → 网络与代理」选择手动代理后重试",
+            errors.join("；")
+        )),
     }
-    if let Some(result) = hf_token_once(direct_client(), &url, &token) {
-        return result;
-    } else {
-        errors.push("直连".into());
-    }
-    if let Some(proxy_url) = probe_local_proxy() {
-        match proxied_client(&proxy_url) {
-            Ok(proxied) => match hf_token_once(&proxied, &url, &token) {
-                Some(result) => return result,
-                None => errors.push(format!("本地代理 {}", proxy_url)),
-            },
-            Err(error) => errors.push(format!("初始化本地代理失败：{}", error)),
-        }
-    } else {
-        errors.push("未探测到本机代理端口".into());
-    }
-    if let Some(mirror) = hf_mirror_url(&url) {
-        match hf_token_once(direct_client(), &mirror, &token) {
-            Some(result) => return result,
-            None => errors.push("镜像 hf-mirror.com".into()),
-        }
-    }
-    Err(format!(
-        "无法连接 HuggingFace（{}）。请在「设置 → 网络与代理」选择手动代理后重试",
-        errors.join("；")
-    ))
 }
 
 /// 在指定通道发送一次 whoami-v2 验证请求：到达响应（含 4xx 授权类）返回 Some(最终结果)，连接失败返回 None。
@@ -2118,6 +2158,139 @@ async fn hf_avatar(app: AppHandle, author: String) -> Result<Option<String>, Str
     Ok(data_uri)
 }
 
+/// HF / 直链下载共用的传输核心：带鉴权发起请求 → 状态检查（gated 错误协议）→
+/// （可选）Range 断点续传 → 流式落盘（200ms 节流进度 + 速度平滑 + 每任务独立的取消/暂停处理）。
+/// allow_resume：HF 仓库下载启用「文件已存在直接返回」与 Range 续传；直链下载行为保持原样（false）。
+#[allow(clippy::too_many_arguments)]
+fn hf_transfer_loop(
+    app: &AppHandle,
+    registry: &DownloadRegistry,
+    task: &Arc<DownloadTaskControl>,
+    task_id: &str,
+    repo_label: &str,
+    file_label: &str,
+    net_client: &reqwest::blocking::Client,
+    url: &str,
+    hf_token: &str,
+    dest: &Path,
+    allow_resume: bool,
+) -> Result<u64, String> {
+    use std::io::{Read as _, Write as _};
+    let mut request = net_client.get(url).timeout(std::time::Duration::from_secs(3600));
+    if !hf_token.is_empty() && is_hf_url(url) {
+        request = request.bearer_auth(hf_token);
+    }
+    let mut response = request.send().map_err(|error| format!("下载失败：{}", error))?;
+    if !response.status().is_success() {
+        let code = response.status().as_u16();
+        if code == 401 || code == 403 {
+            if hf_token.trim().is_empty() {
+                return Err("HF_GATED_NEED_TOKEN::该模型需要授权（gated），请在设置中配置 Hugging Face Token".into());
+            }
+            return Err("HF_GATED_NO_PERMISSION::该模型无访问权限，请前往网页端同意模型许可协议后重试".into());
+        }
+        if code == 404 {
+            return Err("文件不存在或仓库未公开（HTTP 404）".into());
+        }
+        return Err(format!("下载失败：HTTP {}", code));
+    }
+    let mut full_total: u64 = response.content_length().unwrap_or(0);
+    // 已完整下载过：直接返回，不重复走网络（仅断点续传路径启用）
+    if allow_resume && dest.exists() && full_total > 0 {
+        let existing_len = fs::metadata(dest).map(|meta| meta.len()).unwrap_or(0);
+        if existing_len >= full_total {
+            emit_model_progress(app, task_id, repo_label, file_label, "done", 100, existing_len, full_total, 0, "文件已存在");
+            return Ok(existing_len);
+        }
+    }
+
+    // 断点续传：目标已存在则携带 Range 续传；服务器忽略 Range（返回 200）时从头覆盖
+    let mut downloaded: u64 = 0;
+    if allow_resume && dest.exists() {
+        downloaded = fs::metadata(dest).map(|meta| meta.len()).unwrap_or(0);
+    }
+    let mut file_handle: fs::File;
+    if downloaded > 0 {
+        let range = format!("bytes={}-", downloaded);
+        let mut ranged_request = net_client.get(url).header("range", &range).timeout(std::time::Duration::from_secs(3600));
+        if !hf_token.is_empty() && is_hf_url(url) {
+            ranged_request = ranged_request.bearer_auth(hf_token);
+        }
+        let ranged = ranged_request.send().map_err(|error| format!("下载失败：{}", error))?;
+        if ranged.status().as_u16() == 206 {
+            response = ranged;
+            file_handle = fs::OpenOptions::new().append(true).create(true).open(dest).map_err(|error| format!("打开下载文件失败：{}", error))?;
+        } else if ranged.status().is_success() {
+            response = ranged;
+            downloaded = 0;
+            if let Some(total) = response.content_length() {
+                full_total = total;
+            }
+            file_handle = fs::File::create(dest).map_err(|error| format!("创建下载文件失败：{}", error))?;
+        } else {
+            return Err(format!("下载失败：HTTP {}", ranged.status()));
+        }
+    } else {
+        file_handle = fs::File::create(dest).map_err(|error| format!("创建下载文件失败：{}", error))?;
+    }
+
+    let mut buffer = [0u8; 128 * 1024];
+    let start_ms = now_ms();
+    let mut last_emit_ms = start_ms;
+    let mut last_speed_ms = start_ms;
+    let mut last_speed_bytes = downloaded;
+    let mut current_speed: u64 = 0;
+    loop {
+        // 孤儿循环自检：自己已不是该 taskId 注册的控制器（被新一轮下载接管或已摘除）→ 立即退出，
+        // 否则暂停 / 取消标志永远送不到这个循环，它会带着过期进度一直下载
+        if !registry.is_current(task_id, task) {
+            drop(file_handle);
+            return Err("下载任务已被接管".into());
+        }
+        if task.cancel.load(Ordering::Relaxed) {
+            drop(file_handle);
+            let _ = fs::remove_file(dest);
+            let _ = fs::remove_file(dest.with_extension("part"));
+            emit_model_progress(app, task_id, repo_label, file_label, "cancelled", 0, 0, 0, 0, "下载已取消");
+            return Err("下载已取消".into());
+        }
+        if task.pause.load(Ordering::Relaxed) {
+            // 暂停：保留 .part 断点文件（前端「继续」时按 Range 续传），清掉暂停标志
+            task.pause.store(false, Ordering::Relaxed);
+            file_handle.flush().ok();
+            drop(file_handle);
+            let part = dest.with_extension("part");
+            let _ = fs::remove_file(&part);
+            let _ = fs::rename(dest, &part);
+            emit_model_progress(app, task_id, repo_label, file_label, "paused", 0, downloaded, full_total, 0, "已暂停，剩余部分保留在 .part 断点文件");
+            return Err("下载已暂停".into());
+        }
+        let count = response.read(&mut buffer).map_err(|error| format!("下载中断：{}", error))?;
+        if count == 0 {
+            break;
+        }
+        file_handle.write_all(&buffer[..count]).map_err(|error| format!("写入下载文件失败：{}", error))?;
+        downloaded += count as u64;
+        let now = now_ms();
+        let speed_dt = now.saturating_sub(last_speed_ms);
+        if speed_dt >= 500 {
+            let bytes_delta = downloaded.saturating_sub(last_speed_bytes);
+            let instant = bytes_delta * 1000 / speed_dt;
+            current_speed = if current_speed == 0 { instant } else { (current_speed * 3 + instant * 7) / 10 };
+            last_speed_ms = now;
+            last_speed_bytes = downloaded;
+        }
+        if now.saturating_sub(last_emit_ms) >= 200 {
+            let percent = if full_total > 0 { ((downloaded as f64 / full_total as f64) * 100.0) as u32 } else { 0 };
+            emit_model_progress(app, task_id, repo_label, file_label, "download", percent, downloaded, full_total, current_speed, format!("{downloaded}/{full_total}"));
+            last_emit_ms = now;
+        }
+    }
+    file_handle.flush().map_err(|error| error.to_string())?;
+    emit_model_progress(app, task_id, repo_label, file_label, "done", 100, downloaded, full_total, 0, "下载完成");
+    Ok(downloaded)
+}
+
 /// 下载 HuggingFace 仓库中的指定文件到模型存储目录（流式 + 进度事件 + 断点续传）。
 /// task_id：前端为每次下载生成的唯一标识；取消 / 暂停只作用于该任务自己的控制器。
 #[tauri::command]
@@ -2128,10 +2301,10 @@ async fn hf_download(app: AppHandle, state: State<'_, DownloadRegistry>, repo: S
     let root = models_root(&app, &config)?;
     let registry = state.inner().clone();
     let task = registry.register(&task_id);
+    let loop_registry = registry.clone();
+    let cleanup_task = task.clone();
     let closure_task_id = task_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        use std::io::Read as _;
-        use std::io::Write as _;
         let client = build_net_client(&network)?;
         let dest = model_download_dest(&root, &repo, &file)?;
         if let Some(parent) = dest.parent() {
@@ -2146,123 +2319,15 @@ async fn hf_download(app: AppHandle, state: State<'_, DownloadRegistry>, repo: S
         emit_model_progress(&app, &closure_task_id, &repo, &file, "download", 0, 0, 0, 0, "开始下载");
         // 多通道兜底：配置代理 → 直连 → 本机代理端口 → hf-mirror 镜像（浏览器常走 TUN / 软路由透明代理）
         let (net_client, effective_url) = download_hf_with_fallback(&client, &url)?;
-        let url = effective_url;
-        let mut request = net_client.get(&url).timeout(std::time::Duration::from_secs(3600));
-        if !hf_token.is_empty() && is_hf_url(&url) {
-            request = request.bearer_auth(&hf_token);
-        }
-        let mut response = request.send().map_err(|error| format!("下载失败：{}", error))?;
-        if !response.status().is_success() {
-            let code = response.status().as_u16();
-            if code == 401 || code == 403 {
-                if hf_token.trim().is_empty() {
-                    return Err("HF_GATED_NEED_TOKEN::该模型需要授权（gated），请在设置中配置 Hugging Face Token".into());
-                }
-                return Err("HF_GATED_NO_PERMISSION::该模型无访问权限，请前往网页端同意模型许可协议后重试".into());
-            }
-            if code == 404 {
-                return Err("文件不存在或仓库未公开（HTTP 404）".into());
-            }
-            return Err(format!("下载失败：HTTP {}", code));
-        }
-        let mut full_total: u64 = response.content_length().unwrap_or(0);
-        if dest.exists() && full_total > 0 {
-            let existing_len = fs::metadata(&dest).map(|meta| meta.len()).unwrap_or(0);
-            if existing_len >= full_total {
-                emit_model_progress(&app, &closure_task_id, &repo, &file, "done", 100, existing_len, full_total, 0, "文件已存在");
-                return Ok(HfDownloadResult {
-                    path: dest.to_string_lossy().to_string(),
-                    size_bytes: existing_len,
-                });
-            }
-        }
-
-        // 断点续传：目标已存在则携带 Range 续传；服务器忽略 Range（返回 200）时从头覆盖
-        let mut downloaded: u64 = 0;
-        if dest.exists() {
-            downloaded = fs::metadata(&dest).map(|meta| meta.len()).unwrap_or(0);
-        }
-        let mut file_handle: fs::File;
-        if downloaded > 0 {
-            let range = format!("bytes={}-", downloaded);
-            let mut ranged_request = net_client.get(&url).header("range", &range).timeout(std::time::Duration::from_secs(3600));
-            if !hf_token.is_empty() && is_hf_url(&url) {
-                ranged_request = ranged_request.bearer_auth(&hf_token);
-            }
-            let ranged = ranged_request.send().map_err(|error| format!("下载失败：{}", error))?;
-            if ranged.status().as_u16() == 206 {
-                response = ranged;
-                file_handle = fs::OpenOptions::new().append(true).create(true).open(&dest).map_err(|error| format!("打开下载文件失败：{}", error))?;
-            } else if ranged.status().is_success() {
-                response = ranged;
-                downloaded = 0;
-                if let Some(total) = response.content_length() {
-                    full_total = total;
-                }
-                file_handle = fs::File::create(&dest).map_err(|error| format!("创建下载文件失败：{}", error))?;
-            } else {
-                return Err(format!("下载失败：HTTP {}", ranged.status()));
-            }
-        } else {
-            file_handle = fs::File::create(&dest).map_err(|error| format!("创建下载文件失败：{}", error))?;
-        }
-
-        let mut buffer = [0u8; 128 * 1024];
-        let start_ms = now_ms();
-        let mut last_emit_ms = start_ms;
-        let mut last_speed_ms = start_ms;
-        let mut last_speed_bytes = downloaded;
-        let mut current_speed: u64 = 0;
-        loop {
-            if task.cancel.load(Ordering::Relaxed) {
-                drop(file_handle);
-                let _ = fs::remove_file(&dest);
-                let _ = fs::remove_file(dest.with_extension("part"));
-                emit_model_progress(&app, &closure_task_id, &repo, &file, "cancelled", 0, 0, 0, 0, "下载已取消");
-                return Err("下载已取消".into());
-            }
-            if task.pause.load(Ordering::Relaxed) {
-                // 暂停：保留 .part 断点文件（前端「继续」时按 Range 续传），清掉暂停标志
-                task.pause.store(false, Ordering::Relaxed);
-                file_handle.flush().ok();
-                drop(file_handle);
-                let part = dest.with_extension("part");
-                let _ = fs::remove_file(&part);
-                let _ = fs::rename(&dest, &part);
-                emit_model_progress(&app, &closure_task_id, &repo, &file, "paused", 0, downloaded, full_total, 0, "已暂停，剩余部分保留在 .part 断点文件");
-                return Err("下载已暂停".into());
-            }
-            let count = response.read(&mut buffer).map_err(|error| format!("下载中断：{}", error))?;
-            if count == 0 {
-                break;
-            }
-            file_handle.write_all(&buffer[..count]).map_err(|error| format!("写入下载文件失败：{}", error))?;
-            downloaded += count as u64;
-            let now = now_ms();
-            let speed_dt = now.saturating_sub(last_speed_ms);
-            if speed_dt >= 500 {
-                let bytes_delta = downloaded.saturating_sub(last_speed_bytes);
-                let instant = bytes_delta * 1000 / speed_dt;
-                current_speed = if current_speed == 0 { instant } else { (current_speed * 3 + instant * 7) / 10 };
-                last_speed_ms = now;
-                last_speed_bytes = downloaded;
-            }
-            if now.saturating_sub(last_emit_ms) >= 200 {
-                let percent = if full_total > 0 { ((downloaded as f64 / full_total as f64) * 100.0) as u32 } else { 0 };
-                emit_model_progress(&app, &closure_task_id, &repo, &file, "download", percent, downloaded, full_total, current_speed, format!("{downloaded}/{full_total}"));
-                last_emit_ms = now;
-            }
-        }
-        file_handle.flush().map_err(|error| error.to_string())?;
-        emit_model_progress(&app, &closure_task_id, &repo, &file, "done", 100, downloaded, full_total, 0, "下载完成");
+        let size_bytes = hf_transfer_loop(&app, &loop_registry, &task, &closure_task_id, &repo, &file, &net_client, &effective_url, &hf_token, &dest, true)?;
         Ok(HfDownloadResult {
             path: dest.to_string_lossy().to_string(),
-            size_bytes: downloaded,
+            size_bytes,
         })
     })
     .await;
-    // 无论成功失败都摘除控制器，避免注册表残留影响后续取消 / 暂停
-    registry.unregister(&task_id);
+    // 无论成功失败都摘除控制器（若已被新一轮下载接管则保留新循环的控制器）
+    registry.unregister_if_current(&task_id, &cleanup_task);
     result.map_err(|error| format!("下载任务中断：{}", error))?
 }
 
@@ -2277,10 +2342,10 @@ async fn hf_download_url(app: AppHandle, state: State<'_, DownloadRegistry>, url
     let root = models_root(&app, &config)?;
     let registry = state.inner().clone();
     let task = registry.register(&task_id);
+    let loop_registry = registry.clone();
+    let cleanup_task = task.clone();
     let closure_task_id = task_id.clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
-        use std::io::Read as _;
-        use std::io::Write as _;
         let client = build_net_client(&network)?;
         let raw_name = url.rsplit('/').next().filter(|name| !name.trim().is_empty()).unwrap_or("model.gguf").trim().to_string();
         let file_name: String = raw_name
@@ -2298,79 +2363,14 @@ async fn hf_download_url(app: AppHandle, state: State<'_, DownloadRegistry>, url
         emit_model_progress(&app, &closure_task_id, repo_id, &file_name, "download", 0, 0, 0, 0, "开始下载");
         // 多通道兜底：配置代理 → 直连 → 本机代理端口 → hf-mirror 镜像
         let (net_client, effective_url) = download_hf_with_fallback(&client, &url)?;
-        let url = effective_url;
-        let mut request = net_client.get(&url).timeout(std::time::Duration::from_secs(3600));
-        if !hf_token.is_empty() && is_hf_url(&url) {
-            request = request.bearer_auth(&hf_token);
-        }
-        let mut response = request.send().map_err(|error| format!("下载失败：{}", error))?;
-        if !response.status().is_success() {
-            let code = response.status().as_u16();
-            if code == 401 || code == 403 {
-                if hf_token.trim().is_empty() {
-                    return Err("HF_GATED_NEED_TOKEN::该模型需要授权（gated），请在设置中配置 Hugging Face Token".into());
-                }
-                return Err("HF_GATED_NO_PERMISSION::该模型无访问权限，请前往网页端同意模型许可协议后重试".into());
-            }
-            return Err(format!("下载失败：HTTP {}", response.status()));
-        }
-        let full_total: u64 = response.content_length().unwrap_or(0);
-        let mut file_handle = fs::File::create(&dest).map_err(|error| format!("创建下载文件失败：{}", error))?;
-        let mut downloaded: u64 = 0;
-        let mut buffer = [0u8; 128 * 1024];
-        let start_ms = now_ms();
-        let mut last_emit_ms = start_ms;
-        let mut last_speed_ms = start_ms;
-        let mut last_speed_bytes = downloaded;
-        let mut current_speed: u64 = 0;
-        loop {
-            if task.cancel.load(Ordering::Relaxed) {
-                drop(file_handle);
-                let _ = fs::remove_file(&dest);
-                let _ = fs::remove_file(dest.with_extension("part"));
-                emit_model_progress(&app, &closure_task_id, repo_id, &file_name, "cancelled", 0, 0, 0, 0, "下载已取消");
-                return Err("下载已取消".into());
-            }
-            if task.pause.load(Ordering::Relaxed) {
-                task.pause.store(false, Ordering::Relaxed);
-                file_handle.flush().ok();
-                drop(file_handle);
-                let part = dest.with_extension("part");
-                let _ = fs::remove_file(&part);
-                let _ = fs::rename(&dest, &part);
-                emit_model_progress(&app, &closure_task_id, repo_id, &file_name, "paused", 0, downloaded, full_total, 0, "已暂停，剩余部分保留在 .part 断点文件");
-                return Err("下载已暂停".into());
-            }
-            let count = response.read(&mut buffer).map_err(|error| format!("下载中断：{}", error))?;
-            if count == 0 {
-                break;
-            }
-            file_handle.write_all(&buffer[..count]).map_err(|error| format!("写入下载文件失败：{}", error))?;
-            downloaded += count as u64;
-            let now = now_ms();
-            let speed_dt = now.saturating_sub(last_speed_ms);
-            if speed_dt >= 500 {
-                let bytes_delta = downloaded.saturating_sub(last_speed_bytes);
-                let instant = bytes_delta * 1000 / speed_dt;
-                current_speed = if current_speed == 0 { instant } else { (current_speed * 3 + instant * 7) / 10 };
-                last_speed_ms = now;
-                last_speed_bytes = downloaded;
-            }
-            if now.saturating_sub(last_emit_ms) >= 200 {
-                let percent = if full_total > 0 { ((downloaded as f64 / full_total as f64) * 100.0) as u32 } else { 0 };
-                emit_model_progress(&app, &closure_task_id, repo_id, &file_name, "download", percent, downloaded, full_total, current_speed, format!("{downloaded}/{full_total}"));
-                last_emit_ms = now;
-            }
-        }
-        file_handle.flush().map_err(|error| error.to_string())?;
-        emit_model_progress(&app, &closure_task_id, repo_id, &file_name, "done", 100, downloaded, full_total, 0, "下载完成");
+        let size_bytes = hf_transfer_loop(&app, &loop_registry, &task, &closure_task_id, repo_id, &file_name, &net_client, &effective_url, &hf_token, &dest, false)?;
         Ok(HfDownloadResult {
             path: dest.to_string_lossy().to_string(),
-            size_bytes: downloaded,
+            size_bytes,
         })
     })
     .await;
-    registry.unregister(&task_id);
+    registry.unregister_if_current(&task_id, &cleanup_task);
     result.map_err(|error| format!("下载任务中断：{}", error))?
 }
 
@@ -2516,10 +2516,26 @@ impl Default for NetworkConfig {
     }
 }
 
-/// 按配置构建 reqwest 客户端：manual 注入 Proxy::all，system 走系统代理（默认行为），direct 直连并忽略代理。
+/// 按配置构建 reqwest 客户端（带缓存）：网络配置不变时复用同一 Client，
+/// 避免每个命令重建连接池 + TLS 会话（hf_avatar 每个作者调用一次，开销成倍放大）。
+/// 配置变更（key 不匹配）时自动重建，无需手动失效。
 fn build_net_client(network: &NetworkConfig) -> Result<reqwest::blocking::Client, String> {
+    static CLIENT_CACHE: OnceLock<Mutex<Option<(String, reqwest::blocking::Client)>>> = OnceLock::new();
+    let key = format!("{}|{}", network.proxy_mode, network.proxy_url.trim());
+    if let Some(client) = CLIENT_CACHE.get_or_init(|| Mutex::new(None)).lock().ok().and_then(|guard| guard.as_ref().filter(|(cached_key, _)| cached_key == &key).map(|(_, client)| client.clone())) {
+        return Ok(client);
+    }
+    let client = build_net_client_fresh(network)?;
+    if let Ok(mut guard) = CLIENT_CACHE.get_or_init(|| Mutex::new(None)).lock() {
+        *guard = Some((key, client.clone()));
+    }
+    Ok(client)
+}
+
+/// 实际构建逻辑（无缓存）：manual 注入 Proxy::all，system 走系统代理（默认行为），direct 直连并忽略代理。
+fn build_net_client_fresh(network: &NetworkConfig) -> Result<reqwest::blocking::Client, String> {
     let mut builder = reqwest::blocking::Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .user_agent(HF_UA)
         .connect_timeout(std::time::Duration::from_secs(10));
     if network.proxy_mode == "manual" {
         let url = network.proxy_url.trim();
@@ -2776,7 +2792,7 @@ fn fetch_github_release(client: &reqwest::blocking::Client, url: &str) -> Result
     let response = client
         .get(url)
         .header("accept", "application/vnd.github+json")
-        .header("user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .header("user-agent", HF_UA)
         .timeout(std::time::Duration::from_secs(30))
         .send()
         .map_err(|error| format!("请求 GitHub API 失败：{}", error))?;
@@ -2792,25 +2808,8 @@ fn fetch_github_release(client: &reqwest::blocking::Client, url: &str) -> Result
 
 /// GitHub API 多通道兜底：配置代理 → 直连 → 本机探测代理端口；错误信息汇总各通道原因。
 fn fetch_github_release_with_fallback(config_client: &reqwest::blocking::Client, url: &str) -> Result<serde_json::Value, String> {
-    let mut errors: Vec<String> = Vec::new();
-    match fetch_github_release(config_client, url) {
-        Ok(value) => return Ok(value),
-        Err(error) => errors.push(format!("配置代理通道：{}", error)),
-    }
-    match fetch_github_release(direct_client(), url) {
-        Ok(value) => return Ok(value),
-        Err(error) => errors.push(format!("直连：{}", error)),
-    }
-    if let Some(proxy_url) = probe_local_proxy() {
-        match proxied_client(&proxy_url) {
-            Ok(proxied) => match fetch_github_release(&proxied, url) {
-                Ok(value) => return Ok(value),
-                Err(error) => errors.push(format!("本地代理 {}：{}", proxy_url, error)),
-            },
-            Err(error) => errors.push(format!("初始化本地代理 {} 失败：{}", proxy_url, error)),
-        }
-    }
-    Err(format!("GitHub API 连接失败（{}）。请在「设置 → 网络与代理」选择手动代理（Clash 端口 7897 / V2rayN 10809）后重试", errors.join("；")))
+    with_net_fallback(config_client, url, false, fetch_github_release)
+        .map_err(|errors| format!("GitHub API 连接失败（{}）。请在「设置 → 网络与代理」选择手动代理（Clash 端口 7897 / V2rayN 10809）后重试", errors.join("；")))
 }
 
 fn version_number(value: &str) -> Vec<u64> {
@@ -2994,9 +2993,11 @@ fn download_app_update_impl(app: AppHandle, url: String, file_name: String, expe
         return Ok(destination.to_string_lossy().to_string());
     }
     let temporary = destination.with_extension(format!("part.{}", now_ms()));
-    UPDATE_CANCEL_FLAG.store(false, Ordering::Relaxed);
+    // 应用自更新链路：持有 RAII 守卫，任何退出路径自动复位自己的取消标志
+    let cancel = CancelFlag(&APP_UPDATE_CANCEL);
+    let _guard = CancelGuard(cancel);
     let client = build_net_client(&read_config(&app)?.network.clone().unwrap_or_default())?;
-    let download_result = stream_download_with_fallback(&client, &normalized, &temporary, &app);
+    let download_result = stream_download_with_fallback(cancel, &client, &normalized, &temporary, &app);
     if let Err(error) = download_result {
         let _ = fs::remove_file(&temporary);
         return Err(error);
@@ -3018,7 +3019,7 @@ async fn download_app_update(app: AppHandle, url: String, file_name: String, siz
 
 #[tauri::command]
 fn cancel_app_update() -> Result<(), String> {
-    UPDATE_CANCEL_FLAG.store(true, Ordering::Relaxed);
+    CancelFlag(&APP_UPDATE_CANCEL).cancel();
     Ok(())
 }
 
@@ -3255,7 +3256,7 @@ fn emit_download_progress(app: &AppHandle, phase: &str, percent: u32, downloaded
 }
 
 /// 流式下载并实时发送进度事件（download-progress），返回最终字节数。
-fn stream_download(client: &reqwest::blocking::Client, url: &str, dest: &Path, app: &AppHandle) -> Result<u64, String> {
+fn stream_download(cancel: CancelFlag, client: &reqwest::blocking::Client, url: &str, dest: &Path, app: &AppHandle) -> Result<u64, String> {
     use std::io::Read as _;
     use std::io::Write as _;
     emit_download_progress(app, "download", 0, 0, 0, 0, "开始下载");
@@ -3273,7 +3274,7 @@ fn stream_download(client: &reqwest::blocking::Client, url: &str, dest: &Path, a
     let mut last_speed_bytes = downloaded;
     let mut current_speed: u64 = 0;
     loop {
-        if UPDATE_CANCEL_FLAG.load(Ordering::Relaxed) {
+        if cancel.cancelled() {
             let _ = fs::remove_file(dest);
             return Err("更新已取消".into());
         }
@@ -3311,14 +3312,14 @@ fn stream_download(client: &reqwest::blocking::Client, url: &str, dest: &Path, a
 }
 
 /// 流式下载多通道兜底：配置代理 → 直连 → 本机探测代理端口；失败时汇总各通道原因。
-fn stream_download_with_fallback(client: &reqwest::blocking::Client, url: &str, dest: &Path, app: &AppHandle) -> Result<u64, String> {
+fn stream_download_with_fallback(cancel: CancelFlag, client: &reqwest::blocking::Client, url: &str, dest: &Path, app: &AppHandle) -> Result<u64, String> {
     let mut errors: Vec<String> = Vec::new();
-    match stream_download(client, url, dest, app) {
+    match stream_download(cancel, client, url, dest, app) {
         Ok(size) => return Ok(size),
         Err(error) => errors.push(format!("配置代理通道：{}", error)),
     }
     emit_download_progress(app, "download", 0, 0, 0, 0, "代理通道失败，切换直连重试");
-    match stream_download(direct_client(), url, dest, app) {
+    match stream_download(cancel, direct_client(), url, dest, app) {
         Ok(size) => return Ok(size),
         Err(error) => errors.push(format!("直连：{}", error)),
     }
@@ -3326,7 +3327,7 @@ fn stream_download_with_fallback(client: &reqwest::blocking::Client, url: &str, 
         match proxied_client(&proxy_url) {
             Ok(proxied) => {
                 emit_download_progress(app, "download", 0, 0, 0, 0, format!("切换本地代理 {} 重试", proxy_url));
-                match stream_download(&proxied, url, dest, app) {
+                match stream_download(cancel, &proxied, url, dest, app) {
                     Ok(size) => return Ok(size),
                     Err(error) => errors.push(format!("本地代理 {}：{}", proxy_url, error)),
                 }
@@ -3351,13 +3352,13 @@ fn safe_zip_path(base: &Path, name: &str) -> Result<PathBuf, String> {
 }
 
 /// 解压 zip 到目标目录，并逐条发送进度。
-fn extract_zip_archive(zip_path: &Path, dest_dir: &Path, app: &AppHandle) -> Result<(), String> {
+fn extract_zip_archive(cancel: CancelFlag, zip_path: &Path, dest_dir: &Path, app: &AppHandle) -> Result<(), String> {
     emit_download_progress(app, "extract", 0, 0, 0, 0, "开始解压");
     let file = fs::File::open(zip_path).map_err(|error| format!("打开压缩包失败：{}", error))?;
     let mut archive = zip::ZipArchive::new(file).map_err(|error| format!("读取压缩包失败：{}", error))?;
     let total_entries = archive.len();
     for index in 0..total_entries {
-        if UPDATE_CANCEL_FLAG.load(Ordering::Relaxed) {
+        if cancel.cancelled() {
             return Err("更新已取消".into());
         }
         let mut entry = archive.by_index(index).map_err(|error| format!("读取压缩条目失败：{}", error))?;
@@ -3421,20 +3422,39 @@ fn install_bin_dir(bin_dir: &Path, target: &Path, version: &str, backend: &str) 
     Ok(())
 }
 
-/// 更新任务取消标志：前端点击“取消”后置位，下载/解压循环检查并中断。
-static UPDATE_CANCEL_FLAG: AtomicBool = AtomicBool::new(false);
+/// 更新任务取消标志（按链路独立）：「应用自更新」与「llama.cpp 引擎更新」各持一个，
+/// 取消任何一边都不会误杀另一边正在进行下载 / 解压。
+static APP_UPDATE_CANCEL: AtomicBool = AtomicBool::new(false);
+static LLAMACPP_UPDATE_CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// 指向某条链路取消标志的句柄，随调用参数传递给下载 / 解压循环。
+#[derive(Clone, Copy)]
+struct CancelFlag(&'static AtomicBool);
+impl CancelFlag {
+    fn cancelled(self) -> bool { self.0.load(Ordering::Relaxed) }
+    fn cancel(self) { self.0.store(true, Ordering::Relaxed) }
+    fn reset(self) { self.0.store(false, Ordering::Relaxed) }
+}
+
+/// RAII：任务函数持有后无论成功 / 失败 / 提前返回，离开作用域都自动复位标志，
+/// 取代失败分支里成串的手动 `store(false)`。
+struct CancelGuard(CancelFlag);
+impl Drop for CancelGuard {
+    fn drop(&mut self) { self.0.reset(); }
+}
 
 /// 取消正在进行的 llama.cpp 更新（下载 / 解压阶段）。
 #[tauri::command]
 fn cancel_llamacpp_update() -> Result<(), String> {
-    UPDATE_CANCEL_FLAG.store(true, Ordering::Relaxed);
+    CancelFlag(&LLAMACPP_UPDATE_CANCEL).cancel();
     Ok(())
 }
 
 /// 一键更新 / 重新安装 llama.cpp（内部阻塞实现）。
 fn download_llamacpp_impl(app: AppHandle, backend: String, cuda_version: Option<String>, asset_url: Option<String>, asset_name: Option<String>, tag: Option<String>) -> Result<String, String> {
-    // 0) 重置取消标志，开启新一轮任务
-    UPDATE_CANCEL_FLAG.store(false, Ordering::Relaxed);
+    // 引擎更新链路：RAII 守卫负责在任何退出路径复位取消标志（只影响本链路，不波及应用自更新）
+    let cancel = CancelFlag(&LLAMACPP_UPDATE_CANCEL);
+    let _guard = CancelGuard(cancel);
     // 1) 确认主程序（托管中的 llama-server）未在运行
     {
         let state = app.state::<ProcessState>();
@@ -3480,16 +3500,14 @@ fn download_llamacpp_impl(app: AppHandle, backend: String, cuda_version: Option<
 
     // 4) 下载 + 解压（取消 / 失败时清理临时文件）
     let client = build_net_client(&network)?;
-    if let Err(error) = stream_download_with_fallback(&client, &download_url, &zip_path, &app) {
+    if let Err(error) = stream_download_with_fallback(cancel, &client, &download_url, &zip_path, &app) {
         let _ = fs::remove_file(&zip_path);
         let _ = fs::remove_dir_all(&temp_root);
-        UPDATE_CANCEL_FLAG.store(false, Ordering::Relaxed);
         return Err(error);
     }
-    if let Err(error) = extract_zip_archive(&zip_path, &extract_dir, &app) {
+    if let Err(error) = extract_zip_archive(cancel, &zip_path, &extract_dir, &app) {
         let _ = fs::remove_file(&zip_path);
         let _ = fs::remove_dir_all(&temp_root);
-        UPDATE_CANCEL_FLAG.store(false, Ordering::Relaxed);
         return Err(error);
     }
 
@@ -3508,7 +3526,7 @@ fn download_llamacpp_impl(app: AppHandle, backend: String, cuda_version: Option<
             let mut need_download = false;
             if cached_zip.exists() {
                 emit_download_progress(&app, "extract", 0, 0, 0, 0, format!("使用本地缓存的 CUDA 运行时 {}", &cudart_name));
-                if let Err(_error) = extract_zip_archive(&cached_zip, &extract_dir, &app) {
+                if let Err(_error) = extract_zip_archive(cancel, &cached_zip, &extract_dir, &app) {
                     // 缓存损坏：删除后重新下载
                     let _ = fs::remove_file(&cached_zip);
                     need_download = true;
@@ -3518,16 +3536,14 @@ fn download_llamacpp_impl(app: AppHandle, backend: String, cuda_version: Option<
             }
             if need_download {
                 emit_download_progress(&app, "download", 0, 0, 0, 0, format!("正在下载 CUDA 运行时 {}", &cudart_name));
-                if let Err(error) = stream_download_with_fallback(&client, &cudart_url, &cached_zip, &app) {
+                if let Err(error) = stream_download_with_fallback(cancel, &client, &cudart_url, &cached_zip, &app) {
                     let _ = fs::remove_file(&cached_zip);
                     let _ = fs::remove_dir_all(&temp_root);
-                    UPDATE_CANCEL_FLAG.store(false, Ordering::Relaxed);
                     return Err(format!("下载 CUDA 运行时失败：{}", error));
                 }
-                if let Err(error) = extract_zip_archive(&cached_zip, &extract_dir, &app) {
+                if let Err(error) = extract_zip_archive(cancel, &cached_zip, &extract_dir, &app) {
                     let _ = fs::remove_file(&cached_zip);
                     let _ = fs::remove_dir_all(&temp_root);
-                    UPDATE_CANCEL_FLAG.store(false, Ordering::Relaxed);
                     return Err(format!("解压 CUDA 运行时失败：{}", error));
                 }
             }
@@ -3539,7 +3555,6 @@ fn download_llamacpp_impl(app: AppHandle, backend: String, cuda_version: Option<
         Some(path) => path,
         None => {
             let _ = fs::remove_dir_all(&temp_root);
-            UPDATE_CANCEL_FLAG.store(false, Ordering::Relaxed);
             return Err("压缩包中未找到 llama-server（可能是 cudart 运行时包或其他平台构建），已清理临时文件".into());
         }
     };
@@ -3553,7 +3568,6 @@ fn download_llamacpp_impl(app: AppHandle, backend: String, cuda_version: Option<
     emit_download_progress(&app, "install", 0, 0, 0, 0, "正在覆盖安装");
     if let Err(error) = install_bin_dir(&bin_dir, &target, &version, &backend) {
         let _ = fs::remove_dir_all(&temp_root);
-        UPDATE_CANCEL_FLAG.store(false, Ordering::Relaxed);
         return Err(error);
     }
     if backend == "cuda" && !cuda_full.is_empty() {
@@ -3572,7 +3586,6 @@ fn download_llamacpp_impl(app: AppHandle, backend: String, cuda_version: Option<
     // 8) 清理临时的下载与解压文件
     let _ = fs::remove_file(&zip_path);
     let _ = fs::remove_dir_all(&temp_root);
-    UPDATE_CANCEL_FLAG.store(false, Ordering::Relaxed);
     emit_download_progress(&app, "done", 100, 0, 0, 0, "更新完成");
     Ok(new_server_path.to_string_lossy().to_string())
 }
@@ -3651,7 +3664,7 @@ pub fn run() {
             react_mounted_ms: None,
             reported: false,
         })))
-        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_whoami, hf_avatar, hf_download, hf_download_url, hf_cancel_download, hf_pause_download, hf_pause_downloads, hf_clear_download, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, pick_files, pick_folder, pick_server_dir, expand_paths, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
+        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_whoami, hf_avatar, hf_download, hf_download_url, hf_cancel_download, hf_pause_download, hf_clear_download, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, pick_files, pick_folder, pick_server_dir, expand_paths, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
         .setup(|app| {
             configure_main_window(app)?;
             setup_tray(app)?;

@@ -86,7 +86,6 @@ export interface AppConfig {
     proxyUrl?: string;
   };
   /** 自定义 llama.cpp 安装目录（缺省为应用数据目录下的 llamacpp） */
-  /** 自定义 llama.cpp 安装目录（缺省为应用数据目录下的 llamacpp） */
   llamacppDir?: string;
   /** 模型存储根目录（社区下载 / 自动扫描，缺省为应用数据目录下的 models） */
   modelsDir?: string;

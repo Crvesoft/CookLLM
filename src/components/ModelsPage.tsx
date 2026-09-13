@@ -1,9 +1,8 @@
-import { Box, Check, ChevronDown, Cpu, Database, DownloadCloud, FileBox, Gauge, HardDrive, ImageIcon, Layers3, ListChecks, MemoryStick, MoreHorizontal, PenLine, Pencil, Play, Plus, Search, SlidersHorizontal, Square, Star, Timer, Trash2 } from "lucide-react";
+import { Box, Check, ChevronDown, Cpu, Database, FileBox, Gauge, HardDrive, ImageIcon, Layers3, ListChecks, MemoryStick, MoreHorizontal, PenLine, Pencil, Play, Plus, Search, SlidersHorizontal, Square, Star, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { usePointerReorder, type CardHandlers } from "../hooks/usePointerReorder";
-import type { ActiveDownload } from "./ExplorePage";
-import type { AppConfig, ModelAsset, ModelDownloadProgress, Profile, ServerStatus } from "../types";
+import type { AppConfig, ModelAsset, Profile, ServerStatus } from "../types";
 import { cn, fileName, formatBytes, modelTitle } from "../utils";
 import ConfirmModal from "./ConfirmModal";
 
@@ -13,9 +12,6 @@ interface Props {
   onEditProfile: (model: ModelAsset, profile: Profile) => void; onAddProfile: (model: ModelAsset) => void; onRenameModel: (modelId: string, displayName: string) => void;
   onSetDefaultModel: (modelId: string) => void; onReorderModel: (orderedIds: string[]) => void; onDeleteMultipleModels: (ids: string[]) => Promise<void>;
   onOpenProfiles: () => void; menuModelId: string | null; onMenuModel: (id: string | null) => void; onRemoveModel: (id: string) => void;
-  /** 社区探索下载中任务（顶部占位卡） */
-  downloads: ActiveDownload[];
-  modelProgress: Record<string, ModelDownloadProgress>;
   /** 下载完成后刚导入的模型 id（卡片显示「刚刚导入」Badge） */
   justImportedIds: Set<string>;
 }
@@ -82,28 +78,7 @@ export default function ModelsPage(props: Props) {
       </div>
     </div>
     {selectMode && selectedIds.size > 0 && <div className="bulk-bar"><span>{t("bulkSelectedPrefix")}<strong>{selectedIds.size}</strong>{t("models.unitModels")}</span><button className="text-button" onClick={selectAll}>{t("selectAll")}</button><div className="bulk-spacer" /><button className="secondary-button compact" disabled={!selectedIds.size} onClick={() => setSelectedIds(new Set())}>{t("clearSelection")}</button><button className="danger-button" disabled={!selectedIds.size} onClick={() => setConfirmDelete(true)}><Trash2 size={14} />{t("deleteSelected", { count: selectedIds.size })}</button></div>}
-    {props.models.length ? <section className="model-grid">{modelOrder.map((id) => {
-    {props.downloads.filter((item) => item.status === "active").map((download) => {
-      const key = download.repo + "::" + download.file;
-      const progress = props.modelProgress[key];
-      const speed = progress && progress.speedBps > 0 ? (progress.speedBps >= 1024 * 1024 ? (progress.speedBps / 1024 / 1024).toFixed(1) + " MB/s" : Math.round(progress.speedBps / 1024) + " KB/s") : "";
-      const remaining = progress && progress.speedBps > 0 && progress.total > 0
-        ? Math.max(0, Math.ceil((progress.total - progress.downloaded) / progress.speedBps))
-        : -1;
-      const remainingLabel = remaining >= 0
-        ? (remaining >= 60 ? Math.floor(remaining / 60) + "m " + (remaining % 60) + "s" : remaining + "s")
-        : "";
-      return <div className="model-card download-placeholder" key={key}>
-        <div className="model-card-top"><div className={"model-symbol vermillion"}><DownloadCloud size={24} /><span>GGUF</span></div><div className="model-title"><h3>{fileName(download.file)}</h3>{<span className="live-badge">{t("models.downloading")}</span>}</div></div>
-        <div className="download-placeholder-bar"><div className="download-placeholder-inner" style={{ width: (progress?.percent ?? 0) + "%" }} /></div>
-        <div className="download-placeholder-meta">
-          <span>{(progress?.percent ?? 0) + "%"}</span>
-          <span>{speed}</span>
-          {remainingLabel && <span><Timer size={12} />{remainingLabel}</span>}
-        </div>
-      </div>;
-    })}
- const model = modelById.get(id); return model ? <ModelCard key={id} model={model} profiles={model.profiles} selectedProfileId={props.selectedProfiles[model.id]} isDefaultModel={model.id === props.config.preferredModelId} isRunning={props.status.running && props.status.modelId === model.id} busy={props.busy} menuOpen={props.menuModelId === model.id} onMenu={() => props.onMenuModel(props.menuModelId === model.id ? null : model.id)} onSelectProfile={(profileId) => props.onSelectProfile(model.id, profileId)} onStart={() => props.onStart(model)} onStop={props.onStop} onEditProfile={props.onEditProfile} onAddProfile={props.onAddProfile} onRenameModel={props.onRenameModel} onSetDefaultModel={props.onSetDefaultModel} onRemove={() => props.onRemoveModel(model.id)} selectMode={selectMode} isSelected={selectedIds.has(model.id)} isJustImported={props.justImportedIds.has(model.id)} isDragging={reorder.dragId?.itemId === model.id} cardHandlers={reorder.cardProps("models", id)} onToggleSelect={() => toggleSelected(model.id)} /> : null; })}</section> : <div className="empty-state">{searching ? <><div><Search size={28} /></div><h3>{t("noMatchTitle")}</h3><p>{t("noMatchDesc", { query: props.query.trim() })}</p><div className="empty-actions"><button className="secondary-button" onClick={() => props.onQuery("")}>{t("clearSearch")}</button></div></> : <><div><Box size={28} /></div><h3>{t("emptyModelsTitle")}</h3><p>{t("emptyModelsDesc")}</p><div className="empty-actions"><button className="secondary-button" onClick={props.onAddModel}><Plus size={16} />{t("addModel")}</button></div></>}</div>}
+    {props.models.length ? <section className="model-grid">{modelOrder.map((id) => { const model = modelById.get(id); return model ? <ModelCard key={id} model={model} profiles={model.profiles} selectedProfileId={props.selectedProfiles[model.id]} isDefaultModel={model.id === props.config.preferredModelId} isRunning={props.status.running && props.status.modelId === model.id} busy={props.busy} menuOpen={props.menuModelId === model.id} onMenu={() => props.onMenuModel(props.menuModelId === model.id ? null : model.id)} onSelectProfile={(profileId) => props.onSelectProfile(model.id, profileId)} onStart={() => props.onStart(model)} onStop={props.onStop} onEditProfile={props.onEditProfile} onAddProfile={props.onAddProfile} onRenameModel={props.onRenameModel} onSetDefaultModel={props.onSetDefaultModel} onRemove={() => props.onRemoveModel(model.id)} selectMode={selectMode} isSelected={selectedIds.has(model.id)} isJustImported={props.justImportedIds.has(model.id)} isDragging={reorder.dragId?.itemId === model.id} cardHandlers={reorder.cardProps("models", id)} onToggleSelect={() => toggleSelected(model.id)} /> : null; })}</section> : <div className="empty-state">{searching ? <><div><Search size={28} /></div><h3>{t("noMatchTitle")}</h3><p>{t("noMatchDesc", { query: props.query.trim() })}</p><div className="empty-actions"><button className="secondary-button" onClick={() => props.onQuery("")}>{t("clearSearch")}</button></div></> : <><div><Box size={28} /></div><h3>{t("emptyModelsTitle")}</h3><p>{t("emptyModelsDesc")}</p><div className="empty-actions"><button className="secondary-button" onClick={props.onAddModel}><Plus size={16} />{t("addModel")}</button></div></>}</div>}
     {confirmDelete && <ConfirmModal title={t("confirm.removeModelsTitle")} description={<>{t("confirm.removeModelsPre")}<strong>{selectedIds.size}</strong>{t("confirm.removeModelsMid")}</>} onConfirm={handleBulkDelete} onClose={() => setConfirmDelete(false)} />}
   </>;
 }
@@ -122,7 +97,7 @@ function ModelCard({ model, profiles, selectedProfileId, isDefaultModel, isRunni
   const commitRename = () => { onRenameModel(model.id, draftName); setRenaming(false); };
   return <article {...cardHandlers} className={cn("model-card", isDefaultModel && "default", isRunning && "running", selectMode && "selecting", isSelected && "selected", isDragging && "dragging")}
     onClick={selectMode ? onToggleSelect : undefined}>
-    {isDefaultModel && <span className="corner-flag"><Star size={11} fill="currentColor" /></span>}
+    {isDefaultModel && <span className="corner-flag"><Star size={10} fill="currentColor" /></span>}
     <span className={cn("card-select-check", isSelected && "checked")} aria-hidden="true"><Check size={13} strokeWidth={2.5} /></span>
     <div className="model-card-top"><div className={cn("model-symbol", model.accent)}><FileBox size={26} /><span>GGUF</span></div><div className="model-title"><div>{renaming ? <input className="model-rename-input" autoFocus value={draftName} placeholder={modelTitle(model)} onChange={(e) => setDraftName(e.target.value)} onBlur={commitRename} onKeyDown={(e) => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") { setRenaming(false); } }} /> : <h3>{modelTitle(model)}</h3>}{isRunning && <span className="live-badge"><i />LIVE</span>}</div><p title={model.path}>{fileName(model.path)}</p></div><div className="model-menu-wrap" onClick={(event) => event.stopPropagation()}>{isJustImported && <span className="just-imported-badge"><Check size={10} />{t("models.justImported")}</span>}<button className="ghost-icon" onClick={onMenu}><MoreHorizontal size={18} /></button>{menuOpen && <div className="context-menu"><button onClick={() => { onSetDefaultModel(model.id); onMenu(); }}><Star size={14} />{isDefaultModel ? t("card.unsetDefault") : t("card.setDefault")}</button><button onClick={() => { setDraftName(modelTitle(model)); setRenaming(true); onMenu(); }}><PenLine size={14} />{t("card.renameModel")}</button><button onClick={() => (selected ? onEditProfile(model, selected) : onAddProfile(model))}><Pencil size={14} />{selected ? t("card.editProfile") : t("newProfile")}</button><button onClick={() => { selected && onEditProfile(model, selected); onMenu(); }}><ImageIcon size={14} />{t("card.attachVision")}</button><button className="danger" onClick={onRemove}><Trash2 size={14} />{t("card.removeModel")}</button></div>}</div></div>
     <div className="model-tags"><span>{model.parameters}</span><span>{model.quantization}</span><span>{model.architecture}</span></div>

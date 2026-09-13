@@ -184,23 +184,31 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
   };
   useEffect(() => { void refreshEngine(); }, []);
 
-  const runCheck = async () => {
-    if (checking) return;
+  /** 检查远程最新版本并与本地版本比对；检查更新 / 一键更新 / 强制重装三处共用的前置步骤 */
+  const ensureRemote = async (): Promise<LlamaCppRelease | null> => {
     setChecking(true); setEngineError(null);
     try {
       const result = await checkLlamaCppUpdate(backend, cudaVersion);
       const local = engineStatus?.localVersion ?? "";
-      const remoteTag = result.tag.toLowerCase();
-      const upToDate = !!local && remoteTag.endsWith(local.toLowerCase());
-      setRemote({ ...result, upToDate });
-      setCheckResult(upToDate ? "updated" : "new");
-      // 2 秒后自动恢复为「检查更新」
-      if (checkResultTimer.current) window.clearTimeout(checkResultTimer.current);
-      checkResultTimer.current = window.setTimeout(() => setCheckResult(null), 2000);
+      const upToDate = !!local && result.tag.toLowerCase().endsWith(local.toLowerCase());
+      const next = { ...result, upToDate };
+      setRemote(next);
+      return next;
     } catch (error) {
       setEngineError(error instanceof Error ? error.message : String(error));
       setRemote(null);
+      return null;
     } finally { setChecking(false); }
+  };
+
+  const runCheck = async () => {
+    if (checking) return;
+    const next = await ensureRemote();
+    if (!next) return;
+    setCheckResult(next.upToDate ? "updated" : "new");
+    // 2 秒后自动恢复为「检查更新」
+    if (checkResultTimer.current) window.clearTimeout(checkResultTimer.current);
+    checkResultTimer.current = window.setTimeout(() => setCheckResult(null), 2000);
   };
 
     const backendLabel = (value: "cuda" | "vulkan" | "cpu") => value.toUpperCase();
@@ -213,19 +221,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
   // 强制重装：忽略版本比较，直接重新下载安装（用于修复损坏文件）
   const forceReinstall = async () => {
     if (updating) return;
-    if (!remote) {
-      setChecking(true); setEngineError(null);
-      try {
-        const result = await checkLlamaCppUpdate(backend, cudaVersion);
-        const local = engineStatus?.localVersion ?? "";
-        const upToDate = !!local && result.tag.toLowerCase().endsWith(local.toLowerCase());
-        setRemote({ ...result, upToDate });
-        await runUpdate(backend);
-      } catch (error) {
-        setEngineError(error instanceof Error ? error.message : String(error));
-      } finally { setChecking(false); }
-      return;
-    }
+    if (!remote && !(await ensureRemote())) return;
     await runUpdate(backend);
   };
 
@@ -258,22 +254,9 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
   const startUpdate = async () => {
     if (updating) return;
     if (!remote) {
-      setChecking(true); setEngineError(null);
-      try {
-        const result = await checkLlamaCppUpdate(backend, cudaVersion);
-        const local = engineStatus?.localVersion ?? "";
-        const upToDate = !!local && result.tag.toLowerCase().endsWith(local.toLowerCase());
-        setRemote({ ...result, upToDate });
-        if (upToDate) return;
-        await runUpdate(backend);
-      } catch (error) {
-        setEngineError(error instanceof Error ? error.message : String(error));
-      } finally {
-        setChecking(false);
-      }
-      return;
-    }
-    if (remote.upToDate) return;
+      const next = await ensureRemote();
+      if (!next || next.upToDate) return;
+    } else if (remote.upToDate) return;
     await runUpdate(backend);
   };
   // 订阅下载进度事件（仅 Tauri）
@@ -495,6 +478,13 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
                 </div>
               </div>
               <div className="settings-row">
+                <span className="settings-row-label">{t("st.storageTitle")}</span>
+                <span className="settings-row-desc">{t("st.storageDesc")}</span>
+                <div className="settings-control">
+                  <button className="secondary-button compact" onClick={() => void openConfigDir().catch(() => undefined)}><FolderOpen size={14} />{t("st.openConfigDir")}</button>
+                </div>
+              </div>
+              <div className="settings-row">
                 <span className="settings-row-label">{t("st.modelsDirTitle")}</span>
                 <span className="settings-row-desc">{modelsDisk ? t("st.modelsDirDesc", { free: formatBytes(modelsDisk.freeBytes) }) : t("st.modelsDirDesc", { free: "--" })}</span>
                 <div className="settings-control">
@@ -517,13 +507,6 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
                   <button className={"switch" + (trayOn ? " on" : "")} onClick={() => void onPersist({ ...config, minimizeToTrayOnClose: !trayOn }, trayOn ? t("toast.trayOff") : t("toast.trayOn"))} role="switch" aria-checked={trayOn}>
                     <span className="switch-knob" />
                   </button>
-                </div>
-              </div>
-              <div className="settings-row">
-                <span className="settings-row-label">{t("st.storageTitle")}</span>
-                <span className="settings-row-desc">{t("st.storageDesc")}</span>
-                <div className="settings-control">
-                  <button className="secondary-button compact" onClick={() => void openConfigDir().catch(() => undefined)}><FolderOpen size={14} />{t("st.openConfigDir")}</button>
                 </div>
               </div>
             </div>

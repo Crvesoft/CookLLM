@@ -40,8 +40,24 @@ export function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
 }
 
+/** 逐字段 === 比较两个扁平对象；轮询结果未变化时保持旧引用，避免无意义的 setState 触发全树重渲染 */
+export function shallowEqualFields<T extends object>(a: T, b: T): boolean {
+  if (a === b) return true;
+  const keysA = Object.keys(a) as Array<keyof T>;
+  const keysB = Object.keys(b) as Array<keyof T>;
+  if (keysA.length !== keysB.length) return false;
+  return keysA.every((key) => a[key] === b[key]);
+}
+
 export function newLog(line: string, stream: LlamaLogPayload["stream"] = "system"): LlamaLogPayload {
   return { line, stream, timestamp: Date.now() };
+}
+
+/** 下载速度格式化：MB/s 一位小数，否则 KB/s 取整；无速度返回空串 */
+export function humanSpeed(speedBps: number): string {
+  if (speedBps <= 0) return "";
+  if (speedBps >= 1024 * 1024) return (speedBps / 1024 / 1024).toFixed(1) + " MB/s";
+  return Math.round(speedBps / 1024) + " KB/s";
 }
 
 /** llama.cpp 日志行着色：按流与 llama.cpp 日志级别（I/W/E）分类 */

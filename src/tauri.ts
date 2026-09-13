@@ -85,21 +85,6 @@ export async function getGpuInfo(): Promise<GpuInfo | null> {
   return invoke<GpuInfo>("get_gpu_info");
 }
 
-/** 汇总本机硬件能力：显卡厂商 / 显存 + 总物理内存（供「适配本机」一键边界计算） */
-export interface HardwareInfo {
-  vendor: string;
-  supported: boolean;
-  /** GPU 总显存（MiB；无独显 / 非 NVIDIA 驱动时为空） */
-  vramTotalMb?: number | null;
-  /** Windows 可见总物理内存（MiB）；非 Windows 平台为空 */
-  systemRamMb?: number | null;
-}
-
-export async function getHardwareInfo(): Promise<HardwareInfo | null> {
-  if (!isTauri()) return null;
-  return invoke<HardwareInfo>("hardware_info");
-}
-
 export async function openConfigDir(): Promise<void> {
   if (isTauri()) { await invoke("open_config_dir"); }
 }
@@ -365,12 +350,6 @@ export async function hfCancelDownload(taskId: string): Promise<void> {
 export async function hfPauseDownload(taskId: string): Promise<void> {
   if (!isTauri()) return;
   await invoke("hf_pause_download", { taskId });
-}
-
-/** 暂停全部正在进行的模型下载（对每个已注册任务置位暂停标志，下载循环在下一轮退出并清理 .part） */
-export async function hfPauseDownloads(): Promise<void> {
-  if (!isTauri()) return;
-  await invoke("hf_pause_downloads");
 }
 
 /** 清除 / 摘除指定任务的控制器（重新发起下载或删除任务前调用，避免残留标志影响下一轮） */
