@@ -338,6 +338,134 @@ fn kill_managed_child(managed: &mut ManagedProcess) {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OrphanServerInfo {
+    has_orphan: bool,
+    pids: Vec<u32>,
+}
+
+/// 探测系统中未被 CookLLM 当前生命周期托管的 llama-server 进程（例如更新前未正常关闭或异常退出的残留）
+fn find_orphan_server_pids(managed_pid: Option<u32>) -> Vec<u32> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        let output = Command::new("tasklist")
+            .args(["/FI", "IMAGENAME eq llama-server.exe", "/FO", "CSV", "/NH"])
+            .creation_flags(0x08000000)
+            .output();
+        let Ok(output) = output else { return Vec::new(); };
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut pids = Vec::new();
+        for line in text.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with("INFO:") || line.starts_with("信息:") {
+                continue;
+            }
+            let parts: Vec<&str> = line.split(',').collect();
+            if parts.len() >= 2 {
+                let name = parts[0].trim_matches('"').to_lowercase();
+                if name == "llama-server.exe" || name.ends_with("llama-server.exe") {
+                    if let Ok(pid) = parts[1].trim_matches('"').parse::<u32>() {
+                        if managed_pid != Some(pid) && !pids.contains(&pid) {
+                            pids.push(pid);
+                        }
+                    }
+                }
+            }
+        }
+        pids
+    }
+    #[cfg(not(windows))]
+    {
+        let output = Command::new("pgrep")
+            .args(["-f", "llama-server"])
+            .output();
+        let Ok(output) = output else { return Vec::new(); };
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut pids = Vec::new();
+        for line in text.lines() {
+            if let Ok(pid) = line.trim().parse::<u32>() {
+                if managed_pid != Some(pid) && !pids.contains(&pid) {
+                    pids.push(pid);
+                }
+            }
+        }
+        pids
+    }
+}
+
+/// 检查是否存在后台残留的 llama-server 进程
+#[tauri::command]
+fn check_orphan_server(state: State<ProcessState>) -> Result<OrphanServerInfo, String> {
+    let managed_pid = {
+        let mut guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
+        if let Some(managed) = guard.as_mut() {
+            match managed.child.try_wait() {
+                Ok(Some(_)) => {
+                    *guard = None;
+                    None
+                }
+                Ok(None) => Some(managed.child.id()),
+                Err(_) => None,
+            }
+        } else {
+            None
+        }
+    };
+
+    let pids = find_orphan_server_pids(managed_pid);
+    Ok(OrphanServerInfo {
+        has_orphan: !pids.is_empty(),
+        pids,
+    })
+}
+
+/// 终止指定的（或全部未托管的）后台残留 llama-server 进程
+#[tauri::command]
+fn kill_orphan_server(state: State<ProcessState>, pids: Option<Vec<u32>>) -> Result<usize, String> {
+    let managed_pid = {
+        let guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
+        guard.as_ref().map(|m| m.child.id())
+    };
+
+    let target_pids: Vec<u32> = match pids {
+        Some(list) if !list.is_empty() => list
+            .into_iter()
+            .filter(|&pid| Some(pid) != managed_pid)
+            .collect(),
+        _ => find_orphan_server_pids(managed_pid),
+    };
+
+    let count = target_pids.len();
+    if count == 0 {
+        return Ok(0);
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        for pid in &target_pids {
+            let _ = Command::new("taskkill")
+                .args(["/PID", &pid.to_string(), "/T", "/F"])
+                .creation_flags(0x08000000)
+                .output();
+        }
+    }
+
+    #[cfg(not(windows))]
+    {
+        for pid in &target_pids {
+            let _ = Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .output();
+        }
+    }
+
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    Ok(count)
+}
+
 #[tauri::command]
 fn load_config(app: AppHandle) -> Result<AppConfig, String> {
     read_config(&app)
@@ -3031,6 +3159,13 @@ fn install_app_update(app: AppHandle, path: String) -> Result<(), String> {
         return Err("安装包无效".into());
     }
     if fs::metadata(&installer).map(|metadata| metadata.len()).unwrap_or(0) == 0 { return Err("安装包为空".into()); }
+    // 升级退出前确保杀死当前运行中的 llama-server，防止更新后残留进程占用显存
+    let state = app.state::<ProcessState>();
+    if let Ok(mut guard) = state.0.lock() {
+        if let Some(mut managed) = guard.take() {
+            kill_managed_child(&mut managed);
+        }
+    }
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::process::CommandExt;
@@ -3664,7 +3799,7 @@ pub fn run() {
             react_mounted_ms: None,
             reported: false,
         })))
-        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_whoami, hf_avatar, hf_download, hf_download_url, hf_cancel_download, hf_pause_download, hf_clear_download, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, pick_files, pick_folder, pick_server_dir, expand_paths, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
+        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_whoami, hf_avatar, hf_download, hf_download_url, hf_cancel_download, hf_pause_download, hf_clear_download, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, check_orphan_server, kill_orphan_server, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, pick_files, pick_folder, pick_server_dir, expand_paths, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
         .setup(|app| {
             configure_main_window(app)?;
             setup_tray(app)?;

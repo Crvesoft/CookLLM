@@ -54,12 +54,12 @@ function WindowControls({ zenToggle }: { zenToggle?: React.ReactNode }) {
   );
 }
 
-export function Sidebar({ page, onPage, downloadBadge, updateAvailable, status, abnormal, gpuStats, tokSample, collapsed, onToggleCollapsed, theme, onToggleTheme }: { page: Page; onPage: (page: Page) => void; downloadBadge?: string; updateAvailable?: boolean; status: ServerStatus; abnormal: boolean; gpuStats: GpuStats | null; tokSample: TokSample | null; collapsed: boolean; onToggleCollapsed: () => void; theme: string; onToggleTheme: () => void }) {
+export function Sidebar({ page, onPage, downloadBadge, badgeProgress, updateAvailable, status, abnormal, gpuStats, tokSample, collapsed, onToggleCollapsed, theme, onToggleTheme }: { page: Page; onPage: (page: Page) => void; downloadBadge?: string; badgeProgress?: number; updateAvailable?: boolean; status: ServerStatus; abnormal: boolean; gpuStats: GpuStats | null; tokSample: TokSample | null; collapsed: boolean; onToggleCollapsed: () => void; theme: string; onToggleTheme: () => void }) {
   const { t } = useI18n();
-  const nav: Array<{ id: Page; label: string; icon: LucideIcon; badge?: string; badgeClass?: string; dot?: boolean }> = [
+  const nav: Array<{ id: Page; label: string; icon: LucideIcon; badge?: string; badgeProgress?: number; dot?: boolean }> = [
     { id: "models", label: t("nav.models"), icon: Boxes },
     { id: "profiles", label: t("nav.profiles"), icon: SlidersHorizontal },
-    { id: "explore", label: t("nav.explore"), icon: Globe, badge: downloadBadge, badgeClass: "download-badge" },
+    { id: "explore", label: t("nav.explore"), icon: Globe, badge: downloadBadge, badgeProgress: badgeProgress },
 
     { id: "playground", label: t("nav.playground"), icon: MessageSquareText },
     { id: "logs", label: t("nav.logs"), icon: SquareTerminal },
@@ -69,7 +69,7 @@ export function Sidebar({ page, onPage, downloadBadge, updateAvailable, status, 
     {/* 品牌区即标题栏左端：deep 拖拽区（收起/展开按钮自身可点击，自动豁免拖拽） */}
     <div className="brand" data-tauri-drag-region="deep"><div className="brand-mark"><LlamaMark size={36} /></div><div className="brand-name"><strong>CookLLM</strong></div><button className="sidebar-toggle" title={collapsed ? t("expandMenu") : t("collapseMenu")} aria-label={collapsed ? t("expandMenu") : t("collapseMenu")} onClick={onToggleCollapsed}>{collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}</button></div>
     <div className="side-section-label">{t("workspace")}</div>
-    <nav className="side-nav">{nav.map((item) => { const Icon = item.icon; return <button key={item.id} title={collapsed ? item.label : undefined} className={cn("side-link", page === item.id && "active")} onClick={() => onPage(item.id)}><Icon size={18} /><span>{item.label}</span>{item.badge && <em className={item.badgeClass}>{item.badge}</em>}{item.dot && <i className="update-dot" aria-hidden="true" />}</button>; })}</nav>
+    <nav className="side-nav">{nav.map((item) => { const Icon = item.icon; return <button key={item.id} title={collapsed ? item.label : undefined} className={cn("side-link", page === item.id && "active")} onClick={() => onPage(item.id)}><Icon size={18} /><span>{item.label}</span>{item.badge && <em className={cn("download-badge", item.badgeProgress != null && "ring")}><svg viewBox="0 0 18 18" aria-hidden="true"><circle className="badge-track" cx="9" cy="9" r="7" /><circle className="badge-fill" cx="9" cy="9" r="7" style={{ strokeDashoffset: `${43.98 * (1 - Math.max(0, Math.min(100, item.badgeProgress ?? 0)) / 100)}` }} /></svg><span>{item.badge}</span></em>}{item.dot && <i className="update-dot" aria-hidden="true" />}</button>; })}</nav>
     <div className="sidebar-spacer" />
     {/* 收起时仅用 CSS 隐藏（保持挂载）：迷你图的采样历史在收放之间不丢失 */}
     <MiniStatusBar status={status} abnormal={abnormal} gpuStats={gpuStats} tokSample={tokSample} theme={theme} updateAvailable={updateAvailable} onToggleTheme={onToggleTheme} />

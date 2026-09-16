@@ -85,6 +85,16 @@ const zh = {
   "log.saveConfigFailed": "配置保存失败：{error}",
   "log.startFailed": "启动失败：{error}",
   "log.stopFailed": "停止失败：{error}",
+  "orphan.title": "检测到后台残留服务",
+  "orphan.descStartup": "检测到上次运行的 llama-server 仍在后台运行（PID: {pids}），可能持续占用显存并影响系统性能。是否立即关闭？",
+  "orphan.descLaunch": "后台已有上次运行的 llama-server 进程（PID: {pids}）。继续启动将导致双模型并发占用显存并可能冲突，建议先关闭残留进程。",
+  "orphan.killBtn": "立即关闭",
+  "orphan.killAndStartBtn": "关闭并继续启动",
+  "orphan.ignoreBtn": "暂不处理",
+  "orphan.killedToast": "已清理后台残留服务（{count} 个进程）",
+  "orphan.killedLog": "已终止后台残留 llama-server 进程（共 {count} 个）",
+  "orphan.detectedLog": "检测到系统后台存在残留 llama-server 进程（PID: {pids}）",
+  "orphan.killFailed": "关闭残留进程失败：{error}",
 
   // ---- 模型仓库页 ----
   "models.tooltipAssets": "本地 GGUF 资产",
@@ -125,6 +135,9 @@ const zh = {
   "cards.pillContext": "上下文",
   "cards.pillThreads": "线程",
   "noProfileBound": "尚未绑定运行预设",
+  "card.defaultBadge": "默认",
+  "viewMode.grid": "卡片模式",
+  "viewMode.list": "列表模式",
 
   // ---- 运行预设页 ----
   "filterLabel": "预设模型",
@@ -694,6 +707,16 @@ const en: typeof zh = {
   "log.saveConfigFailed": "Failed to save configuration: {error}",
   "log.startFailed": "Start failed: {error}",
   "log.stopFailed": "Stop failed: {error}",
+  "orphan.title": "Background Service Detected",
+  "orphan.descStartup": "A leftover llama-server process (PID: {pids}) was detected running in the background. It may consume VRAM and affect performance. Would you like to terminate it now?",
+  "orphan.descLaunch": "A leftover llama-server process (PID: {pids}) is already running. Starting another service may cause two models to compete for VRAM. It is recommended to terminate it first.",
+  "orphan.killBtn": "Terminate",
+  "orphan.killAndStartBtn": "Terminate & Start",
+  "orphan.ignoreBtn": "Ignore",
+  "orphan.killedToast": "Cleaned up {count} background process(es)",
+  "orphan.killedLog": "Terminated leftover llama-server process(es) ({count} in total)",
+  "orphan.detectedLog": "Detected leftover llama-server process(es) in background (PID: {pids})",
+  "orphan.killFailed": "Failed to terminate leftover process: {error}",
 
   // ---- Models page ----
   "models.tooltipAssets": "Local GGUF assets",
@@ -734,6 +757,9 @@ const en: typeof zh = {
   "cards.pillContext": "context",
   "cards.pillThreads": "threads",
   "noProfileBound": "No runtime profile bound yet",
+  "card.defaultBadge": "Default",
+  "viewMode.grid": "Grid view",
+  "viewMode.list": "List view",
 
   // ---- Profiles page ----
   "filterLabel": "Profile model",

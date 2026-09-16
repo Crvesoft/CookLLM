@@ -32,6 +32,23 @@ export async function getServerStatus(): Promise<ServerStatus> {
   return invoke<ServerStatus>("get_server_status");
 }
 
+export interface OrphanServerInfo {
+  hasOrphan: boolean;
+  pids: number[];
+}
+
+/** 检测系统后台是否存在未被当前 CookLLM 托管的残留 llama-server 进程 */
+export async function checkOrphanServer(): Promise<OrphanServerInfo> {
+  if (!isTauri()) return { hasOrphan: false, pids: [] };
+  return invoke<OrphanServerInfo>("check_orphan_server");
+}
+
+/** 终止指定的（或全部未托管的）后台残留 llama-server 进程 */
+export async function killOrphanServer(pids?: number[]): Promise<number> {
+  if (!isTauri()) return 0;
+  return invoke<number>("kill_orphan_server", { pids: pids ?? null });
+}
+
 /** GPU 实时指标（Rust 端 nvidia-smi）：浏览器 / 无 NVIDIA 驱动时返回 null */
 export async function getGpuStats(): Promise<GpuStats | null> {
   if (!isTauri()) return null;

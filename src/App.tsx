@@ -2,7 +2,7 @@ import ConfirmModal from "./components/ConfirmModal";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DEMO_CONFIG, DEFAULT_PROFILES, INITIAL_LOGS, migrateConfig, uid } from "./data";
 import { setLocale, useI18n } from "./i18n";
-import { checkForUpdate, getGpuStats, getModelsDir, getServerStatus, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, isTauri, loadConfig, onLlamaLog, openExternal, pickModelsDir, removeLocalFile, revealInFolder, saveConfig, setWindowTheme, startServer, stopServer, type UpdateCheckResult } from "./tauri";
+import { checkForUpdate, checkOrphanServer, getGpuStats, getModelsDir, getServerStatus, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, isTauri, killOrphanServer, loadConfig, onLlamaLog, openExternal, pickModelsDir, removeLocalFile, revealInFolder, saveConfig, setWindowTheme, startServer, stopServer, type UpdateCheckResult } from "./tauri";
 import type { ActiveDownload } from "./components/ExplorePage";
 import type { PickedFile } from "./tauri";
 import { onModelDownloadProgress } from "./tauri";
@@ -19,6 +19,7 @@ import SettingsPage from "./components/SettingsPage";
 import ExplorePage from "./components/ExplorePage";
 import ProfileEditor from "./components/ProfileEditor";
 import AppUpdateDialog from "./components/AppUpdateDialog";
+import OrphanServerModal from "./components/OrphanServerModal";
 import { APP_VERSION } from "./data";
 
 /** 下载任务持久化 key：重开程序后恢复任务列表（含未完成的断点续传） */
@@ -31,7 +32,7 @@ function loadStoredDownloads(): ActiveDownload[] {
     const raw = localStorage.getItem(DOWNLOADS_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw) as ActiveDownload[];
-  return Array.isArray(parsed) ? parsed.map((item) => ({ ...item, taskId: item.taskId || uid("download") })) : [];
+    return Array.isArray(parsed) ? parsed.map((item) => ({ ...item, taskId: item.taskId || uid("download") })) : [];
   } catch {
     return [];
   }
@@ -78,6 +79,9 @@ export default function App() {
   const [appUpdateDialogOpen, setAppUpdateDialogOpen] = useState(false);
   const [appUpdateChecking, setAppUpdateChecking] = useState(false);
   const startupUpdateCheckedRef = useRef(false);
+  /** 后台残留 llama-server 孤儿进程检测状态 */
+  const [orphanPids, setOrphanPids] = useState<number[] | null>(null);
+  const [orphanPendingModel, setOrphanPendingModel] = useState<ModelAsset | null>(null);
   /** 社区探索下载完成后刚导入的模型 id（卡片显示「刚刚导入」绿色 Badge，一定时间后消失） */
   const [justImportedIds, setJustImportedIds] = useState<Set<string>>(new Set());
   /** 下载任务镜像（供进度回调读取，避免闭包过期） */
@@ -151,6 +155,13 @@ export default function App() {
           const loaded = await loadConfig();
           if (active && loaded) adopt(loaded);
           const current = await getServerStatus(); if (active) setStatus(current);
+          // 检测是否存在上次运行未正常退出的后台残留 llama-server 进程
+          void checkOrphanServer().then((orphanInfo) => {
+            if (active && orphanInfo.hasOrphan && orphanInfo.pids.length > 0) {
+              setOrphanPids(orphanInfo.pids);
+              appendLog(t("orphan.detectedLog", { pids: orphanInfo.pids.join(", ") }), "system");
+            }
+          }).catch(() => undefined);
           unlisten = await onLlamaLog((payload) => {
             if (!active) return;
             queueLogs([payload]);
@@ -629,6 +640,19 @@ export default function App() {
     const profileId = selectedProfiles[model.id] || model.defaultProfileId || model.profiles[0]?.id || '';
     const profile = model.profiles.find((item) => item.id === profileId);
     if (!profile) return setToast(t("toast.addProfileFirst"));
+
+    // 启动前安全检测：检查后台是否有未被托管的残留 llama-server，防止双模型并发占用显存
+    if (isTauri()) {
+      try {
+        const orphanInfo = await checkOrphanServer();
+        if (orphanInfo.hasOrphan && orphanInfo.pids.length > 0) {
+          setOrphanPendingModel(model);
+          setOrphanPids(orphanInfo.pids);
+          return;
+        }
+      } catch { }
+    }
+
     setBusy(true); setMenuModelId(null); appendLog(t("toast.starting", { model: modelTitle(model), profile: profile.name }));
     try {
       if (isTauri()) setStatus(await startServer(model.id, profile.id));
@@ -657,6 +681,32 @@ export default function App() {
     try { if (isTauri()) setStatus(await stopServer()); else { await new Promise((resolve) => window.setTimeout(resolve, 380)); setStatus(EMPTY_STATUS); appendLog(t("log.stopSuccess")); } setToast(t("toast.stopped")); }
     catch (error) { appendLog(t("log.stopFailed", { error: String(error) }), "stderr"); }
     finally { setBusy(false); setTokSample(null); }
+  };
+
+  /** 终止后台残留的 llama-server 进程 */
+  const handleKillOrphan = async () => {
+    const pids = orphanPids || [];
+    const pendingModel = orphanPendingModel;
+    setOrphanPids(null);
+    setOrphanPendingModel(null);
+    try {
+      const killed = await killOrphanServer(pids);
+      appendLog(t("orphan.killedLog", { count: killed }), "system");
+      setToast(t("orphan.killedToast", { count: killed }));
+      if (pendingModel) {
+        window.setTimeout(() => {
+          void handleStart(pendingModel);
+        }, 300);
+      }
+    } catch (error) {
+      appendLog(t("orphan.killFailed", { error: String(error) }), "stderr");
+      setToast(t("orphan.killFailed", { error: String(error) }));
+    }
+  };
+
+  const handleCloseOrphanModal = () => {
+    setOrphanPids(null);
+    setOrphanPendingModel(null);
   };
 
   const addModelFromPaths = async (paths: { path: string; sizeBytes: number }[]) => {
@@ -757,12 +807,14 @@ export default function App() {
       }
       return next;
     });
-    await persist({ ...config, models: config.models.map((owner) => {
-      const drop = byModel.get(owner.id);
-      if (!drop || !drop.size) return owner;
-      const profiles = owner.profiles.filter((profile) => !drop.has(profile.id));
-      return { ...owner, profiles, defaultProfileId: owner.defaultProfileId && drop.has(owner.defaultProfileId) ? undefined : owner.defaultProfileId };
-    }) }, t("toast.profilesDeleted", { count: items.length }));
+    await persist({
+      ...config, models: config.models.map((owner) => {
+        const drop = byModel.get(owner.id);
+        if (!drop || !drop.size) return owner;
+        const profiles = owner.profiles.filter((profile) => !drop.has(profile.id));
+        return { ...owner, profiles, defaultProfileId: owner.defaultProfileId && drop.has(owner.defaultProfileId) ? undefined : owner.defaultProfileId };
+      })
+    }, t("toast.profilesDeleted", { count: items.length }));
   };
   const duplicateProfile = (modelId: string, profile: Profile) =>
     upsertProfile(modelId, { ...profile, id: uid("profile"), name: profile.name + t("profile.copySuffix") }, t("toast.profileCopied"));
@@ -794,12 +846,16 @@ export default function App() {
   /** 当前页是否使用 Dock 日志（除"日志"整页外所有页面）：Dock 参与布局，无悬浮遮挡 */
   const isDockPage = PAGE_LOG_MODE[page] === "dock";
 
-  /** 侧边栏「社区探索」下载角标：后台有进行中任务时动态显示数量 */
-  const exploreActive = downloads.filter((item) => item.status === "active").length;
+  /** 侧边栏「社区探索」下载角标：后台有进行中任务时显示数量 + 环形总进度 */
+  const activeTaskList = downloads.filter((item) => item.status === "active");
+  const exploreActive = activeTaskList.length;
   const exploreBadge = exploreActive > 0 ? String(exploreActive) : undefined;
+  /** 环形进度的总进度：按各任务已下载字节数加权（无总量的任务不计入分母） */
+  const exploreProgressBytes = activeTaskList.reduce((sum, item) => ({ downloaded: sum.downloaded + (item.downloaded || 0), total: sum.total + (item.total && item.total > 0 ? item.total : 0) }), { downloaded: 0, total: 0 });
+  const exploreProgress = exploreProgressBytes.total > 0 ? Math.min(100, Math.round((exploreProgressBytes.downloaded / exploreProgressBytes.total) * 100)) : 0;
 
   return <div className={cn("app-shell", sidebarCollapsed && "sidebar-collapsed", zenMode && "zen-mode")}>
-    <Sidebar page={page} onPage={setPage} downloadBadge={exploreBadge} updateAvailable={appUpdate?.status === "available"} status={status} abnormal={serviceAbnormal} gpuStats={gpuStats} tokSample={tokSample} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed((value) => !value)} theme={theme} onToggleTheme={() => void persist({ ...config, theme: theme === "dark" ? "light" : "dark" })} />
+    <Sidebar page={page} onPage={setPage} downloadBadge={exploreBadge} badgeProgress={exploreActive > 0 ? exploreProgress : undefined} updateAvailable={appUpdate?.status === "available"} status={status} abnormal={serviceAbnormal} gpuStats={gpuStats} tokSample={tokSample} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed((value) => !value)} theme={theme} onToggleTheme={() => void persist({ ...config, theme: theme === "dark" ? "light" : "dark" })} />
     <div className={cn("workspace", isDockPage && "dock-mode")}><Topbar page={page} status={status} busy={busy} onToggleService={status.running ? handleStop : startQuick} models={config.models} modelId={quickModelId || config.preferredModelId || config.models[0]?.id || ""} onSelectModel={setQuickModelId} zenMode={zenMode} onToggleZenMode={() => setZenMode((v) => !v)} /><main className="main-content">
       {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} query={query} onQuery={setQuery} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onAddProfile={(model) => setProfileEditing({ modelId: model.id, profile: { ...DEFAULT_PROFILES[0], id: uid("profile"), name: t("newProfile") } })} onRenameModel={renameModel} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} justImportedIds={justImportedIds} />}
       <ExplorePage visible={page === "explore"} config={config} onPersist={persist} onToast={setToast} onLog={appendLog} diskUsage={diskUsage} onPickModelsDir={pickModelsDirFlow} onDownload={handleModelDownload} activeDownloads={downloads} progressMap={modelProgress} onPauseTask={handlePauseTask} onResumeTasks={handleResumeTasks} onPauseTasks={handlePauseTasks} onClearDone={handleClearDone} onCancelTask={handleCancelTask} onDeleteTask={handleDeleteTask} onDeleteTasks={deleteTasksImpl} onRetry={handleRetry} onReveal={handleReveal} onGoSettings={() => setPage("settings")} />
@@ -809,12 +865,20 @@ export default function App() {
       {page === "logs" && <LogsPage logs={logs} status={status} onClear={() => setLogs([])} />}
       <SettingsPage visible={page === "settings"} config={config} appUpdate={appUpdate} checkingUpdate={appUpdateChecking} onCheckUpdate={checkAppUpdate} onPersist={persist} onLog={appendLog} />
     </main>
-    {/* Dock 日志参与布局（收起=底部状态栏 / 展开=可调高度面板），各页面共用同一份状态，不遮挡内容；仅"日志"整页除外 */}
-    {isDockPage && <LogDock open={logDockOpen} height={logDockHeight} logs={logs} status={status} modelName={activeModel ? modelTitle(activeModel) : undefined} abnormal={serviceAbnormal} tokPerSec={tokSample ? tokSample.rate : null} onToggle={() => setLogDockOpen((value) => !value)} onHeightChange={setLogDockHeight} onClear={() => setLogs([])} />}
+      {/* Dock 日志参与布局（收起=底部状态栏 / 展开=可调高度面板），各页面共用同一份状态，不遮挡内容；仅"日志"整页除外 */}
+      {isDockPage && <LogDock open={logDockOpen} height={logDockHeight} logs={logs} status={status} modelName={activeModel ? modelTitle(activeModel) : undefined} abnormal={serviceAbnormal} tokPerSec={tokSample ? tokSample.rate : null} onToggle={() => setLogDockOpen((value) => !value)} onHeightChange={setLogDockHeight} onClear={() => setLogs([])} />}
     </div>
     {profileEditing && <ProfileEditor model={config.models.find((m) => m.id === profileEditing.modelId)} profile={profileEditing.profile} defaultProfileId={config.models.find((m) => m.id === profileEditing.modelId)?.defaultProfileId} onClose={() => setProfileEditing(null)} onSave={(profile, isDefault) => saveProfile(profileEditing.modelId, profile, isDefault)} />}
     {importOpen && <ImportModelModal existingPaths={new Set(config.models.map((model) => model.path.toLowerCase()))} onClose={() => setImportOpen(false)} onImport={handleImportModels} />}
     {toast && <Toast>{toast}</Toast>}
     <AppUpdateDialog open={appUpdateDialogOpen} update={appUpdate} onClose={() => setAppUpdateDialogOpen(false)} />
+    {orphanPids && orphanPids.length > 0 && (
+      <OrphanServerModal
+        pids={orphanPids}
+        isStartingService={Boolean(orphanPendingModel)}
+        onKill={handleKillOrphan}
+        onClose={handleCloseOrphanModal}
+      />
+    )}
   </div>;
 }
