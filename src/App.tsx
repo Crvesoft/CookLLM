@@ -145,6 +145,11 @@ export default function App() {
       }
       return next;
     });
+    // 若历史配置中有缺少预设的模型，通过 migrateConfig 自动补齐后静默回写磁盘
+    const needPersist = usable.models.some((m, idx) => m.profiles.length !== (cfg.models?.[idx]?.profiles?.length ?? 0));
+    if (needPersist) {
+      void saveConfig(usable);
+    }
   };
 
   useEffect(() => {
@@ -460,9 +465,17 @@ export default function App() {
     }
   };
 
-  /** 下载完成：仅把文件登记为本地资产（不自动创建预设、不自动启动），badge 打上「刚刚下载」 */
+  /** 下载完成：仅把主模型登记为本地资产（mmproj 图识模型仅保存文件供预设挂载，不自动入库），badge 打上「刚刚下载」 */
   const importDownloadedModel = async (download: ActiveDownload, path: string, sizeBytes?: number) => {
     try {
+      const fileBaseName = fileName(path);
+      // 图识视觉模型（mmproj）是辅助模型，需通过启动参数 --mmproj 挂载在主模型预设下，不作为独立模型入库
+      if (fileBaseName.toLowerCase().includes("mmproj")) {
+        patchByTaskId(download.taskId, { status: "done" as const, path, finishedAt: Date.now() });
+        setToast(t("toast.downloadDoneMmproj", { name: fileBaseName }));
+        return;
+      }
+
       // 下载耗时数分钟，期间用户可能改过设置：读最新 config 而非发起下载时的闭包快照，
       // 否则 persist 会把用户中途修改的主题 / 语言 / 代理等一并回滚
       const currentConfig = configRef.current;
@@ -471,9 +484,10 @@ export default function App() {
         patchByTaskId(download.taskId, { status: "done" as const, path, finishedAt: Date.now() });
         return;
       }
-      const name = fileName(path).replace(/\.gguf$/i, "").replace(/[-_]/g, " ");
+      const name = fileBaseName.replace(/\.gguf$/i, "").replace(/[-_]/g, " ");
       const paramMatch = path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase();
       const parameters = paramMatch || "—";
+      const defaultProfile: Profile = { ...DEFAULT_PROFILES[0], id: uid("profile") };
       const model: ModelAsset = {
         id: uid("model"),
         name,
@@ -482,9 +496,10 @@ export default function App() {
         architecture: "GGUF",
         quantization: path.match(/Q\d(?:_[A-Z0-9]+)+/i)?.[0]?.toUpperCase() || t("model.unknownQuant"),
         parameters,
-        profiles: [],
+        profiles: [defaultProfile],
         accent: ACCENTS[currentConfig.models.length % ACCENTS.length],
       };
+      setSelectedProfiles((previous) => ({ ...previous, [model.id]: defaultProfile.id }));
       setJustImportedIds((previous) => new Set(previous).add(model.id));
       window.setTimeout(() => { setJustImportedIds((previous) => { const next = new Set(previous); next.delete(model.id); return next; }); }, 6000);
       patchByTaskId(download.taskId, { status: "done" as const, path, finishedAt: Date.now() });

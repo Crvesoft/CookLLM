@@ -65,7 +65,7 @@ export default function ImportModelModal({ existingPaths, onImport, onClose }: P
         const key = item.path.toLowerCase();
         if (known.has(key)) continue;
         known.add(key);
-        fresh.push({ ...item, checked: !isDup(item.path) });
+        fresh.push({ ...item, checked: !isDup(item.path) && !fileName(item.path).toLowerCase().includes("mmproj") });
       }
       return [...previous, ...fresh];
     });

@@ -178,6 +178,7 @@ const zh = {
   "ed.s2Desc": "硬件卸载、上下文与批处理规模",
   "f.gpuLayers": "GPU 层数",
   "f.contextLength": "上下文长度",
+  "confirm": "确定",
   "f.cpuThreads": "CPU 线程",
   "f.parallelSlots": "并行槽位",
   "ed.s3Title": "高级选项",
@@ -402,6 +403,7 @@ const zh = {
 
   // ---- 模型仓库：下载占位 / 刚导入 ----
   "models.justImported": "新下载",
+  "models.mmprojAttached": "已挂载图识模型：{file}",
 
   // ---- 下载闭环提示 ----
   "toast.downloadStarted": "已添加至下载队列",
@@ -413,6 +415,7 @@ const zh = {
   "toast.tasksAndFilesDeleted": "已删除 {count} 个任务及对应的本地模型文件",
   "toast.queueCleared": "已清除完成记录",
   "toast.downloadImported": "{name} 已下载并导入模型仓库",
+  "toast.downloadDoneMmproj": "{name} 已下载完成（图识模型，可在预设中挂载）",
   "toast.downloadCancelled": "下载已取消",
   "toast.dirChanged": "模型存储目录已更新",
   // ---- 设置页：网络与代理（阶段二） ----
@@ -635,6 +638,7 @@ const en: typeof zh = {
 
   // ---- Models page: downloading placeholder / just imported ----
   "models.justImported": "NEW",
+  "models.mmprojAttached": "Vision attached: {file}",
 
   // ---- Download loop toasts ----
   "toast.downloadStarted": "Added to download queue",
@@ -646,6 +650,7 @@ const en: typeof zh = {
   "toast.tasksAndFilesDeleted": "Deleted {count} task(s) and corresponding local model file(s)",
   "toast.queueCleared": "History cleared",
   "toast.downloadImported": "{name} downloaded and imported",
+  "toast.downloadDoneMmproj": "{name} downloaded (vision model, ready to attach in profile)",
   "toast.downloadCancelled": "Download cancelled",
   "toast.dirChanged": "Model storage directory updated",
   "nav.settings": "Settings",
@@ -800,6 +805,7 @@ const en: typeof zh = {
   "ed.s2Desc": "Hardware offload, context and batch sizing",
   "f.gpuLayers": "GPU layers",
   "f.contextLength": "Context length",
+  "confirm": "Confirm",
   "f.cpuThreads": "CPU threads",
   "f.parallelSlots": "Parallel slots",
   "ed.s3Title": "Advanced options",
