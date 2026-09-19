@@ -2,13 +2,13 @@ import ConfirmModal from "./components/ConfirmModal";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DEMO_CONFIG, DEFAULT_PROFILES, INITIAL_LOGS, migrateConfig, uid } from "./data";
 import { setLocale, useI18n } from "./i18n";
-import { checkForUpdate, checkOrphanServer, getGpuStats, getModelsDir, getServerStatus, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, isTauri, killOrphanServer, loadConfig, onLlamaLog, openExternal, pickModelsDir, removeLocalFile, revealInFolder, saveConfig, setWindowTheme, startServer, stopServer, type UpdateCheckResult } from "./tauri";
+import { checkForUpdate, checkOrphanServer, getGpuStats, getModelsDir, getServerStatus, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, isTauri, killOrphanServer, loadConfig, onLlamaLog, openExternal, pickModelsDir, removeLocalFile, revealInFolder, saveConfig, setWindowTheme, startServer, stopServer, type OrphanProcessItem, type UpdateCheckResult } from "./tauri";
 import type { ActiveDownload } from "./components/ExplorePage";
 import type { PickedFile } from "./tauri";
 import { onModelDownloadProgress } from "./tauri";
 import type { DiskUsage, ModelDownloadProgress } from "./types";
 import { PAGE_LOG_MODE, type AppConfig, type GpuStats, type LlamaLogPayload, type ModelAsset, type Page, type Profile, type ServerStatus, type TokSample } from "./types";
-import { ACCENTS, EMPTY_STATUS, cn, fileName, formatBytes, modelTitle, newLog, parseTokPerSec, shallowEqualFields } from "./utils";
+import { ACCENTS, EMPTY_STATUS, cn, fileName, formatBytes, modelTitle, newLog, parseQuantization, parseTokPerSec, shallowEqualFields } from "./utils";
 import LogDock from "./components/LogDock";
 import { LogsPage, Sidebar, Toast, Topbar } from "./components/Layout";
 import ImportModelModal from "./components/ImportModelModal";
@@ -62,8 +62,15 @@ export default function App() {
   const [serviceAbnormal, setServiceAbnormal] = useState(false);
   /** 最近一次从日志解析到的生成吞吐（带时间戳，微型状态卡据此判定"实时 / Idle"） */
   const [tokSample, setTokSample] = useState<TokSample | null>(null);
-  /** GPU 实时指标（nvidia-smi，2s 轮询；浏览器模式恒为 null） */
-  const [gpuStats, setGpuStats] = useState<GpuStats | null>(null);
+  /** GPU 实时指标（nvidia-smi，2s 轮询；浏览器模式恒为 null；初始从本地缓存读取实现首帧秒显） */
+  const [gpuStats, setGpuStats] = useState<GpuStats | null>(() => {
+    try {
+      const raw = localStorage.getItem("cookllm.last_gpu_stats");
+      return raw ? (JSON.parse(raw) as GpuStats) : null;
+    } catch {
+      return null;
+    }
+  });
   /** 已武装：本次启动期间收到就绪日志后自动收起 Dock（停止 / 失败时重置，避免误关用户手动打开的 Dock） */
   const dockAutoCollapseRef = useRef(false);
   /** 本次退出是主动停止（区别于崩溃），由状态轮询消费 */
@@ -81,6 +88,7 @@ export default function App() {
   const startupUpdateCheckedRef = useRef(false);
   /** 后台残留 llama-server 孤儿进程检测状态 */
   const [orphanPids, setOrphanPids] = useState<number[] | null>(null);
+  const [orphanProcesses, setOrphanProcesses] = useState<OrphanProcessItem[] | null>(null);
   const [orphanPendingModel, setOrphanPendingModel] = useState<ModelAsset | null>(null);
   /** 社区探索下载完成后刚导入的模型 id（卡片显示「刚刚导入」绿色 Badge，一定时间后消失） */
   const [justImportedIds, setJustImportedIds] = useState<Set<string>>(new Set());
@@ -157,6 +165,14 @@ export default function App() {
     void (async () => {
       try {
         if (isTauri()) {
+          // 挂载时立即并行查询一次 GPU 状态，无需排队等待配置与日志监听就绪
+          void getGpuStats().then((stats) => {
+            if (active && stats) {
+              setGpuStats((prev) => (prev !== null && shallowEqualFields(prev, stats) ? prev : stats));
+              try { localStorage.setItem("cookllm.last_gpu_stats", JSON.stringify(stats)); } catch {}
+            }
+          }).catch(() => undefined);
+
           const loaded = await loadConfig();
           if (active && loaded) adopt(loaded);
           const current = await getServerStatus(); if (active) setStatus(current);
@@ -164,6 +180,7 @@ export default function App() {
           void checkOrphanServer().then((orphanInfo) => {
             if (active && orphanInfo.hasOrphan && orphanInfo.pids.length > 0) {
               setOrphanPids(orphanInfo.pids);
+              setOrphanProcesses(orphanInfo.processes ?? null);
               appendLog(t("orphan.detectedLog", { pids: orphanInfo.pids.join(", ") }), "system");
             }
           }).catch(() => undefined);
@@ -196,9 +213,20 @@ export default function App() {
         void getGpuStats().then((stats) => {
           if (!active || !gpuMonitorEnabled) return;
           setGpuStats((prev) => (prev === null && stats === null) || (prev !== null && stats !== null && shallowEqualFields(prev, stats)) ? prev : stats);
-        }).catch(() => { if (active) setGpuStats((prev) => (prev === null ? prev : null)); });
+          if (stats) {
+            try { localStorage.setItem("cookllm.last_gpu_stats", JSON.stringify(stats)); } catch {}
+          } else {
+            try { localStorage.removeItem("cookllm.last_gpu_stats"); } catch {}
+          }
+        }).catch(() => {
+          if (active) {
+            setGpuStats((prev) => (prev === null ? prev : null));
+            try { localStorage.removeItem("cookllm.last_gpu_stats"); } catch {}
+          }
+        });
       } else {
         setGpuStats(null);
+        try { localStorage.removeItem("cookllm.last_gpu_stats"); } catch {}
       }
     };
     // 挂载立即刷新一次（避免第一帧只显示版本号、2 秒后才出卡片）
@@ -494,7 +522,7 @@ export default function App() {
         path,
         sizeBytes: sizeBytes ?? download.sizeBytes,
         architecture: "GGUF",
-        quantization: path.match(/Q\d(?:_[A-Z0-9]+)+/i)?.[0]?.toUpperCase() || t("model.unknownQuant"),
+        quantization: parseQuantization(path, t("model.unknownQuant")),
         parameters,
         profiles: [defaultProfile],
         accent: ACCENTS[currentConfig.models.length % ACCENTS.length],
@@ -663,6 +691,7 @@ export default function App() {
         if (orphanInfo.hasOrphan && orphanInfo.pids.length > 0) {
           setOrphanPendingModel(model);
           setOrphanPids(orphanInfo.pids);
+          setOrphanProcesses(orphanInfo.processes ?? null);
           return;
         }
       } catch { }
@@ -703,6 +732,7 @@ export default function App() {
     const pids = orphanPids || [];
     const pendingModel = orphanPendingModel;
     setOrphanPids(null);
+    setOrphanProcesses(null);
     setOrphanPendingModel(null);
     try {
       const killed = await killOrphanServer(pids);
@@ -721,6 +751,7 @@ export default function App() {
 
   const handleCloseOrphanModal = () => {
     setOrphanPids(null);
+    setOrphanProcesses(null);
     setOrphanPendingModel(null);
   };
 
@@ -731,7 +762,7 @@ export default function App() {
     if (!fresh.length) return setToast(t("toast.alreadyInLibrary"));
     const additions: ModelAsset[] = fresh.map((item, index) => {
       const path = item.path;
-      return { id: uid("model"), name: fileName(path).replace(/\.gguf$/i, "").replace(/[-_]/g, " "), path, sizeBytes: item.sizeBytes, architecture: "GGUF", quantization: path.match(/Q\d(?:_[A-Z0-9]+)+/i)?.[0]?.toUpperCase() || t("model.unknownQuant"), parameters: path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase() || "—", profiles: [{ ...DEFAULT_PROFILES[0], id: uid("profile") }], accent: ACCENTS[(config.models.length + index) % ACCENTS.length] };
+      return { id: uid("model"), name: fileName(path).replace(/\.gguf$/i, "").replace(/[-_]/g, " "), path, sizeBytes: item.sizeBytes, architecture: "GGUF", quantization: parseQuantization(path, t("model.unknownQuant")), parameters: path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase() || "—", profiles: [{ ...DEFAULT_PROFILES[0], id: uid("profile") }], accent: ACCENTS[(config.models.length + index) % ACCENTS.length] };
     });
     setSelectedProfiles((previous) => { const next = { ...previous }; for (const model of additions) next[model.id] = model.profiles[0].id; return next; });
     await persist({ ...config, models: [...config.models, ...additions] }, t(additions.length === 1 ? "toast.modelAdded" : "toast.modelsAdded", { count: additions.length }));
@@ -846,6 +877,25 @@ export default function App() {
     void persist({ ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, displayName: trimmed ? trimmed : undefined } : item)) }, t(trimmed ? "toast.renamed" : "toast.nameRestored"));
     setMenuModelId(null);
   };
+  const updateModelTags = (modelId: string, quantization: string, tags: string[], nextPool?: string[]) => {
+    const trimmedQuant = quantization?.trim();
+    void persist(
+      {
+        ...config,
+        customTags: nextPool ?? config.customTags,
+        models: config.models.map((item) =>
+          item.id === modelId
+            ? {
+                ...item,
+                quantization: trimmedQuant || t("model.unknownQuant"),
+                tags: tags.length ? tags : undefined,
+              }
+            : item
+        ),
+      },
+      t("toast.tagsUpdated")
+    );
+  };
   const setDefaultModel = (modelId: string) => {
     const makingDefault = config.preferredModelId !== modelId;
     void persist({ ...config, preferredModelId: makingDefault ? modelId : undefined }, t(makingDefault ? "toast.launchModelSet" : "toast.launchModelUnset"));
@@ -856,7 +906,17 @@ export default function App() {
     if (!model) return setToast(t("toast.addFirst"));
     await handleStart(model);
   };
-  const filteredModels = useMemo(() => { const q = query.trim().toLowerCase(); return q ? config.models.filter((model) => [modelTitle(model), model.architecture, model.quantization, model.path].join(" ").toLowerCase().includes(q)) : config.models; }, [config.models, query]);
+  const filteredModels = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return q
+      ? config.models.filter((model) =>
+          [modelTitle(model), model.architecture, model.quantization, model.path, ...(model.tags || [])]
+            .join(" ")
+            .toLowerCase()
+            .includes(q)
+        )
+      : config.models;
+  }, [config.models, query]);
 
   /** 当前页是否使用 Dock 日志（除"日志"整页外所有页面）：Dock 参与布局，无悬浮遮挡 */
   const isDockPage = PAGE_LOG_MODE[page] === "dock";
@@ -870,14 +930,14 @@ export default function App() {
   const exploreProgress = exploreProgressBytes.total > 0 ? Math.min(100, Math.round((exploreProgressBytes.downloaded / exploreProgressBytes.total) * 100)) : 0;
 
   return <div className={cn("app-shell", sidebarCollapsed && "sidebar-collapsed", zenMode && "zen-mode")}>
-    <Sidebar page={page} onPage={setPage} downloadBadge={exploreBadge} badgeProgress={exploreActive > 0 ? exploreProgress : undefined} updateAvailable={appUpdate?.status === "available"} status={status} abnormal={serviceAbnormal} gpuStats={gpuStats} tokSample={tokSample} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed((value) => !value)} theme={theme} onToggleTheme={() => void persist({ ...config, theme: theme === "dark" ? "light" : "dark" })} />
+    <Sidebar page={page} onPage={setPage} downloadBadge={exploreBadge} badgeProgress={exploreActive > 0 ? exploreProgress : undefined} updateAvailable={appUpdate?.status === "available"} status={status} abnormal={serviceAbnormal} gpuStats={gpuStats} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed((value) => !value)} theme={theme} onToggleTheme={() => void persist({ ...config, theme: theme === "dark" ? "light" : "dark" })} />
     <div className={cn("workspace", isDockPage && "dock-mode")}><Topbar page={page} status={status} busy={busy} onToggleService={status.running ? handleStop : startQuick} models={config.models} modelId={quickModelId || config.preferredModelId || config.models[0]?.id || ""} onSelectModel={setQuickModelId} zenMode={zenMode} onToggleZenMode={() => setZenMode((v) => !v)} /><main className="main-content">
-      {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} query={query} onQuery={setQuery} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onAddProfile={(model) => setProfileEditing({ modelId: model.id, profile: { ...DEFAULT_PROFILES[0], id: uid("profile"), name: t("newProfile") } })} onRenameModel={renameModel} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} justImportedIds={justImportedIds} />}
+      {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} query={query} onQuery={setQuery} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onAddProfile={(model) => setProfileEditing({ modelId: model.id, profile: { ...DEFAULT_PROFILES[0], id: uid("profile"), name: t("newProfile") } })} onRenameModel={renameModel} onUpdateModelTags={updateModelTags} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} justImportedIds={justImportedIds} />}
       <ExplorePage visible={page === "explore"} config={config} onPersist={persist} onToast={setToast} onLog={appendLog} diskUsage={diskUsage} onPickModelsDir={pickModelsDirFlow} onDownload={handleModelDownload} activeDownloads={downloads} progressMap={modelProgress} onPauseTask={handlePauseTask} onResumeTasks={handleResumeTasks} onPauseTasks={handlePauseTasks} onClearDone={handleClearDone} onCancelTask={handleCancelTask} onDeleteTask={handleDeleteTask} onDeleteTasks={deleteTasksImpl} onRetry={handleRetry} onReveal={handleReveal} onGoSettings={() => setPage("settings")} />
       {page === "profiles" && <ProfilesPage models={config.models} onEdit={(modelId, profile) => setProfileEditing({ modelId, profile })} onDelete={deleteProfile} onDuplicate={duplicateProfile} onSetDefault={setDefaultProfile} onReorderProfile={reorderProfiles} onDeleteProfiles={deleteMultipleProfiles} />}
       {/* 会话页保持常驻（隐藏而非卸载）：切换菜单不销毁内嵌 WebUI，回来时无需从聊天记录重新进入；WebUI 始终填满 Dock 下全部剩余高度 */}
       <Playground visible={page === "playground"} status={status} webUiUrl={webUiUrl} modelName={activeModel ? modelTitle(activeModel) : undefined} onOpenWebUi={openWebUi} zenMode={zenMode} onToggleZenMode={() => setZenMode((v) => !v)} />
-      {page === "logs" && <LogsPage logs={logs} status={status} onClear={() => setLogs([])} />}
+      {page === "logs" && <LogsPage logs={logs} status={status} tokPerSec={tokSample ? tokSample.rate : null} onClear={() => setLogs([])} />}
       <SettingsPage visible={page === "settings"} config={config} appUpdate={appUpdate} checkingUpdate={appUpdateChecking} onCheckUpdate={checkAppUpdate} onPersist={persist} onLog={appendLog} />
     </main>
       {/* Dock 日志参与布局（收起=底部状态栏 / 展开=可调高度面板），各页面共用同一份状态，不遮挡内容；仅"日志"整页除外 */}
@@ -890,8 +950,13 @@ export default function App() {
     {orphanPids && orphanPids.length > 0 && (
       <OrphanServerModal
         pids={orphanPids}
+        processes={orphanProcesses ?? undefined}
         isStartingService={Boolean(orphanPendingModel)}
         onKill={handleKillOrphan}
+        onAdoptPath={async (path) => {
+          await persist({ ...config, serverPath: path }, t("toast.settingsSaved"));
+          setToast(t("toast.settingsSaved"));
+        }}
         onClose={handleCloseOrphanModal}
       />
     )}

@@ -2,15 +2,8 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { invoke } from "@tauri-apps/api/core";
 import App from "./App";
-// 设计字体（latin 子集，按字重加载）：正文 Inter，等宽/徽标 JetBrains Mono
-import "@fontsource/inter/latin-400.css";
-import "@fontsource/inter/latin-500.css";
-import "@fontsource/inter/latin-600.css";
-import "@fontsource/inter/latin-700.css";
-import "@fontsource/jetbrains-mono/latin-400.css";
-import "@fontsource/jetbrains-mono/latin-500.css";
-import "@fontsource/jetbrains-mono/latin-600.css";
-import "@fontsource/jetbrains-mono/latin-700.css";
+// 设计字体（latin 子集，纯 woff2 加载）：正文 Inter，等宽/徽标 JetBrains Mono
+import "./fonts.css";
 import "./index.css";
 import { isTauri } from "./tauri";
 

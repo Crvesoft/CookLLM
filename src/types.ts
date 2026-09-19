@@ -28,6 +28,8 @@ export interface ModelAsset {
   /** 默认启动预设 id（该模型启动时自动选中） */
   defaultProfileId?: string;
   accent: "violet" | "cyan" | "amber" | "rose";
+  /** 自定义标签（如角色扮演、代码、未知量化补录等） */
+  tags?: string[];
 }
 
 export interface Profile {
@@ -68,6 +70,8 @@ export interface AppConfig {
   /** 旧版全局预设池，仅兼容旧配置读取；新配置预设已归入每个模型的 ModelAsset.profiles */
   profiles?: Profile[];
   theme?: "dark" | "light";
+  /** 全局标签库池（用户自定义维护的标签列表） */
+  customTags?: string[];
   /** 界面语言：zh（默认）/ en，设置页可切换并持久化 */
   language?: "zh" | "en";
   /** GPU performance monitor toggle (default on). */

@@ -1,10 +1,11 @@
-import { Activity, AlertTriangle, ArrowRight, Check, Cpu, Database, Download, DownloadCloud, Eye, EyeOff, FolderOpen, Gauge, Github, KeyRound, Languages, Layers, Loader2, Moon, RefreshCw, RotateCw, SlidersHorizontal, SquareTerminal, Sun, Terminal, Wifi, Wrench, X } from "lucide-react";
+import { Activity, AlertTriangle, ArrowRight, Check, Cpu, Database, Download, DownloadCloud, Eye, EyeOff, FileCode, FolderOpen, Gauge, Github, KeyRound, Languages, Layers, Loader2, Moon, RefreshCw, RotateCw, SlidersHorizontal, Sparkles, SquareTerminal, Sun, Terminal, Wifi, Wrench, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { APP_REPO, PROJECT_URL } from "../data";
 import { useI18n } from "../i18n";
 import { cn, formatBytes, formatMB } from "../utils";
-import { cancelLlamaCppUpdate, checkLlamaCppUpdate, detectHardware, downloadLlamaCpp, getAppVersion, getGpuInfo, getLlamaCppStatus, getModelsDir, getSystemProxy, hfWhoami, onDownloadProgress, openConfigDir, openExternal, pickModelsDir, pickServerDir, testProxyConnection, type DownloadProgress, type GpuInfo, type HardwareSuggestion, type LlamaCppLocalStatus, type LlamaCppRelease, type ProxyTestResult, type UpdateCheckResult } from "../tauri";
+import { cancelLlamaCppUpdate, checkLlamaCppUpdate, checkOrphanServer, detectHardware, downloadLlamaCpp, getAppVersion, getGpuInfo, getLlamaCppStatus, getModelsDir, getSystemProxy, hfWhoami, onDownloadProgress, openConfigDir, openExternal, pickModelsDir, pickServerDir, pickServerFile, testProxyConnection, type DownloadProgress, type GpuInfo, type HardwareSuggestion, type LlamaCppLocalStatus, type LlamaCppRelease, type OrphanProcessItem, type ProxyTestResult, type ServerCandidate, type UpdateCheckResult } from "../tauri";
 import type { AppConfig, DiskUsage, LlamaLogPayload } from "../types";
+import ServerCandidateModal from "./ServerCandidateModal";
 
 type ProxyMode = "system" | "manual" | "direct";
 
@@ -42,17 +43,52 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
     }
   };
 
+  const [detectedServer, setDetectedServer] = useState<OrphanProcessItem | null>(null);
+  const [candidateList, setCandidateList] = useState<ServerCandidate[] | null>(null);
+
   const choose = async () => {
     setServerPicking(true); setServerBrowseError(null);
     try {
-      const located = await pickServerDir();
-      if (located) {
-        setServerPath(located);
-        await onPersist({ ...config, serverPath: located }, t("toast.settingsSaved"));
+      const result = await pickServerDir();
+      if (result.status === "selected" && result.selectedPath) {
+        setServerPath(result.selectedPath);
+        await onPersist({ ...config, serverPath: result.selectedPath }, t("toast.settingsSaved"));
+        void refreshEngine();
+      } else if (result.status === "multiple") {
+        setCandidateList(result.candidates);
+      } else if (result.status === "none") {
+        // 未检测到已知程序，自动唤起文件选择器直接选择
+        const manual = await pickServerFile();
+        if (manual) {
+          setServerPath(manual);
+          await onPersist({ ...config, serverPath: manual }, t("toast.settingsSaved"));
+          void refreshEngine();
+        }
       }
     } catch (error) {
       setServerBrowseError(error instanceof Error ? error.message : String(error));
     } finally { setServerPicking(false); }
+  };
+
+  const handleSelectCandidate = async (candidate: ServerCandidate) => {
+    setCandidateList(null);
+    setServerPath(candidate.path);
+    await onPersist({ ...config, serverPath: candidate.path }, t("toast.settingsSaved"));
+    void refreshEngine();
+  };
+
+  const handleCandidateManualFile = async () => {
+    setCandidateList(null);
+    try {
+      const manual = await pickServerFile();
+      if (manual) {
+        setServerPath(manual);
+        await onPersist({ ...config, serverPath: manual }, t("toast.settingsSaved"));
+        void refreshEngine();
+      }
+    } catch (error) {
+      setServerBrowseError(error instanceof Error ? error.message : String(error));
+    }
   };
   // ---- 项目信息：当前版本 + 检测更新（GitHub Releases）----
   const [appVersion, setAppVersion] = useState("");
@@ -175,9 +211,18 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
 
   const refreshEngine = async () => {
     try {
-      const [hw, st] = await Promise.all([detectHardware(), getLlamaCppStatus()]);
+      const [hw, st, orphan] = await Promise.all([
+        detectHardware(),
+        getLlamaCppStatus(),
+        checkOrphanServer().catch(() => null),
+      ]);
       setHardware(hw);
       setEngineStatus(st);
+      if (orphan && orphan.processes && orphan.processes.length > 0) {
+        setDetectedServer(orphan.processes[0]);
+      } else {
+        setDetectedServer(null);
+      }
       if (hw) setBackend(hw.recommendedBackend);
       else if (st?.localBackend) setBackend(st.localBackend);
     } catch { /* 非 Tauri 环境忽略 */ }
@@ -428,14 +473,45 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
               ))}
             </div>
 
-            {/* 路径输入框：浏览作为尾部附着按钮 */}
+            {/* 路径输入框：单一浏览按钮 */}
             <div className="engine-path">
               <span className="engine-path-label">{t("llama.installPath")}</span>
               <div className="engine-path-row">
                 <input value={serverPath} onChange={(e) => setServerPath(e.target.value)} onBlur={(e) => saveServerPath(e.target.value)} placeholder="C:\llama.cpp\llama-server.exe" />
-                <button className="engine-browse" disabled={serverPicking} onClick={() => void choose()}>{serverPicking ? <Loader2 size={14} className="spin" /> : <FolderOpen size={14} />}{t("browse")}</button>
+                <button className="engine-browse" disabled={serverPicking} onClick={() => void choose()} title={t("llama.pickDirTitle")}>
+                  {serverPicking ? <Loader2 size={14} className="spin" /> : <FolderOpen size={14} />}
+                  {t("browse")}
+                </button>
               </div>
             </div>
+
+            {/* 若检测到系统中正在运行的 server 进程，提供一键快捷采用 / 指定 */}
+            {detectedServer && (
+              <div className="detected-server-hint">
+                <div className="detected-server-info">
+                  <Sparkles size={14} style={{ color: "#f59e0b", flex: "none" }} />
+                  <span>
+                    {t("llama.detectedRunning", {
+                      name: detectedServer.name,
+                      pid: detectedServer.pid,
+                    })}
+                    {detectedServer.path && <code className="detected-path">{detectedServer.path}</code>}
+                  </span>
+                </div>
+                {detectedServer.path && detectedServer.path.toLowerCase() !== serverPath.toLowerCase() && (
+                  <button
+                    className="secondary-button compact"
+                    onClick={() => {
+                      if (detectedServer.path) {
+                        saveServerPath(detectedServer.path);
+                      }
+                    }}
+                  >
+                    {t("llama.adoptDetectedPath")}
+                  </button>
+                )}
+              </div>
+            )}
 
             {/* 底部按钮：次级描边 + 主橙色，统一靠右，宽度自适应 */}
             <div className="engine-actions">
@@ -632,6 +708,14 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
             </footer>
           </div>
         </div>
+      )}
+      {candidateList && candidateList.length > 0 && (
+        <ServerCandidateModal
+          candidates={candidateList}
+          onSelect={handleSelectCandidate}
+          onPickManualFile={handleCandidateManualFile}
+          onClose={() => setCandidateList(null)}
+        />
       )}
     </div>
   );

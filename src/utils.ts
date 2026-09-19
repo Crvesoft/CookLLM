@@ -31,6 +31,13 @@ export function fileName(path: string) {
   return path.split(/[\\/]/).pop() || path;
 }
 
+/** 从文件名或路径中智能提取量化级别（支持 Q4_K_M、IQ4_XS、3.7bpw、F16 等） */
+export function parseQuantization(path: string, fallback: string): string {
+  const match = path.match(/(?:I?Q\d(?:_[A-Z0-9]+)+|\d+(?:\.\d+)?bpw|(?:FP|BF|F)16|(?:FP|F)32)/i)?.[0];
+  if (!match) return fallback;
+  return match.toLowerCase().endsWith("bpw") ? match : match.toUpperCase();
+}
+
 export function timeLabel(timestamp: number) {
   const locale = getLocale() === "en" ? "en-US" : "zh-CN";
   return new Date(timestamp).toLocaleTimeString(locale, { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });

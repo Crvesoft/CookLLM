@@ -2,7 +2,7 @@ import type { AppConfig, LlamaLogPayload, ModelAsset, Profile } from "./types";
 import { formatMessage, getLocale } from "./i18n";
 
 /** 当前应用版本（与 tauri.conf.json / package.json 保持一致）：浏览器模式回退值，检测更新的比较基线 */
-export const APP_VERSION = "0.2.5";
+export const APP_VERSION = "0.2.6";
 /** 项目信息：GitHub 仓库（owner/repo）与主页地址 */
 export const APP_REPO = "Crvesoft/CookLLM";
 export const PROJECT_URL = `https://github.com/${APP_REPO}`;
@@ -60,4 +60,27 @@ export const INITIAL_LOGS: LlamaLogPayload[] = [
   { stream: "system", line: "CookLLM runtime initialized · waiting for a model", timestamp: Date.now() - 1800 },
   // 模块加载时按当前语言生成（一次性日志行，切换语言后不重译）
   { stream: "stdout", line: formatMessage(getLocale(), "log.readyLine"), timestamp: Date.now() - 900 },
+];
+
+export const DEFAULT_TAG_POOL_ZH = [
+  "角色扮演",
+  "代码编程",
+  "逻辑推理",
+  "文本创作",
+  "视觉多模态",
+  "中文增强",
+  "工具调用",
+  "长文本",
+  "无审查",
+];
+
+export const DEFAULT_TAG_POOL_EN = [
+  "Roleplay",
+  "Coding",
+  "Reasoning",
+  "Writing",
+  "Vision",
+  "ToolCall",
+  "LongContext",
+  "Uncensored",
 ];

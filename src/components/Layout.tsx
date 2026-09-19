@@ -4,7 +4,7 @@ import type React from "react";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { isTauri } from "../tauri";
-import type { GpuStats, LlamaLogPayload, ModelAsset, Page, ServerStatus, TokSample } from "../types";
+import type { GpuStats, LlamaLogPayload, ModelAsset, Page, ServerStatus } from "../types";
 import { cn, lineKind, modelTitle, timeLabel } from "../utils";
 import { LlamaMark } from "./LlamaMark";
 import MiniStatusBar from "./MiniStatusBar";
@@ -54,7 +54,7 @@ function WindowControls({ zenToggle }: { zenToggle?: React.ReactNode }) {
   );
 }
 
-export function Sidebar({ page, onPage, downloadBadge, badgeProgress, updateAvailable, status, abnormal, gpuStats, tokSample, collapsed, onToggleCollapsed, theme, onToggleTheme }: { page: Page; onPage: (page: Page) => void; downloadBadge?: string; badgeProgress?: number; updateAvailable?: boolean; status: ServerStatus; abnormal: boolean; gpuStats: GpuStats | null; tokSample: TokSample | null; collapsed: boolean; onToggleCollapsed: () => void; theme: string; onToggleTheme: () => void }) {
+export function Sidebar({ page, onPage, downloadBadge, badgeProgress, updateAvailable, status, abnormal, gpuStats, collapsed, onToggleCollapsed, theme, onToggleTheme }: { page: Page; onPage: (page: Page) => void; downloadBadge?: string; badgeProgress?: number; updateAvailable?: boolean; status: ServerStatus; abnormal: boolean; gpuStats: GpuStats | null; collapsed: boolean; onToggleCollapsed: () => void; theme: string; onToggleTheme: () => void }) {
   const { t } = useI18n();
   const nav: Array<{ id: Page; label: string; icon: LucideIcon; badge?: string; badgeProgress?: number; dot?: boolean }> = [
     { id: "models", label: t("nav.models"), icon: Boxes },
@@ -72,7 +72,7 @@ export function Sidebar({ page, onPage, downloadBadge, badgeProgress, updateAvai
     <nav className="side-nav">{nav.map((item) => { const Icon = item.icon; return <button key={item.id} title={collapsed ? item.label : undefined} className={cn("side-link", page === item.id && "active")} onClick={() => onPage(item.id)}><Icon size={18} /><span>{item.label}</span>{item.badge && <em className={cn("download-badge", item.badgeProgress != null && "ring")}><svg viewBox="0 0 18 18" aria-hidden="true"><circle className="badge-track" cx="9" cy="9" r="7" /><circle className="badge-fill" cx="9" cy="9" r="7" style={{ strokeDashoffset: `${43.98 * (1 - Math.max(0, Math.min(100, item.badgeProgress ?? 0)) / 100)}` }} /></svg><span>{item.badge}</span></em>}{item.dot && <i className="update-dot" aria-hidden="true" />}</button>; })}</nav>
     <div className="sidebar-spacer" />
     {/* 收起时仅用 CSS 隐藏（保持挂载）：迷你图的采样历史在收放之间不丢失 */}
-    <MiniStatusBar status={status} abnormal={abnormal} gpuStats={gpuStats} tokSample={tokSample} theme={theme} updateAvailable={updateAvailable} onToggleTheme={onToggleTheme} />
+    <MiniStatusBar status={status} abnormal={abnormal} gpuStats={gpuStats} theme={theme} updateAvailable={updateAvailable} onToggleTheme={onToggleTheme} />
   </aside>;
 }
 
@@ -142,12 +142,12 @@ export function Topbar({ page, status, busy, onToggleService, models, modelId, o
   );
 }
 
-export function LogsPage({ logs, status, onClear }: { logs: LlamaLogPayload[]; status: ServerStatus; onClear: () => void }) {
+export function LogsPage({ logs, status, tokPerSec, onClear }: { logs: LlamaLogPayload[]; status: ServerStatus; tokPerSec?: number | null; onClear: () => void }) {
   const { t } = useI18n();
   const endRef = useRef<HTMLDivElement>(null);
   // 立即跳到最后一行（无平滑动画，避免切页时从首行可见地滑到底）
   useEffect(() => { endRef.current?.scrollIntoView(); }, [logs]);
-  return <div className="logs-page"><div className="console-toolbar"><div><span className="dot red" /><span className="dot yellow" /><span className="dot green" /><strong>llama-server · output</strong>{status.running ? <span className="live-badge"><i />{t("statusRunning")}</span> : <span className="logs-idle">{t("statusStopped")}</span>}</div><div><button onClick={onClear}>{t("clearLogs")}</button></div></div><div className="console-lines">{logs.length ? logs.map((log, index) => { const kind = lineKind(log.stream, log.line); return <div className={cn("log-line", kind)} key={`${log.timestamp}-${index}`}><span>{timeLabel(log.timestamp)}</span><em>{kind === "err" ? "ERR" : kind === "warn" ? "WRN" : kind === "system" ? "SYS" : "OUT"}</em><code>{log.line}</code></div>; }) : <div className="console-empty">{t("noLogs")}</div>}<div ref={endRef} /></div></div>;
+  return <div className="logs-page"><div className="console-toolbar"><div><span className="dot red" /><span className="dot yellow" /><span className="dot green" /><strong>llama-server · output</strong>{status.running ? <span className="live-badge"><i />{t("statusRunning")}{tokPerSec != null ? ` · ${tokPerSec} tok/s` : ""}</span> : <span className="logs-idle">{t("statusStopped")}</span>}</div><div><button onClick={onClear}>{t("clearLogs")}</button></div></div><div className="console-lines">{logs.length ? logs.map((log, index) => { const kind = lineKind(log.stream, log.line); return <div className={cn("log-line", kind)} key={`${log.timestamp}-${index}`}><span>{timeLabel(log.timestamp)}</span><em>{kind === "err" ? "ERR" : kind === "warn" ? "WRN" : kind === "system" ? "SYS" : "OUT"}</em><code>{log.line}</code></div>; }) : <div className="console-empty">{t("noLogs")}</div>}<div ref={endRef} /></div></div>;
 }
 
 export function Toast({ children }: { children: React.ReactNode }) { return <div className="toast"><Check size={15} />{children}</div>; }

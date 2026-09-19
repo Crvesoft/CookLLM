@@ -3,10 +3,8 @@ import { useI18n } from "../i18n";
 import { useEffect, useState } from "react";
 import { APP_VERSION } from "../data";
 import { getAppVersion } from "../tauri";
-import type { GpuStats, ServerStatus, TokSample } from "../types";
+import type { GpuStats, ServerStatus } from "../types";
 import { cn } from "../utils";
-/** Token 速率采样在此窗口内视为"实时推理中"，过期回退 Idle（避免生成结束后仍显示旧速率） */
-const TPS_FRESH_MS = 8000;
 /** GPU 历史迷你图保留的采样数：90 × 2s 轮询 ≈ 3 分钟滚动窗口 */
 const HISTORY_MAX = 90;
 /** 占用率低于此值视为空闲（状态后缀）；高负载时隐藏 "Idle"，避免与百分比语义冲突 */
@@ -60,7 +58,6 @@ interface MiniStatusBarProps {
   /** 服务异常（启动失败 / 进程意外退出）→ 红灯 */
   abnormal: boolean;
   gpuStats: GpuStats | null;
-  tokSample: TokSample | null;
   /** 当前主题与切换回调（左下角快捷切换） */
   theme: string;
   updateAvailable?: boolean;
@@ -71,7 +68,7 @@ interface MiniStatusBarProps {
  * 左下角 GPU 性能监测 + 功耗合并卡片：GPU 指标区（VRAM / Core sparkline）在上，
  * 功耗行居中，健康灯 + 版本号沉底至其右端。
  */
-export default function MiniStatusBar({ status, abnormal, gpuStats, tokSample, theme, updateAvailable, onToggleTheme }: MiniStatusBarProps) {
+export default function MiniStatusBar({ status, abnormal, gpuStats, theme, updateAvailable, onToggleTheme }: MiniStatusBarProps) {
   const { t } = useI18n();
   const running = status.running;
   // no GPU data (AMD / Intel / no dGPU): hide the monitoring section entirely
@@ -98,17 +95,10 @@ export default function MiniStatusBar({ status, abnormal, gpuStats, tokSample, t
   const usedMb = gpuStats?.memoryUsedMb ?? null;
   const vramText = totalMb !== null && usedMb !== null ? `${(usedMb / 1024).toFixed(1)}/${Math.round(totalMb / 1024)} GB` : "--";
 
-  // ---- 实时吞吐：采样新鲜则显示速率，否则按占用率决定是否标 Idle ----
-  const [, setTick] = useState(0);
-  useEffect(() => {
-    const timer = window.setInterval(() => setTick((value) => value + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, []);
-
-  const liveRate = tokSample !== null && Date.now() - tokSample.at < TPS_FRESH_MS ? tokSample.rate : null;
+  // ---- GPU 核心负载与空闲状态（仅低占用且运行时提示 Idle）----
   const utilPct = gpuStats?.utilPercent ?? null;
   const coreText = utilPct !== null ? `${Math.round(utilPct)}%` : "--";
-  const coreState = liveRate !== null ? `${liveRate.toFixed(1)} t/s` : running && (utilPct ?? 0) < IDLE_UTIL_MAX ? "Idle" : null;
+  const coreState = running && (utilPct ?? 0) < IDLE_UTIL_MAX ? "Idle" : null;
 
   const themeToggle = (
     <button className="ms-theme-toggle" title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"} aria-label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"} onClick={onToggleTheme}>
@@ -125,7 +115,7 @@ export default function MiniStatusBar({ status, abnormal, gpuStats, tokSample, t
         <div className="gm-meta"><span className="ms-view-title">VRAM</span><span className="ms-val">{vramText}</span></div>
         <Spark history={memHistory} tone="mem" />
       </div>
-      <div className={cn("gm-view", liveRate !== null && "live")} title={t("tooltipCore")}>
+      <div className="gm-view" title={t("tooltipCore")}>
         <div className="gm-meta"><span className="ms-view-title">3D(GPU)</span><span className="ms-val">{coreText}{coreState !== null && <em className="gm-state">{coreState}</em>}</span></div>
         <Spark history={coreHistory} tone="core" />
       </div>

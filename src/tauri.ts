@@ -32,18 +32,25 @@ export async function getServerStatus(): Promise<ServerStatus> {
   return invoke<ServerStatus>("get_server_status");
 }
 
+export interface OrphanProcessItem {
+  pid: number;
+  name: string;
+  path?: string | null;
+}
+
 export interface OrphanServerInfo {
   hasOrphan: boolean;
   pids: number[];
+  processes?: OrphanProcessItem[];
 }
 
-/** 检测系统后台是否存在未被当前 CookLLM 托管的残留 llama-server 进程 */
+/** 检测系统后台是否存在未被当前 CookLLM 托管的残留 server 进程 */
 export async function checkOrphanServer(): Promise<OrphanServerInfo> {
-  if (!isTauri()) return { hasOrphan: false, pids: [] };
+  if (!isTauri()) return { hasOrphan: false, pids: [], processes: [] };
   return invoke<OrphanServerInfo>("check_orphan_server");
 }
 
-/** 终止指定的（或全部未托管的）后台残留 llama-server 进程 */
+/** 终止指定的（或全部未托管的）后台残留 server 进程 */
 export async function killOrphanServer(pids?: number[]): Promise<number> {
   if (!isTauri()) return 0;
   return invoke<number>("kill_orphan_server", { pids: pids ?? null });
@@ -67,10 +74,29 @@ export async function pickFolder(): Promise<PickedFile[]> {
   return invoke<PickedFile[]>("pick_folder");
 }
 
-/** 选择本机 llama.cpp 构建目录，自动定位该目录（或其子目录）中的 llama-server.exe；取消时返回空串 */
-export async function pickServerDir(): Promise<string> {
+export interface ServerCandidate {
+  name: string;
+  path: string;
+  relPath: string;
+  sizeBytes: number;
+}
+
+export interface PickServerResult {
+  status: "selected" | "multiple" | "none" | "cancelled";
+  candidates: ServerCandidate[];
+  selectedPath?: string | null;
+}
+
+/** 选择本机 llama.cpp 构建或安装目录，智能定位或返回多个候选程序 */
+export async function pickServerDir(): Promise<PickServerResult> {
+  if (!isTauri()) return { status: "cancelled", candidates: [] };
+  return invoke<PickServerResult>("pick_server_dir");
+}
+
+/** 直接选择具体的 server 可执行文件（如 llama-server.exe、llama-kvmem-server.exe 等） */
+export async function pickServerFile(): Promise<string> {
   if (!isTauri()) return "";
-  return invoke<string>("pick_server_dir");
+  return invoke<string>("pick_server_file");
 }
 
 /** 把拖入/选中的路径展开为 GGUF 文件列表：目录递归收集，文件按后缀过滤。 */

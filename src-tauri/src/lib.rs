@@ -312,6 +312,7 @@ fn stream_reader<R: std::io::Read + Send + 'static>(app: AppHandle, stream: &'st
 /// - Windows：taskkill /T /F（与"停止服务"按钮一致，最可靠，连带整棵进程树），
 ///   此前退出路径用 in-process Child::kill 无法可靠杀掉 llama-server，导致它留在后台占显存。
 /// - 非 Windows：Child::kill。
+///
 /// 之后带 5 秒超时轮询 wait：确保进程被回收，同时绝不无限阻塞调用线程（退出流程同样安全）。
 fn kill_managed_child(managed: &mut ManagedProcess) {
     #[cfg(windows)]
@@ -338,66 +339,145 @@ fn kill_managed_child(managed: &mut ManagedProcess) {
     }
 }
 
+#[cfg(windows)]
+fn get_process_path(pid: u32) -> Option<String> {
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+    unsafe {
+        let handle: HANDLE = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() || handle == -1isize as HANDLE {
+            return None;
+        }
+        let mut buf = [0u16; 1024];
+        let mut size = buf.len() as u32;
+        let success = QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, buf.as_mut_ptr(), &mut size);
+        CloseHandle(handle);
+        if success != 0 && size > 0 {
+            String::from_utf16(&buf[..size as usize]).ok()
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn get_process_path(pid: u32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        if let Ok(dest) = fs::read_link(format!("/proc/{}/exe", pid)) {
+            return Some(dest.to_string_lossy().to_string());
+        }
+    }
+    None
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct OrphanProcessItem {
+    pid: u32,
+    name: String,
+    path: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct OrphanServerInfo {
     has_orphan: bool,
     pids: Vec<u32>,
+    processes: Vec<OrphanProcessItem>,
 }
 
-/// 探测系统中未被 CookLLM 当前生命周期托管的 llama-server 进程（例如更新前未正常关闭或异常退出的残留）
-fn find_orphan_server_pids(managed_pid: Option<u32>) -> Vec<u32> {
+/// 探测系统中未被 CookLLM 当前生命周期托管的 server 进程（包括 llama-server 与分支自定义名称，如 llama-kvmem-server.exe）
+fn find_orphan_servers(managed_pid: Option<u32>, custom_exe_name: Option<&str>) -> Vec<OrphanProcessItem> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
-        let output = Command::new("tasklist")
-            .args(["/FI", "IMAGENAME eq llama-server.exe", "/FO", "CSV", "/NH"])
-            .creation_flags(0x08000000)
-            .output();
-        let Ok(output) = output else { return Vec::new(); };
-        let text = String::from_utf8_lossy(&output.stdout);
-        let mut pids = Vec::new();
-        for line in text.lines() {
-            let line = line.trim();
-            if line.is_empty() || line.starts_with("INFO:") || line.starts_with("信息:") {
-                continue;
+        let mut queries = vec!["IMAGENAME eq llama*".to_string()];
+        if let Some(custom) = custom_exe_name {
+            let custom_lower = custom.to_lowercase();
+            if !custom_lower.starts_with("llama") && custom_lower.ends_with(".exe") {
+                queries.push(format!("IMAGENAME eq {}", custom));
             }
-            let parts: Vec<&str> = line.split(',').collect();
-            if parts.len() >= 2 {
-                let name = parts[0].trim_matches('"').to_lowercase();
-                if name == "llama-server.exe" || name.ends_with("llama-server.exe") {
-                    if let Ok(pid) = parts[1].trim_matches('"').parse::<u32>() {
-                        if managed_pid != Some(pid) && !pids.contains(&pid) {
-                            pids.push(pid);
+        }
+
+        let mut items = Vec::new();
+        let mut seen_pids = Vec::new();
+
+        for query in queries {
+            let output = Command::new("tasklist")
+                .args(["/FI", &query, "/FO", "CSV", "/NH"])
+                .creation_flags(0x08000000)
+                .output();
+            let Ok(output) = output else { continue; };
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with("INFO:") || line.starts_with("信息:") {
+                    continue;
+                }
+                let parts: Vec<&str> = line.split(',').collect();
+                if parts.len() >= 2 {
+                    let name = parts[0].trim_matches('"').to_string();
+                    let name_lower = name.to_lowercase();
+                    let is_match = name_lower == "llama-server.exe"
+                        || (name_lower.starts_with("llama") && name_lower.contains("server"))
+                        || custom_exe_name.map(|c| c.eq_ignore_ascii_case(&name)).unwrap_or(false);
+
+                    if is_match {
+                        if let Ok(pid) = parts[1].trim_matches('"').parse::<u32>() {
+                            if managed_pid != Some(pid) && !seen_pids.contains(&pid) {
+                                seen_pids.push(pid);
+                                let path = get_process_path(pid);
+                                items.push(OrphanProcessItem { pid, name, path });
+                            }
                         }
                     }
                 }
             }
         }
-        pids
+        items
     }
     #[cfg(not(windows))]
     {
-        let output = Command::new("pgrep")
-            .args(["-f", "llama-server"])
-            .output();
-        let Ok(output) = output else { return Vec::new(); };
-        let text = String::from_utf8_lossy(&output.stdout);
-        let mut pids = Vec::new();
-        for line in text.lines() {
-            if let Ok(pid) = line.trim().parse::<u32>() {
-                if managed_pid != Some(pid) && !pids.contains(&pid) {
-                    pids.push(pid);
+        let mut patterns = vec!["llama-server".to_string(), "llama.*server".to_string()];
+        if let Some(custom) = custom_exe_name {
+            if !patterns.iter().any(|p| p == custom) {
+                patterns.push(custom.to_string());
+            }
+        }
+
+        let mut items = Vec::new();
+        let mut seen_pids = Vec::new();
+
+        for pattern in patterns {
+            let output = Command::new("pgrep")
+                .args(["-l", "-f", &pattern])
+                .output();
+            let Ok(output) = output else { continue; };
+            let text = String::from_utf8_lossy(&output.stdout);
+            for line in text.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if !parts.is_empty() {
+                    if let Ok(pid) = parts[0].parse::<u32>() {
+                        if managed_pid != Some(pid) && !seen_pids.contains(&pid) {
+                            seen_pids.push(pid);
+                            let name = parts.get(1).unwrap_or(&"llama-server").to_string();
+                            let path = get_process_path(pid);
+                            items.push(OrphanProcessItem { pid, name, path });
+                        }
+                    }
                 }
             }
         }
-        pids
+        items
     }
 }
 
-/// 检查是否存在后台残留的 llama-server 进程
+/// 检查是否存在后台残留的 server 进程
 #[tauri::command]
-fn check_orphan_server(state: State<ProcessState>) -> Result<OrphanServerInfo, String> {
+fn check_orphan_server(app: AppHandle, state: State<ProcessState>) -> Result<OrphanServerInfo, String> {
     let managed_pid = {
         let mut guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
         if let Some(managed) = guard.as_mut() {
@@ -414,16 +494,25 @@ fn check_orphan_server(state: State<ProcessState>) -> Result<OrphanServerInfo, S
         }
     };
 
-    let pids = find_orphan_server_pids(managed_pid);
+    let config = read_config(&app).ok();
+    let custom_exe_name = config.as_ref()
+        .map(|c| c.server_path.trim())
+        .filter(|p| !p.is_empty())
+        .and_then(|p| Path::new(p).file_name())
+        .and_then(|n| n.to_str());
+
+    let processes = find_orphan_servers(managed_pid, custom_exe_name);
+    let pids = processes.iter().map(|p| p.pid).collect();
     Ok(OrphanServerInfo {
-        has_orphan: !pids.is_empty(),
+        has_orphan: !processes.is_empty(),
         pids,
+        processes,
     })
 }
 
-/// 终止指定的（或全部未托管的）后台残留 llama-server 进程
+/// 终止指定的（或全部未托管的）后台残留 server 进程
 #[tauri::command]
-fn kill_orphan_server(state: State<ProcessState>, pids: Option<Vec<u32>>) -> Result<usize, String> {
+fn kill_orphan_server(app: AppHandle, state: State<ProcessState>, pids: Option<Vec<u32>>) -> Result<usize, String> {
     let managed_pid = {
         let guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
         guard.as_ref().map(|m| m.child.id())
@@ -434,7 +523,15 @@ fn kill_orphan_server(state: State<ProcessState>, pids: Option<Vec<u32>>) -> Res
             .into_iter()
             .filter(|&pid| Some(pid) != managed_pid)
             .collect(),
-        _ => find_orphan_server_pids(managed_pid),
+        _ => {
+            let config = read_config(&app).ok();
+            let custom_exe_name = config.as_ref()
+                .map(|c| c.server_path.trim())
+                .filter(|p| !p.is_empty())
+                .and_then(|p| Path::new(p).file_name())
+                .and_then(|n| n.to_str());
+            find_orphan_servers(managed_pid, custom_exe_name).into_iter().map(|p| p.pid).collect()
+        }
     };
 
     let count = target_pids.len();
@@ -549,10 +646,10 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
         .or_else(|| config.profiles.iter().find(|item| item.id == profile_id))
         .cloned().ok_or("未找到运行预设")?;
     if config.server_path.trim().is_empty() {
-        return Err("请先在设置中选择 llama-server.exe".into());
+        return Err("请先在设置中指定 Server 可执行文件（如 llama-server.exe 或分支版本）".into());
     }
     if !PathBuf::from(&config.server_path).exists() {
-        return Err(format!("llama-server 不存在：{}", config.server_path));
+        return Err(format!("Server 文件不存在：{}", config.server_path));
     }
     if !PathBuf::from(&model.path).exists() {
         return Err(format!("模型文件不存在：{}", model.path));
@@ -762,7 +859,7 @@ fn query_gpu_stats() -> Option<GpuStats> {
     let line = text.lines().find(|line| !line.trim().is_empty())?;
     let fields: Vec<&str> = line.split(',').map(|field| field.trim()).collect();
     Some(GpuStats {
-        memory_total_mb: fields.get(0).and_then(|value| value.parse::<f64>().ok()),
+        memory_total_mb: fields.first().and_then(|value| value.parse::<f64>().ok()),
         memory_used_mb: fields.get(1).and_then(|value| value.parse::<f64>().ok()),
         util_percent: fields.get(2).and_then(|value| value.parse::<f64>().ok()),
         // 个别卡型不支持功耗读数（输出 "N/A"）→ None，前端回退为仅显示 Idle
@@ -1059,21 +1156,224 @@ fn find_executable(dir: &Path, exe_name: &str, depth: usize) -> Option<PathBuf> 
     None
 }
 
-/// 选择本机 llama.cpp 构建目录，自动定位其中的 llama-server.exe（当前目录优先，子目录就近递归）。
-/// 用户取消时返回空串；目录内未找到可执行文件时返回错误。
+/// 智能探测目录树中的 server 可执行文件（如 llama-server.exe、llama-kvmem-server.exe 等）
+fn find_server_executable(dir: &Path, depth: usize) -> Option<PathBuf> {
+    let default_name = if cfg!(windows) { "llama-server.exe" } else { "llama-server" };
+    // 1) 优先查找官方标准名
+    if let Some(standard) = find_executable(dir, default_name, depth) {
+        return Some(standard);
+    }
+    // 2) 就近模糊匹配带 server 的分支可执行程序
+    find_server_fuzzy(dir, depth)
+}
+
+fn find_server_fuzzy(dir: &Path, depth: usize) -> Option<PathBuf> {
+    let entries: Vec<_> = fs::read_dir(dir).ok()?.flatten().collect();
+    let mut candidate_llama_server = None;
+    let mut candidate_any_server = None;
+
+    for entry in &entries {
+        let path = entry.path();
+        if path.is_file() {
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_lowercase();
+            let is_exe = if cfg!(windows) {
+                name.ends_with(".exe")
+            } else {
+                !name.contains('.') || name.ends_with(".bin")
+            };
+            if is_exe {
+                // 排除 RPC 节点服务与工具
+                if name.contains("rpc") || name.contains("test") || name.contains("bench") || name.contains("quantize") || name.contains("cli") {
+                    continue;
+                }
+                if name.starts_with("llama") && name.contains("server") {
+                    candidate_llama_server = Some(path);
+                    break;
+                } else if name.contains("server") && candidate_any_server.is_none() {
+                    candidate_any_server = Some(path);
+                }
+            }
+        }
+    }
+    if let Some(found) = candidate_llama_server.or(candidate_any_server) {
+        return Some(found);
+    }
+
+    if depth >= 6 {
+        return None;
+    }
+    for entry in entries {
+        let path = entry.path();
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            if let Some(found) = find_server_fuzzy(&path, depth + 1) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerCandidate {
+    name: String,
+    path: String,
+    rel_path: String,
+    size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PickServerResult {
+    status: String, // "selected" | "multiple" | "none" | "cancelled"
+    candidates: Vec<ServerCandidate>,
+    selected_path: Option<String>,
+}
+
+fn collect_server_candidates(root: &Path, dir: &Path, depth: usize, out: &mut Vec<ServerCandidate>) {
+    let Ok(entries) = fs::read_dir(dir) else { return; };
+    let mut subdirs = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_file() {
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let name_lower = name.to_lowercase();
+            let is_exe = if cfg!(windows) {
+                name_lower.ends_with(".exe")
+            } else {
+                !name_lower.contains('.') || name_lower.ends_with(".bin")
+            };
+            if is_exe {
+                // 必须明确排除 RPC 节点服务（如 ggml-rpc-server.exe）、命令行客户端、量化/基准测试等非 LLM API 服务
+                if name_lower.contains("rpc")
+                    || name_lower.contains("test")
+                    || name_lower.contains("bench")
+                    || name_lower.contains("quantize")
+                    || name_lower.contains("cli")
+                    || name_lower.contains("simple")
+                {
+                    continue;
+                }
+                let is_server = name_lower == "llama-server.exe"
+                    || name_lower == "llama-server"
+                    || (name_lower.starts_with("llama") && name_lower.contains("server"))
+                    || (name_lower.contains("llama") && name_lower.contains("server"))
+                    || (name_lower.ends_with("-server.exe") || name_lower.ends_with("_server.exe"));
+                if is_server {
+                    let rel_path = path.strip_prefix(root)
+                        .map(|p| p.to_string_lossy().to_string())
+                        .unwrap_or_else(|_| name.clone());
+                    let size_bytes = fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+                    out.push(ServerCandidate {
+                        name,
+                        path: path.to_string_lossy().to_string(),
+                        rel_path,
+                        size_bytes,
+                    });
+                }
+            }
+        } else if path.is_dir() && depth < 6 {
+            subdirs.push(path);
+        }
+    }
+    for sub in subdirs {
+        collect_server_candidates(root, &sub, depth + 1, out);
+    }
+}
+
+/// 选择本机 llama.cpp 构建或安装目录，智能定位或返回多个候选程序。
 #[tauri::command]
-fn pick_server_dir(app: AppHandle) -> Result<String, String> {
+fn pick_server_dir(app: AppHandle) -> Result<PickServerResult, String> {
     let Some(file_path) = app.dialog().file().blocking_pick_folder() else {
-        return Ok(String::new());
+        return Ok(PickServerResult {
+            status: "cancelled".into(),
+            candidates: Vec::new(),
+            selected_path: None,
+        });
     };
     let Some(folder) = file_path.as_path() else {
+        return Ok(PickServerResult {
+            status: "cancelled".into(),
+            candidates: Vec::new(),
+            selected_path: None,
+        });
+    };
+
+    let mut candidates = Vec::new();
+    collect_server_candidates(folder, folder, 0, &mut candidates);
+
+    if candidates.is_empty() {
+        return Ok(PickServerResult {
+            status: "none".into(),
+            candidates: Vec::new(),
+            selected_path: None,
+        });
+    }
+
+    // 排序策略：
+    // 1. 官方标准名 llama-server.exe / llama-server 绝对优先；
+    // 2. 相对路径浅优先（根目录下的优先于深层子目录 / 副本）；
+    // 3. 字典序
+    candidates.sort_by(|a, b| {
+        let is_std_a = a.name.eq_ignore_ascii_case("llama-server.exe") || a.name == "llama-server";
+        let is_std_b = b.name.eq_ignore_ascii_case("llama-server.exe") || b.name == "llama-server";
+        if is_std_a != is_std_b {
+            return if is_std_a { std::cmp::Ordering::Less } else { std::cmp::Ordering::Greater };
+        }
+        let depth_a = a.rel_path.split(['/', '\\']).count();
+        let depth_b = b.rel_path.split(['/', '\\']).count();
+        depth_a.cmp(&depth_b).then_with(|| a.name.cmp(&b.name))
+    });
+
+    // 统计有多少种【不同名称】的 Server 程序
+    let distinct_names: std::collections::HashSet<_> = candidates
+        .iter()
+        .map(|c| c.name.to_lowercase())
+        .collect();
+
+    // 若所有候选文件的程序名称相同（例如只有原版 llama-server.exe，或工程根目录与 build/ 产物重名）：
+    // 自动选取最优的一个（最浅层/标准名），零弹窗直接应用！
+    if distinct_names.len() <= 1 {
+        let path = candidates[0].path.clone();
+        Ok(PickServerResult {
+            status: "selected".into(),
+            candidates,
+            selected_path: Some(path),
+        })
+    } else {
+        // 确实存在多种不同名称的分支程序（如 llama-server.exe 与 llama-kvmem-server.exe 并存）：
+        // 此时按程序名去重，仅为每种分支保留最优的一条候选供用户点选
+        let mut seen = std::collections::HashSet::new();
+        let mut unique_candidates = Vec::new();
+        for c in candidates {
+            if seen.insert(c.name.to_lowercase()) {
+                unique_candidates.push(c);
+            }
+        }
+        Ok(PickServerResult {
+            status: "multiple".into(),
+            candidates: unique_candidates,
+            selected_path: None,
+        })
+    }
+}
+
+/// 直接选择具体的 server 可执行文件（如 llama-server.exe、llama-kvmem-server.exe 等）。
+/// 用户取消时返回空串。
+#[tauri::command]
+fn pick_server_file(app: AppHandle) -> Result<String, String> {
+    let mut builder = app.dialog().file();
+    #[cfg(windows)]
+    {
+        builder = builder.add_filter("可执行程序 (*.exe)", &["exe"]);
+    }
+    let Some(file_path) = builder.blocking_pick_file() else {
         return Ok(String::new());
     };
-    let exe_name = if cfg!(windows) { "llama-server.exe" } else { "llama-server" };
-    match find_executable(folder, exe_name, 0) {
-        Some(path) => Ok(path.to_string_lossy().to_string()),
-        None => Err("所选文件夹中未找到 llama-server.exe".into()),
-    }
+    let Some(path) = file_path.as_path() else {
+        return Ok(String::new());
+    };
+    Ok(path.to_string_lossy().to_string())
 }
 
 /// 把前端拖入/选中的路径展开为 GGUF 文件列表：目录递归收集，文件按 .gguf 后缀过滤，最后按路径去重。
@@ -1181,7 +1481,7 @@ fn report_startup_timing(
     guard.splash_shown_ms = Some(splash_shown_ms);
     guard.react_mounted_ms = Some(react_mounted_ms);
     guard.reported = true;
-    log_timing(&*guard);
+    log_timing(&guard);
     Ok(())
 }
 
@@ -1666,7 +1966,7 @@ fn fetch_models_filtered(client: &reqwest::blocking::Client, base: &str, gguf_on
             let mut seen = std::collections::HashSet::new();
             let mut collected: Vec<HuggingFaceModel> = Vec::new();
             let mut cursor = skip.unwrap_or(0);
-            let page = (wanted * 4).max(50).min(100);
+            let page = (wanted * 4).clamp(50, 100);
             // 最多 20 页，避免极端情况死循环
             for _ in 0..20 {
                 let mut url = format!("{}&limit={}&skip={}", base, page, cursor);
@@ -1766,14 +2066,14 @@ fn hf_model_from_value(value: &serde_json::Value) -> Option<HuggingFaceModel> {
             let upper = text.to_uppercase();
             for token in upper.split(|c: char| !c.is_ascii_alphanumeric()) {
                 if token.starts_with('Q') && token.len() > 1 {
-                    if let Some(digits) = token[1..].chars().take(2).collect::<String>().parse::<i32>().ok() {
+                    if let Ok(digits) = token[1..].chars().take(2).collect::<String>().parse::<i32>() {
                         if (1..=8).contains(&digits) {
                             return Some(digits);
                         }
                     }
                 }
                 if let Some(rest) = token.strip_prefix("IQ") {
-                    if let Some(digits) = rest.chars().take(1).collect::<String>().parse::<i32>().ok() {
+                    if let Ok(digits) = rest.chars().take(1).collect::<String>().parse::<i32>() {
                         if (1..=8).contains(&digits) {
                             return Some(digits);
                         }
@@ -1788,7 +2088,7 @@ fn hf_model_from_value(value: &serde_json::Value) -> Option<HuggingFaceModel> {
         })
         .next()
         .or_else(|| sample_quant.as_deref().and_then(|quant| {
-            quant.to_uppercase().chars().skip_while(|c| *c == 'I' || *c == 'Q').next()
+            quant.to_uppercase().chars().find(|c| *c != 'I' && *c != 'Q')
                 .and_then(|c| c.to_digit(10))
                 .map(|digit| digit as i32)
         }));
@@ -2269,7 +2569,7 @@ async fn hf_avatar(app: AppHandle, author: String) -> Result<Option<String>, Str
         channels.push((direct_client().clone(), true)); // 镜像通道
         let mut errors: Vec<String> = Vec::new();
         for (client, mirror) in &channels {
-            match hf_resolve_avatar_url(client, &author, *mirror) {
+            match hf_resolve_avatar_url(client, author, *mirror) {
                 Ok(cdn_url) => match hf_fetch_avatar_image(client, &cdn_url, *mirror) {
                     Ok((mime, bytes)) => return Ok(Some(format!("data:{};base64,{}", mime, base64_encode(&bytes)))),
                     Err(error) => errors.push(error),
@@ -2824,9 +3124,6 @@ fn llama_exe_name() -> &'static str {
     if cfg!(windows) { "llama-server.exe" } else { "llama-server" }
 }
 
-/// llama.cpp 安装目录：与当前 llama-server 可执行文件同级（更新目录 = 可执行目录）；
-/// 首次安装（无可执行文件）时使用用户配置目录，其次应用数据目录下的 llamacpp。
-
 /// 模型存储根目录：优先用户配置的自定义目录，其次应用数据目录下的 models（首次访问自动创建）。
 fn models_root(app: &AppHandle, config: &AppConfig) -> Result<PathBuf, String> {
     if let Some(dir) = config.models_dir.as_deref().filter(|path| !path.trim().is_empty()) {
@@ -2886,8 +3183,11 @@ fn local_llamacpp_version(bin_dir: &Path) -> Option<String> {
 fn get_llamacpp_status(app: AppHandle) -> Result<LlamaCppLocalStatus, String> {
     let config = read_config(&app)?;
     let install_dir = llamacpp_root(&app, &config)?;
-    let server_path = if install_dir.exists() {
-        find_executable(&install_dir, llama_exe_name(), 0)
+    let configured_path = config.server_path.trim();
+    let server_path = if !configured_path.is_empty() && PathBuf::from(configured_path).is_file() {
+        Some(PathBuf::from(configured_path))
+    } else if install_dir.exists() {
+        find_server_executable(&install_dir, 0)
     } else {
         None
     };
@@ -2896,7 +3196,7 @@ fn get_llamacpp_status(app: AppHandle) -> Result<LlamaCppLocalStatus, String> {
     if let Some(exe) = server_path.as_ref() {
         let bin_dir = exe.parent().unwrap_or(&install_dir).to_path_buf();
         local_version = local_llamacpp_version(&bin_dir);
-        // 优先读安装时写入的 backend.txt，回退按路径名推断
+        // 优先读安装时写入的 backend.txt，回退按路径名与 DLL 推断
         if let Ok(text) = fs::read_to_string(bin_dir.join("backend.txt")) {
             let value = text.trim().to_lowercase();
             if value == "cuda" || value == "vulkan" || value == "cpu" {
@@ -2904,7 +3204,9 @@ fn get_llamacpp_status(app: AppHandle) -> Result<LlamaCppLocalStatus, String> {
             }
         } else {
             let path_text = bin_dir.to_string_lossy().to_lowercase();
-            local_backend = if path_text.contains("cuda") { "cuda" } else if path_text.contains("vulkan") { "vulkan" } else { "cpu" }.into();
+            let has_cuda = path_text.contains("cuda") || has_cuda_runtime_dll(&bin_dir, "12") || has_cuda_runtime_dll(&bin_dir, "11");
+            let has_vulkan = path_text.contains("vulkan") || bin_dir.join("vulkan-1.dll").is_file();
+            local_backend = if has_cuda { "cuda" } else if has_vulkan { "vulkan" } else { "cpu" }.into();
         }
     }
     Ok(LlamaCppLocalStatus {
@@ -3237,9 +3539,7 @@ fn extract_cuda_full_version(lower: &str) -> String {
     let rest = &lower[pos + 5..];
     let mut out = String::new();
     for c in rest.chars() {
-        if c.is_ascii_digit() {
-            out.push(c);
-        } else if c == '.' && !out.is_empty() && !out.contains('.') {
+        if c.is_ascii_digit() || (c == '.' && !out.is_empty() && !out.contains('.')) {
             out.push(c);
         } else {
             break;
@@ -3660,7 +3960,7 @@ fn download_llamacpp_impl(app: AppHandle, backend: String, cuda_version: Option<
             let cached_zip = cache_dir.join(&cudart_name);
             let mut need_download = false;
             if cached_zip.exists() {
-                emit_download_progress(&app, "extract", 0, 0, 0, 0, format!("使用本地缓存的 CUDA 运行时 {}", &cudart_name));
+                emit_download_progress(&app, "extract", 0, 0, 0, 0, format!("使用本地缓存的 CUDA 运行时 {}", cudart_name));
                 if let Err(_error) = extract_zip_archive(cancel, &cached_zip, &extract_dir, &app) {
                     // 缓存损坏：删除后重新下载
                     let _ = fs::remove_file(&cached_zip);
@@ -3670,7 +3970,7 @@ fn download_llamacpp_impl(app: AppHandle, backend: String, cuda_version: Option<
                 need_download = true;
             }
             if need_download {
-                emit_download_progress(&app, "download", 0, 0, 0, 0, format!("正在下载 CUDA 运行时 {}", &cudart_name));
+                emit_download_progress(&app, "download", 0, 0, 0, 0, format!("正在下载 CUDA 运行时 {}", cudart_name));
                 if let Err(error) = stream_download_with_fallback(cancel, &client, &cudart_url, &cached_zip, &app) {
                     let _ = fs::remove_file(&cached_zip);
                     let _ = fs::remove_dir_all(&temp_root);
@@ -3775,6 +4075,36 @@ mod tests {
         assert!(find_executable(&base, "llama-server.exe", 0).is_none());
         let _ = fs::remove_dir_all(&base);
     }
+
+    #[test]
+    fn find_server_executable_finds_branch_server() {
+        use super::find_server_executable;
+        let base = std::env::temp_dir().join("cookllm_find_test_branch");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("bin")).unwrap();
+        fs::write(base.join("bin").join("llama-kvmem-server.exe"), "dummy-kvmem").unwrap();
+        let found = find_server_executable(&base, 0).expect("should find custom branch server");
+        assert!(found == base.join("bin").join("llama-kvmem-server.exe"), "found: {found:?}");
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn collect_server_candidates_filters_rpc_server() {
+        use super::collect_server_candidates;
+        let base = std::env::temp_dir().join("cookllm_collect_test_rpc");
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        // 模拟官方包：同时存在 llama-server.exe 与 ggml-rpc-server.exe
+        fs::write(base.join("llama-server.exe"), "dummy-server").unwrap();
+        fs::write(base.join("ggml-rpc-server.exe"), "dummy-rpc").unwrap();
+        fs::write(base.join("llama-cli.exe"), "dummy-cli").unwrap();
+
+        let mut candidates = Vec::new();
+        collect_server_candidates(&base, &base, 0, &mut candidates);
+        assert_eq!(candidates.len(), 1, "RPC 和 CLI 必须被排除，仅保留标准 server");
+        assert_eq!(candidates[0].name, "llama-server.exe");
+        let _ = fs::remove_dir_all(&base);
+    }
 }
 
 pub fn run() {
@@ -3799,7 +4129,7 @@ pub fn run() {
             react_mounted_ms: None,
             reported: false,
         })))
-        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_whoami, hf_avatar, hf_download, hf_download_url, hf_cancel_download, hf_pause_download, hf_clear_download, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, check_orphan_server, kill_orphan_server, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, pick_files, pick_folder, pick_server_dir, expand_paths, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
+        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_whoami, hf_avatar, hf_download, hf_download_url, hf_cancel_download, hf_pause_download, hf_clear_download, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, check_orphan_server, kill_orphan_server, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, pick_files, pick_folder, pick_server_dir, pick_server_file, expand_paths, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
         .setup(|app| {
             configure_main_window(app)?;
             setup_tray(app)?;
