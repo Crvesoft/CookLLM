@@ -29,7 +29,6 @@ export const DEMO_CONFIG: AppConfig = { serverPath: "C:\\llama.cpp\\llama-server
 
 /** 兼容旧配置文件：旧版预设存在全局池 config.profiles，并按模型 profileIds 引用。此处把每个模型缺少的预设回填为它自己的副本。 */
 export function migrateConfig(config: AppConfig): AppConfig {
-  const legacy = config.profiles || [];
   const models = (config.models || []).map((model) => {
     const hasProfiles = Boolean(model.profiles && model.profiles.length > 0);
     const legacyIds = (model as unknown as { profileIds?: string[] }).profileIds;

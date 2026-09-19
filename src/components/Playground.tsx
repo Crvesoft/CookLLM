@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import type { ServerStatus } from "../types";
 import { openExternal, writeClipboard } from "../tauri";
+import { cn } from "../utils";
 
 export default function Playground({
   visible,
@@ -64,10 +65,10 @@ export default function Playground({
               {onToggleZenMode && (
                 <button
                   type="button"
-                  className="chat-action-btn"
+                  className={cn("chat-action-btn", zenMode && "active")}
                   onClick={onToggleZenMode}
-                  title={t("zen.enter")}
-                  aria-label={t("zen.enter")}
+                  title={zenMode ? t("zen.exit") : t("zen.enter")}
+                  aria-label={zenMode ? t("zen.exit") : t("zen.enter")}
                 >
                   <Scan size={15} />
                 </button>

@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, ArrowRight, Check, Cpu, Database, Download, DownloadCloud, Eye, EyeOff, FileCode, FolderOpen, Gauge, Github, KeyRound, Languages, Layers, Loader2, Moon, RefreshCw, RotateCw, SlidersHorizontal, Sparkles, SquareTerminal, Sun, Terminal, Wifi, Wrench, X } from "lucide-react";
+import { Activity, AlertTriangle, ArrowRight, Check, Cpu, Download, Eye, EyeOff, FolderOpen, Github, KeyRound, Languages, Loader2, Moon, RefreshCw, RotateCw, SlidersHorizontal, Sparkles, Sun, Wifi, Wrench, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { APP_REPO, PROJECT_URL } from "../data";
 import { useI18n } from "../i18n";
@@ -331,16 +331,6 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
     : "";
 
   const progressPercent = progress ? Math.min(100, progress.percent) : 0;
-  const progressLabel =
-    progress?.phase === "download"
-      ? t("llama.progress.download", { percent: progressPercent })
-      : progress?.phase === "extract"
-        ? t("llama.progress.extract", { percent: progressPercent })
-        : progress?.phase === "install"
-          ? t("llama.progress.install")
-          : progress?.phase === "done"
-            ? t("llama.progress.done")
-            : t("llama.updateBusy");
 
   return (
     <div hidden={!visible}>

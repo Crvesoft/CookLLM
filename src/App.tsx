@@ -1,4 +1,3 @@
-import ConfirmModal from "./components/ConfirmModal";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DEMO_CONFIG, DEFAULT_PROFILES, INITIAL_LOGS, migrateConfig, uid } from "./data";
 import { setLocale, useI18n } from "./i18n";
@@ -8,7 +7,7 @@ import type { PickedFile } from "./tauri";
 import { onModelDownloadProgress } from "./tauri";
 import type { DiskUsage, ModelDownloadProgress } from "./types";
 import { PAGE_LOG_MODE, type AppConfig, type GpuStats, type LlamaLogPayload, type ModelAsset, type Page, type Profile, type ServerStatus, type TokSample } from "./types";
-import { ACCENTS, EMPTY_STATUS, cn, fileName, formatBytes, modelTitle, newLog, parseQuantization, parseTokPerSec, shallowEqualFields } from "./utils";
+import { ACCENTS, EMPTY_STATUS, cn, fileName, modelTitle, newLog, parseQuantization, parseTokPerSec, shallowEqualFields } from "./utils";
 import LogDock from "./components/LogDock";
 import { LogsPage, Sidebar, Toast, Topbar } from "./components/Layout";
 import ImportModelModal from "./components/ImportModelModal";

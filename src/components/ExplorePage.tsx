@@ -5,7 +5,6 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
-  ChevronUp,
   Clock,
   Compass,
   Database,
@@ -16,7 +15,6 @@ import {
   Flame,
   FolderOpen,
   Globe,
-  HardDrive,
   KeyRound,
   ListChecks,
   Loader2,
@@ -131,8 +129,6 @@ const QUANTS: Array<{ key: QuantKey; label: string; bits: number[]; cls: string 
   { key: "q16", label: "explore.quantBit16", bits: [16], cls: "quant-16" },
 ];
 
-/** 参数规模刻度：索引即档位，范围 [PARAM_EDGES[min], PARAM_EDGES[max+1]) */
-const PARAM_EDGES = [0, 3, 7, 14, 32, 70, Infinity];
 const PARAM_SLIDER_LABELS = ["<1B", "3B", "7B", "14B", "32B", ">70B"];
 const PARAM_LAST_INDEX = PARAM_SLIDER_LABELS.length - 1;
 
@@ -778,7 +774,7 @@ export default function ExplorePage(props: Props) {
 
   /** 打开通用文件弹窗：热门卡 / 列表项共用，页面不滚动、卡片不内嵌展开。
    *  经 ref 转发保持引用稳定（内部逻辑每次渲染取最新），使 memo 的 ModelRow 在进度刷新时得以跳过重渲染 */
-  const openFilesRef = useRef((model: HfModel) => {});
+  const openFilesRef = useRef((_model: HfModel) => {});
   openFilesRef.current = (model: HfModel) => {
     setModalModel(model);
     if (filesMap[model.id] === undefined && !filesLoading[model.id]) {

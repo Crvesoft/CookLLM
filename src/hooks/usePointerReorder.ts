@@ -217,7 +217,7 @@ export function usePointerReorder<TC extends string>({ groups, enabled = true, o
     // 强制样式刷新：卡片先无动画地落回旧视觉位置
     void document.body.offsetHeight;
     // 释放：清掉内联位移，由样式表过渡（.model-card/.profile-card 均为 .18s ease）把卡片滑向新插槽
-    for (const [id, el] of byId) {
+    for (const [, el] of byId) {
       el.style.transition = "";
       el.style.transform = "";
     }

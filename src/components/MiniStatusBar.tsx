@@ -101,7 +101,7 @@ export default function MiniStatusBar({ status, abnormal, gpuStats, theme, updat
   const coreState = running && (utilPct ?? 0) < IDLE_UTIL_MAX ? "Idle" : null;
 
   const themeToggle = (
-    <button className="ms-theme-toggle" title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"} aria-label={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"} onClick={onToggleTheme}>
+    <button className="ms-theme-toggle" title={theme === "dark" ? t("toast.lightTheme") : t("toast.darkTheme")} aria-label={theme === "dark" ? t("toast.lightTheme") : t("toast.darkTheme")} onClick={onToggleTheme}>
       {theme === "dark" ? <Sun size={14} /> : <Moon size={14} />}
     </button>
   );
