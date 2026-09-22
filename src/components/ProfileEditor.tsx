@@ -1,5 +1,5 @@
 import { FolderOpen, Save, SlidersHorizontal, X, Zap } from "lucide-react";
-import { useI18n } from "../i18n";
+import { useI18n, type MessageKey } from "../i18n";
 import { useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { pickFiles } from "../tauri";
 import type { LlamaEngine, ModelAsset, Profile } from "../types";
@@ -7,7 +7,12 @@ import { fileName, cn } from "../utils";
 
 const CACHE_TYPES = ["f32", "f16", "q8_0", "q4_0"];
 const LOAD_MODES = ["mmap", "mlock", "ragged", "row", "direct"];
-const REASONING_MODES = ["auto", "on", "off"];
+const REASONING_MODES: { value: string; labelKey: MessageKey }[] = [
+  { value: "off", labelKey: "f.reasoningOff" },
+  { value: "auto", labelKey: "f.reasoningAuto" },
+  { value: "on", labelKey: "f.reasoningOn" },
+  { value: "force-off", labelKey: "f.reasoningForceOff" },
+];
 const REASONING_EFFORTS = ["auto", "low", "medium", "high", "xhigh"];
 
 
@@ -225,8 +230,31 @@ export default function ProfileEditor({
           <div className="form-section">
             <div className="form-section-title"><span>04</span><div><h3>{t("ed.s4Title")}</h3><p>{t("ed.s4Desc")}</p></div></div>
             <div className="form-grid two">
-              <Field label={t("f.reasoningMode")} hint="--reasoning"><select value={draft.reasoning} onChange={select("reasoning")}>{REASONING_MODES.map((value) => <option key={value} value={value}>{value}</option>)}</select></Field>
-              <Field label={t("f.reasoningEffort")} hint="--reasoning-effort"><select value={draft.reasoningEffort} onChange={select("reasoningEffort")}>{REASONING_EFFORTS.map((value) => <option key={value} value={value}>{value}</option>)}</select></Field>
+              <Field
+                label={t("f.reasoningMode")}
+                hint={draft.reasoning === "off" || draft.reasoning === "none" ? t("f.reasoningHintOff") : "--reasoning"}
+              >
+                <select value={draft.reasoning || "off"} onChange={select("reasoning")}>
+                  {REASONING_MODES.map((item) => (
+                    <option key={item.value} value={item.value}>
+                      {t(item.labelKey)}
+                    </option>
+                  ))}
+                </select>
+              </Field>
+              <Field label={t("f.reasoningEffort")} hint="--reasoning-effort">
+                <select
+                  disabled={draft.reasoning === "off" || draft.reasoning === "none"}
+                  value={draft.reasoningEffort}
+                  onChange={select("reasoningEffort")}
+                >
+                  {REASONING_EFFORTS.map((value) => (
+                    <option key={value} value={value}>
+                      {value}
+                    </option>
+                  ))}
+                </select>
+              </Field>
             </div>
           </div>
           <div className="form-section">

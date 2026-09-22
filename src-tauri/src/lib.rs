@@ -755,12 +755,37 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
         .arg("--cache-type-k").arg(&profile.cache_type_k)
         .arg("--cache-type-v").arg(&profile.cache_type_v)
         .arg("--load-mode").arg(&profile.load_mode)
-        .arg("--reasoning").arg(&profile.reasoning)
-        .arg("--reasoning-effort").arg(&profile.reasoning_effort)
         .arg("--temp").arg(profile.temperature.to_string())
         .arg("--top-p").arg(profile.top_p.to_string())
         .arg("--min-p").arg(profile.min_p.to_string())
         .arg("--repeat-penalty").arg(profile.repeat_penalty.to_string());
+
+    // 推理模式与思考参数处理：
+    // - off / none：用户关闭或为兼容不含 --reasoning 参数的第三方分支（如 llama-kvmem-server），完全不传递 --reasoning
+    // - auto：官方默认自动探测 (--reasoning auto)
+    // - on：强制开启推理输出 (--reasoning on)
+    // - force-off：针对官方 llama.cpp 强制覆盖模板抑制思考 (--reasoning off)
+    match profile.reasoning.trim().to_lowercase().as_str() {
+        "on" => {
+            command.arg("--reasoning").arg("on");
+        }
+        "auto" => {
+            command.arg("--reasoning").arg("auto");
+        }
+        "force-off" => {
+            command.arg("--reasoning").arg("off");
+        }
+        _ => {}
+    }
+
+    // 仅当推理模式非关闭状态时，且指定了明确的强度等级（非 auto/none）才传递 --reasoning-effort
+    let reasoning_mode = profile.reasoning.trim().to_lowercase();
+    if reasoning_mode != "off" && reasoning_mode != "none" {
+        let effort = profile.reasoning_effort.trim().to_lowercase();
+        if !effort.is_empty() && effort != "auto" && effort != "none" {
+            command.arg("--reasoning-effort").arg(&profile.reasoning_effort);
+        }
+    }
     if profile.flash_attention {
         command.arg("--flash-attn").arg("on");
     }
