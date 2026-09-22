@@ -1,4 +1,4 @@
-import { ChevronDown, SquareTerminal } from "lucide-react";
+import { ChevronDown, SquareTerminal, Zap } from "lucide-react";
 import type React from "react";
 import { useI18n } from "../i18n";
 import { useEffect, useRef, useState } from "react";
@@ -18,6 +18,12 @@ interface LogDockProps {
   abnormal: boolean;
   /** 最近一次从日志解析到的生成吞吐，可选展示 */
   tokPerSec?: number | null;
+  /** 当前主引擎分支名 */
+  activeEngineName?: string;
+  /** 当前主引擎计算后端 */
+  activeEngineBackend?: string;
+  /** 点击快速切换引擎面板 */
+  onOpenEnginePicker?: () => void;
   onToggle: () => void;
   onHeightChange: (height: number) => void;
   onClear: () => void;
@@ -28,7 +34,21 @@ interface LogDockProps {
  * 日志面板常驻挂载（只被高度裁剪），因此收展有平滑动画、日志滚动位置也不丢失。
  * 仅负责显示 / 隐藏；Rust 端日志监听与缓冲始终持续，关闭后再打开仍能看到之前的日志。
  */
-export default function LogDock({ open, height, logs, status, modelName, abnormal, tokPerSec, onToggle, onHeightChange, onClear }: LogDockProps) {
+export default function LogDock({
+  open,
+  height,
+  logs,
+  status,
+  modelName,
+  abnormal,
+  tokPerSec,
+  activeEngineName,
+  activeEngineBackend,
+  onOpenEnginePicker,
+  onToggle,
+  onHeightChange,
+  onClear,
+}: LogDockProps) {
   const { t } = useI18n();
   const endRef = useRef<HTMLDivElement>(null);
   // 展开后 / 新日志到达时立即跳到最后一行（无平滑动画：切页重新挂载时不会从首行可见地滑到底；与悬浮抽屉行为一致）
@@ -107,7 +127,27 @@ export default function LogDock({ open, height, logs, status, modelName, abnorma
         </div>
       </div>
       <div className={cn("log-dock-bar", !abnormal && status.running && "running", abnormal && "abnormal")}>
-        <span className="log-dock-status"><i aria-hidden="true" />{statusText}</span>
+        <div className="log-dock-bar-left">
+          <span className="log-dock-status"><i aria-hidden="true" />{statusText}</span>
+          {activeEngineName && onOpenEnginePicker && (
+            <button
+              type="button"
+              className={cn("dock-engine-pill", status.running && "is-running")}
+              onClick={onOpenEnginePicker}
+              title={
+                status.running
+                  ? t("llama.dockEngineRunningTooltip", { name: activeEngineName })
+                  : t("llama.dockEngineTooltip", { name: activeEngineName })
+              }
+            >
+              <Zap size={11} className="dock-engine-zap" />
+              <span className="dock-engine-name">{activeEngineName}</span>
+              {activeEngineBackend && (
+                <span className="dock-engine-backend">{activeEngineBackend.toUpperCase()}</span>
+              )}
+            </button>
+          )}
+        </div>
         <button className="log-dock-toggle" onClick={onToggle}>{open ? <><ChevronDown size={14} /><span>{t("collapseDock")}</span></> : <><SquareTerminal size={14} /><span>{abnormal ? t("viewLogs") : t("runLogs")}</span></>}</button>
       </div>
     </div>

@@ -282,10 +282,10 @@ export interface DownloadProgress {
   message: string;
 }
 
-/** 读取本地 llama.cpp 安装状态（版本 / 后端 / 可执行文件） */
-export async function getLlamaCppStatus(): Promise<LlamaCppLocalStatus | null> {
+/** 读取本地 llama.cpp 安装状态（版本 / 后端 / 可执行文件）；支持传入自定义路径或留空读取主引擎 */
+export async function getLlamaCppStatus(customPath?: string | null): Promise<LlamaCppLocalStatus | null> {
   if (!isTauri()) return null;
-  return invoke<LlamaCppLocalStatus>("get_llamacpp_status");
+  return invoke<LlamaCppLocalStatus>("get_llamacpp_status", { customPath: customPath ?? null });
 }
 
 /** 检查远程最新版本并匹配指定后端的 Windows 构建资产 */

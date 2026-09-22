@@ -2,7 +2,7 @@ import type { AppConfig, LlamaLogPayload, ModelAsset, Profile } from "./types";
 import { formatMessage, getLocale } from "./i18n";
 
 /** 当前应用版本（与 tauri.conf.json / package.json 保持一致）：浏览器模式回退值，检测更新的比较基线 */
-export const APP_VERSION = "0.2.6";
+export const APP_VERSION = "0.2.7";
 /** 项目信息：GitHub 仓库（owner/repo）与主页地址 */
 export const APP_REPO = "Crvesoft/CookLLM";
 export const PROJECT_URL = `https://github.com/${APP_REPO}`;
@@ -25,7 +25,22 @@ export const DEMO_MODELS: ModelAsset[] = [
   { id: "llama-31-8b", name: "Llama 3.1 8B Instruct", path: "D:\\Models\\Meta-Llama-3.1-8B-Instruct-Q6_K.gguf", sizeBytes: 6_610_000_000, architecture: "Llama", quantization: "Q6_K", parameters: "8.0B", profiles: defaultsFor(["balanced", "low-memory"]), accent: "cyan" },
   { id: "deepseek-r1-14b", name: "DeepSeek R1 Distill 14B", path: "D:\\Models\\DeepSeek-R1-Distill-Qwen-14B-Q5_K_M.gguf", sizeBytes: 10_120_000_000, architecture: "Qwen2", quantization: "Q5_K_M", parameters: "14.8B", profiles: defaultsFor(["deep-thought", "balanced"]), accent: "amber" },
 ];
-export const DEMO_CONFIG: AppConfig = { serverPath: "C:\\llama.cpp\\llama-server.exe", models: DEMO_MODELS, preferredModelId: "qwen-25-32b", preferredProfileId: "deep-thought" };
+export const DEMO_CONFIG: AppConfig = {
+  serverPath: "C:\\llama.cpp\\llama-server.exe",
+  activeEngineId: "engine-default",
+  engines: [
+    {
+      id: "engine-default",
+      name: "官方 CUDA",
+      path: "C:\\llama.cpp\\llama-server.exe",
+      backend: "cuda",
+      version: "b11060",
+    },
+  ],
+  models: DEMO_MODELS,
+  preferredModelId: "qwen-25-32b",
+  preferredProfileId: "deep-thought",
+};
 
 /** 兼容旧配置文件：旧版预设存在全局池 config.profiles，并按模型 profileIds 引用。此处把每个模型缺少的预设回填为它自己的副本。 */
 export function migrateConfig(config: AppConfig): AppConfig {
@@ -53,7 +68,36 @@ export function migrateConfig(config: AppConfig): AppConfig {
       }),
     };
   });
-  return { ...config, models };
+
+  // 引擎多分支迁移：若 engines 为空且 serverPath 存在，自动初始化一个默认分支并同步
+  let engines = config.engines ? [...config.engines] : [];
+  let activeEngineId = config.activeEngineId;
+  const currentPath = (config.serverPath || "").trim();
+
+  if (engines.length === 0 && currentPath) {
+    const defaultId = uid("engine");
+    engines = [
+      {
+        id: defaultId,
+        name: "默认引擎",
+        path: currentPath,
+        backend: "cuda",
+      },
+    ];
+    activeEngineId = defaultId;
+  }
+
+  if (engines.length > 0) {
+    if (!activeEngineId || !engines.some((e) => e.id === activeEngineId)) {
+      activeEngineId = engines[0].id;
+    }
+    const active = engines.find((e) => e.id === activeEngineId);
+    if (active && active.path) {
+      config.serverPath = active.path;
+    }
+  }
+
+  return { ...config, models, engines, activeEngineId };
 }
 export const INITIAL_LOGS: LlamaLogPayload[] = [
   { stream: "system", line: "CookLLM runtime initialized · waiting for a model", timestamp: Date.now() - 1800 },

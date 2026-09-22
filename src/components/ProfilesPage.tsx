@@ -1,9 +1,9 @@
-import { Check, Copy, Cpu, Gauge, LayoutGrid, List, ListChecks, MemoryStick, MoreHorizontal, Pencil, Plus, Star, Trash2, X } from "lucide-react";
+import { AlertTriangle, Check, Copy, Cpu, Gauge, LayoutGrid, List, ListChecks, MemoryStick, MoreHorizontal, Pencil, Plus, Star, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useI18n } from "../i18n";
 import { usePointerReorder } from "../hooks/usePointerReorder";
 import { DEFAULT_PROFILES, uid } from "../data";
-import type { ModelAsset, Profile } from "../types";
+import type { LlamaEngine, ModelAsset, Profile } from "../types";
 import { ACCENTS, cn, fileName, modelTitle } from "../utils";
 import ConfirmModal from "./ConfirmModal";
 
@@ -11,10 +11,26 @@ const ALL_MODELS = "all";
 /** 预设卡片的全局唯一键：预设归属各自的模型，跨组操作都靠这个键定位 */
 const profileKey = (ownerId: string, profileId: string) => `${ownerId}:${profileId}`;
 
-export default function ProfilesPage({ models, onEdit, onDelete, onDuplicate, onSetDefault, onReorderProfile, onDeleteProfiles }: {
-  models: ModelAsset[]; onEdit: (modelId: string, profile: Profile) => void; onDelete: (modelId: string, profileId: string) => void;
-  onDuplicate: (modelId: string, profile: Profile) => void; onSetDefault: (modelId: string, profileId: string) => void;
-  onReorderProfile: (modelId: string, profileIds: string[]) => void; onDeleteProfiles: (items: { modelId: string; profileId: string }[]) => Promise<void>;
+export default function ProfilesPage({
+  models,
+  engines = [],
+  activeEngineId,
+  onEdit,
+  onDelete,
+  onDuplicate,
+  onSetDefault,
+  onReorderProfile,
+  onDeleteProfiles,
+}: {
+  models: ModelAsset[];
+  engines?: LlamaEngine[];
+  activeEngineId?: string;
+  onEdit: (modelId: string, profile: Profile) => void;
+  onDelete: (modelId: string, profileId: string) => void;
+  onDuplicate: (modelId: string, profile: Profile) => void;
+  onSetDefault: (modelId: string, profileId: string) => void;
+  onReorderProfile: (modelId: string, profileIds: string[]) => void;
+  onDeleteProfiles: (items: { modelId: string; profileId: string }[]) => Promise<void>;
 }) {
   const { t } = useI18n();
   const [selectedModelId, setSelectedModelId] = useState<string>(ALL_MODELS);
@@ -91,7 +107,25 @@ export default function ProfilesPage({ models, onEdit, onDelete, onDuplicate, on
     const isMenuOpen = menuProfileId === profile.id;
     return <article key={key} {...reorder.cardProps(owner.id, profile.id)} className={cn("profile-card", isDefault && "default", selectMode && "selecting", isSelected && "selected", isDragging && "dragging", isMenuOpen && "menu-open")}
       onClick={selectMode ? () => toggleSelectedKey(key) : undefined}>
-      {isDefault && <span className="corner-flag"><Star size={10} fill="currentColor" /></span>}<span className={cn("card-select-check", isSelected && "checked")} aria-hidden="true"><Check size={13} strokeWidth={2.5} /></span><div className={cn("profile-number", ACCENTS[index % ACCENTS.length])}>0{index + 1}</div><div className="profile-card-head"><div><h3>{profile.name}</h3><p>{profile.description}</p></div><div className="model-menu-wrap" onClick={(event) => event.stopPropagation()}><button className="ghost-icon" onClick={() => setMenuProfileId(menuProfileId === profile.id ? null : profile.id)}><MoreHorizontal size={18} /></button>{menuProfileId === profile.id && <div className="context-menu"><button onClick={() => { onSetDefault(owner.id, profile.id); setMenuProfileId(null); }}><Star size={14} />{isDefault ? t("card.unsetDefault") : t("card.setDefault")}</button><button className="danger" onClick={() => { onDelete(owner.id, profile.id); setMenuProfileId(null); }}><Trash2 size={14} />{t("confirmDeleteLabel")}</button></div>}</div></div>    <div className="profile-stat-grid"><div><span>{t("statGpuOffload")}</span><strong>{profile.gpuLayers}{t("profiles.layersSuffix")}</strong></div><div><span>{t("statContext")}</span><strong>{profile.contextSize.toLocaleString()}</strong></div><div><span>{t("statBatch")}</span><strong>{profile.batchSize} / {profile.ubatchSize}</strong></div><div title={`${profile.host}:${profile.port}`}><span>{t("statHost")}</span><strong>{profile.host}:{profile.port}</strong></div></div><div className="profile-flags">{profile.flashAttention && <span className="feature-pill" title="Flash Attention">FA</span>}{profile.jinja && <span className="feature-pill" title="Jinja template">Jinja</span>}{profile.cacheTypeK !== "f32" && <span className="feature-pill" title={`KV Cache: ${profile.cacheTypeK}`}>{profile.cacheTypeK}</span>}{profile.reasoning === "on" && profile.reasoningEffort !== "auto" && <span className="feature-pill" title={`Reasoning: ${profile.reasoningEffort}`}>{profile.reasoningEffort}</span>}{profile.mmprojPath?.trim() && <span className="feature-pill" title={fileName(profile.mmprojPath)}>mmproj</span>}</div><div className="profile-card-actions" onClick={(event) => event.stopPropagation()}><button className="secondary-button" onClick={() => { setMenuProfileId(null); onEdit(owner.id, profile); }}><Pencil size={14} />{t("editProfileAction")}</button><button className="secondary-button" onClick={() => { setMenuProfileId(null); onDuplicate(owner.id, profile); }}><Copy size={14} />{t("duplicate")}</button></div></article>;
+      {isDefault && <span className="corner-flag"><Star size={10} fill="currentColor" /></span>}<span className={cn("card-select-check", isSelected && "checked")} aria-hidden="true"><Check size={13} strokeWidth={2.5} /></span><div className={cn("profile-number", ACCENTS[index % ACCENTS.length])}>0{index + 1}</div><div className="profile-card-head"><div><h3>{profile.name}</h3><p>{profile.description}</p></div><div className="model-menu-wrap" onClick={(event) => event.stopPropagation()}><button className="ghost-icon" onClick={() => setMenuProfileId(menuProfileId === profile.id ? null : profile.id)}><MoreHorizontal size={18} /></button>{menuProfileId === profile.id && <div className="context-menu"><button onClick={() => { onSetDefault(owner.id, profile.id); setMenuProfileId(null); }}><Star size={14} />{isDefault ? t("card.unsetDefault") : t("card.setDefault")}</button><button className="danger" onClick={() => { onDelete(owner.id, profile.id); setMenuProfileId(null); }}><Trash2 size={14} />{t("confirmDeleteLabel")}</button></div>}</div></div>    <div className="profile-stat-grid"><div><span>{t("statGpuOffload")}</span><strong>{profile.gpuLayers}{t("profiles.layersSuffix")}</strong></div><div><span>{t("statContext")}</span><strong>{profile.contextSize.toLocaleString()}</strong></div><div><span>{t("statBatch")}</span><strong>{profile.batchSize} / {profile.ubatchSize}</strong></div><div title={`${profile.host}:${profile.port}`}><span>{t("statHost")}</span><strong>{profile.host}:{profile.port}</strong></div></div><div className="profile-flags">
+      {profile.engineId ? (() => {
+        const eng = engines.find((e) => e.id === profile.engineId);
+        return eng ? (
+          <span className="feature-pill engine-pill" title={`${t("llama.presetEngineLabel")}: ${eng.name} (${eng.path})`}>
+            <Cpu size={10} />{eng.name}
+          </span>
+        ) : (
+          <span className="feature-pill engine-pill warn" title={t("profile.engineMissing")}>
+            <AlertTriangle size={10} />{t("profile.engineMissing")}
+          </span>
+        );
+      })() : null}
+      {profile.flashAttention && <span className="feature-pill" title="Flash Attention">FA</span>}
+      {profile.jinja && <span className="feature-pill" title="Jinja template">Jinja</span>}
+      {profile.cacheTypeK !== "f32" && <span className="feature-pill" title={`KV Cache: ${profile.cacheTypeK}`}>{profile.cacheTypeK}</span>}
+      {profile.reasoning === "on" && profile.reasoningEffort !== "auto" && <span className="feature-pill" title={`Reasoning: ${profile.reasoningEffort}`}>{profile.reasoningEffort}</span>}
+      {profile.mmprojPath?.trim() && <span className="feature-pill" title={fileName(profile.mmprojPath)}>mmproj</span>}
+    </div><div className="profile-card-actions" onClick={(event) => event.stopPropagation()}><button className="secondary-button" onClick={() => { setMenuProfileId(null); onEdit(owner.id, profile); }}><Pencil size={14} />{t("editProfileAction")}</button><button className="secondary-button" onClick={() => { setMenuProfileId(null); onDuplicate(owner.id, profile); }}><Copy size={14} />{t("duplicate")}</button></div></article>;
   };
   const profileRow = (owner: ModelAsset, profile: Profile, index: number) => {
     const isDefault = owner.defaultProfileId === profile.id;
@@ -122,6 +156,18 @@ export default function ProfilesPage({ models, onEdit, onDelete, onDuplicate, on
           <span className="profile-host-pill" title={`${profile.host}:${profile.port}`}><i className="host-dot" /><strong>{profile.port}</strong></span>
         </div>
         <div className="profile-flags compact">
+          {profile.engineId ? (() => {
+            const eng = engines.find((e) => e.id === profile.engineId);
+            return eng ? (
+              <span className="feature-pill engine-pill" title={`${t("llama.presetEngineLabel")}: ${eng.name} (${eng.path})`}>
+                <Cpu size={10} />{eng.name}
+              </span>
+            ) : (
+              <span className="feature-pill engine-pill warn" title={t("profile.engineMissing")}>
+                <AlertTriangle size={10} />{t("profile.engineMissing")}
+              </span>
+            );
+          })() : null}
           {profile.flashAttention && <span className="feature-pill" title="Flash Attention">FA</span>}
           {profile.jinja && <span className="feature-pill" title="Jinja template">Jinja</span>}
           {profile.cacheTypeK !== "f32" && <span className="feature-pill" title={`KV Cache: ${profile.cacheTypeK}`}>{profile.cacheTypeK}</span>}

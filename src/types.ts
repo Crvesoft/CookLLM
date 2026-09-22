@@ -62,10 +62,26 @@ export interface Profile {
   extraArgs: string;
   /** 该预设挂载的图像识别视觉模型（mmproj）路径；非空时以 --mmproj 附加启动 */
   mmprojPath?: string;
+  /** 该预设关联的 llama.cpp 引擎分支 ID；未指定或为空则跟随全局默认引擎 */
+  engineId?: string;
+}
+
+/** 托管的 llama.cpp 引擎分支版本 */
+export interface LlamaEngine {
+  id: string;
+  name: string;
+  path: string;
+  backend?: "cuda" | "vulkan" | "cpu" | string;
+  version?: string;
+  createdAt?: number;
 }
 
 export interface AppConfig {
   serverPath: string;
+  /** 当前激活的默认 llama.cpp 引擎分支 ID */
+  activeEngineId?: string;
+  /** 已登记的 llama.cpp 引擎分支列表 */
+  engines?: LlamaEngine[];
   models: ModelAsset[];
   /** 旧版全局预设池，仅兼容旧配置读取；新配置预设已归入每个模型的 ModelAsset.profiles */
   profiles?: Profile[];
@@ -108,6 +124,10 @@ export interface ServerStatus {
   profileId?: string;
   profileName?: string;
   startedAt?: number;
+  /** 启动当前服务所用的引擎分支名称 */
+  engineName?: string;
+  /** 启动当前服务所用的引擎计算后端 */
+  engineBackend?: string;
 }
 
 /** GPU 实时指标（nvidia-smi 轮询，单位 MiB / % / W）；无 NVIDIA 驱动或字段不支持时为 null/缺省 */

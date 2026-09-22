@@ -88,6 +88,23 @@ struct Profile {
     /// 该预设挂载的图像识别视觉模型（mmproj）；非空时以 --mmproj 附加启动。
     #[serde(default)]
     mmproj_path: Option<String>,
+    /// 该预设关联的 llama.cpp 引擎分支 ID；未指定或为空则跟随全局默认主引擎。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    engine_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LlamaEngine {
+    id: String,
+    name: String,
+    path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    created_at: Option<u64>,
 }
 
 fn default_host() -> String { "0.0.0.0".into() }
@@ -128,6 +145,10 @@ fn log_timing(t: &StartupTiming) {
 #[serde(rename_all = "camelCase")]
 struct AppConfig {
     server_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    active_engine_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    engines: Vec<LlamaEngine>,
     models: Vec<ModelAsset>,
     /// 旧版全局预设池，仅兼容旧配置文件；新配置的预设已内置于每个模型。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -170,6 +191,8 @@ impl Default for AppConfig {
     fn default() -> Self {
         Self {
             server_path: String::new(),
+            active_engine_id: None,
+            engines: Vec::new(),
             models: Vec::new(),
             profiles: vec![Profile {
                 id: "balanced".into(),
@@ -200,6 +223,7 @@ impl Default for AppConfig {
                 repeat_penalty: 1.1,
                 extra_args: String::new(),
                 mmproj_path: None,
+                engine_id: None,
             }],
             theme: None,
             gpu_monitor_enabled: None,
@@ -228,6 +252,10 @@ struct ServerStatus {
     profile_id: Option<String>,
     profile_name: Option<String>,
     started_at: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    engine_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    engine_backend: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -389,16 +417,44 @@ struct OrphanServerInfo {
     processes: Vec<OrphanProcessItem>,
 }
 
+/// 收集配置中已登记的所有 server 可执行程序文件名（包括默认路径与多分支）
+fn collect_configured_exe_names(config: Option<&AppConfig>) -> Vec<String> {
+    let mut names = Vec::new();
+    if let Some(cfg) = config {
+        let trimmed = cfg.server_path.trim();
+        if !trimmed.is_empty() {
+            if let Some(n) = Path::new(trimmed).file_name().and_then(|n| n.to_str()) {
+                names.push(n.to_string());
+            }
+        }
+        for eng in &cfg.engines {
+            let p = eng.path.trim();
+            if !p.is_empty() {
+                if let Some(n) = Path::new(p).file_name().and_then(|n| n.to_str()) {
+                    let s = n.to_string();
+                    if !names.contains(&s) {
+                        names.push(s);
+                    }
+                }
+            }
+        }
+    }
+    names
+}
+
 /// 探测系统中未被 CookLLM 当前生命周期托管的 server 进程（包括 llama-server 与分支自定义名称，如 llama-kvmem-server.exe）
-fn find_orphan_servers(managed_pid: Option<u32>, custom_exe_name: Option<&str>) -> Vec<OrphanProcessItem> {
+fn find_orphan_servers(managed_pid: Option<u32>, custom_exe_names: &[String]) -> Vec<OrphanProcessItem> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
         let mut queries = vec!["IMAGENAME eq llama*".to_string()];
-        if let Some(custom) = custom_exe_name {
+        for custom in custom_exe_names {
             let custom_lower = custom.to_lowercase();
             if !custom_lower.starts_with("llama") && custom_lower.ends_with(".exe") {
-                queries.push(format!("IMAGENAME eq {}", custom));
+                let q = format!("IMAGENAME eq {}", custom);
+                if !queries.contains(&q) {
+                    queries.push(q);
+                }
             }
         }
 
@@ -423,7 +479,7 @@ fn find_orphan_servers(managed_pid: Option<u32>, custom_exe_name: Option<&str>) 
                     let name_lower = name.to_lowercase();
                     let is_match = name_lower == "llama-server.exe"
                         || (name_lower.starts_with("llama") && name_lower.contains("server"))
-                        || custom_exe_name.map(|c| c.eq_ignore_ascii_case(&name)).unwrap_or(false);
+                        || custom_exe_names.iter().any(|c| c.eq_ignore_ascii_case(&name));
 
                     if is_match {
                         if let Ok(pid) = parts[1].trim_matches('"').parse::<u32>() {
@@ -442,7 +498,7 @@ fn find_orphan_servers(managed_pid: Option<u32>, custom_exe_name: Option<&str>) 
     #[cfg(not(windows))]
     {
         let mut patterns = vec!["llama-server".to_string(), "llama.*server".to_string()];
-        if let Some(custom) = custom_exe_name {
+        for custom in custom_exe_names {
             if !patterns.iter().any(|p| p == custom) {
                 patterns.push(custom.to_string());
             }
@@ -495,13 +551,8 @@ fn check_orphan_server(app: AppHandle, state: State<ProcessState>) -> Result<Orp
     };
 
     let config = read_config(&app).ok();
-    let custom_exe_name = config.as_ref()
-        .map(|c| c.server_path.trim())
-        .filter(|p| !p.is_empty())
-        .and_then(|p| Path::new(p).file_name())
-        .and_then(|n| n.to_str());
-
-    let processes = find_orphan_servers(managed_pid, custom_exe_name);
+    let custom_exe_names = collect_configured_exe_names(config.as_ref());
+    let processes = find_orphan_servers(managed_pid, &custom_exe_names);
     let pids = processes.iter().map(|p| p.pid).collect();
     Ok(OrphanServerInfo {
         has_orphan: !processes.is_empty(),
@@ -525,12 +576,8 @@ fn kill_orphan_server(app: AppHandle, state: State<ProcessState>, pids: Option<V
             .collect(),
         _ => {
             let config = read_config(&app).ok();
-            let custom_exe_name = config.as_ref()
-                .map(|c| c.server_path.trim())
-                .filter(|p| !p.is_empty())
-                .and_then(|p| Path::new(p).file_name())
-                .and_then(|n| n.to_str());
-            find_orphan_servers(managed_pid, custom_exe_name).into_iter().map(|p| p.pid).collect()
+            let custom_exe_names = collect_configured_exe_names(config.as_ref());
+            find_orphan_servers(managed_pid, &custom_exe_names).into_iter().map(|p| p.pid).collect()
         }
     };
 
@@ -645,11 +692,24 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
     let profile = model.profiles.iter().find(|item| item.id == profile_id)
         .or_else(|| config.profiles.iter().find(|item| item.id == profile_id))
         .cloned().ok_or("未找到运行预设")?;
-    if config.server_path.trim().is_empty() {
+
+    let (chosen_path, engine_display_name, engine_display_backend) = if let Some(ref eid) = profile.engine_id.filter(|s| !s.trim().is_empty()) {
+        let engine = config.engines.iter().find(|e| &e.id == eid)
+            .ok_or_else(|| format!("未找到预设关联的引擎分支（ID: {}），请在预设中重新选择引擎或在设置中恢复该分支", eid))?;
+        (engine.path.clone(), engine.name.clone(), engine.backend.clone())
+    } else {
+        let active_eng = config.active_engine_id.as_ref()
+            .and_then(|aid| config.engines.iter().find(|e| &e.id == aid));
+        let name = active_eng.map(|e| e.name.clone()).unwrap_or_else(|| "默认引擎".to_string());
+        let backend = active_eng.and_then(|e| e.backend.clone());
+        (config.server_path.clone(), name, backend)
+    };
+
+    if chosen_path.trim().is_empty() {
         return Err("请先在设置中指定 Server 可执行文件（如 llama-server.exe 或分支版本）".into());
     }
-    if !PathBuf::from(&config.server_path).exists() {
-        return Err(format!("Server 文件不存在：{}", config.server_path));
+    if !PathBuf::from(&chosen_path).exists() {
+        return Err(format!("引擎 Server 文件不存在：{}", chosen_path));
     }
     if !PathBuf::from(&model.path).exists() {
         return Err(format!("模型文件不存在：{}", model.path));
@@ -674,7 +734,7 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
         kill_managed_child(&mut running);
     }
 
-    let mut command = Command::new(&config.server_path);
+    let mut command = Command::new(&chosen_path);
     command
         .arg("-m").arg(&model.path);
     if let Some(mmproj) = mmproj_path {
@@ -726,7 +786,7 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
         command.creation_flags(0x08000000);
     }
 
-    emit_log(&app, "system", format!("launch: {} · {}", model.name, profile.name));
+    emit_log(&app, "system", format!("launch: {} · {} [engine: {}]", model.name, profile.name, engine_display_name));
     let mut child = command.spawn().map_err(|error| format!("启动失败：{error}"))?;
     let pid = child.id();
     if let Some(stdout) = child.stdout.take() {
@@ -744,6 +804,8 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
         profile_id: Some(profile.id),
         profile_name: Some(profile.name),
         started_at: Some(now_ms()),
+        engine_name: Some(engine_display_name),
+        engine_backend: engine_display_backend,
     };
     let model_name_display = model.name;
     {
@@ -3178,19 +3240,34 @@ fn local_llamacpp_version(bin_dir: &Path) -> Option<String> {
     bin_dir.file_name().and_then(|name| name.to_str()).and_then(extract_build_number)
 }
 
-/// 读取本地安装状态（纯本地逻辑，不访问网络）。
+/// 读取本地安装状态（纯本地逻辑，不访问网络）。支持指定 custom_path 检测特定分支或目录。
 #[tauri::command]
-fn get_llamacpp_status(app: AppHandle) -> Result<LlamaCppLocalStatus, String> {
+fn get_llamacpp_status(app: AppHandle, custom_path: Option<String>) -> Result<LlamaCppLocalStatus, String> {
     let config = read_config(&app)?;
-    let install_dir = llamacpp_root(&app, &config)?;
-    let configured_path = config.server_path.trim();
-    let server_path = if !configured_path.is_empty() && PathBuf::from(configured_path).is_file() {
-        Some(PathBuf::from(configured_path))
-    } else if install_dir.exists() {
-        find_server_executable(&install_dir, 0)
+    let (server_path, install_dir) = if let Some(target) = custom_path.as_deref().map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        let p = PathBuf::from(target);
+        if p.is_file() {
+            let parent = p.parent().map(|dir| dir.to_path_buf()).unwrap_or_else(|| p.clone());
+            (Some(p), parent)
+        } else if p.is_dir() {
+            let exe = find_server_executable(&p, 0);
+            (exe, p)
+        } else {
+            (None, p)
+        }
     } else {
-        None
+        let install_dir = llamacpp_root(&app, &config)?;
+        let configured_path = config.server_path.trim();
+        let server_path = if !configured_path.is_empty() && PathBuf::from(configured_path).is_file() {
+            Some(PathBuf::from(configured_path))
+        } else if install_dir.exists() {
+            find_server_executable(&install_dir, 0)
+        } else {
+            None
+        };
+        (server_path, install_dir)
     };
+
     let mut local_backend = "cpu".into();
     let mut local_version = None;
     if let Some(exe) = server_path.as_ref() {
@@ -3213,7 +3290,7 @@ fn get_llamacpp_status(app: AppHandle) -> Result<LlamaCppLocalStatus, String> {
         install_dir: install_dir.to_string_lossy().to_string(),
         local_version,
         local_backend,
-        server_available: server_path.is_some(),
+        server_available: server_path.as_ref().map(|p| p.is_file()).unwrap_or(false),
         server_path: server_path.map(|path| path.to_string_lossy().to_string()),
     })
 }
@@ -4010,12 +4087,24 @@ fn download_llamacpp_impl(app: AppHandle, backend: String, cuda_version: Option<
 ", cuda_full));
     }
 
-    // 7) 更新配置：serverPath 指向新引擎，并持久化安装目录
+    // 7) 更新配置：serverPath 指向新引擎，并持久化安装目录；若当前在多分支中，同步更新该分支信息
     let new_server_path = find_executable(&target, llama_exe_name(), 0)
         .ok_or("安装后未找到 llama-server.exe".to_string())?;
     let mut updated = read_config(&app)?;
-    updated.server_path = new_server_path.to_string_lossy().to_string();
+    let new_path_str = new_server_path.to_string_lossy().to_string();
+    updated.server_path = new_path_str.clone();
     updated.llamacpp_dir = Some(target.to_string_lossy().to_string());
+    if let Some(active_id) = updated.active_engine_id.as_ref() {
+        if let Some(active_eng) = updated.engines.iter_mut().find(|e| &e.id == active_id) {
+            active_eng.path = new_path_str.clone();
+            active_eng.backend = Some(backend.clone());
+            active_eng.version = Some(version.clone());
+        }
+    } else if !updated.engines.is_empty() {
+        updated.engines[0].path = new_path_str.clone();
+        updated.engines[0].backend = Some(backend.clone());
+        updated.engines[0].version = Some(version.clone());
+    }
     save_config(app.clone(), updated)?;
 
     // 8) 清理临时的下载与解压文件

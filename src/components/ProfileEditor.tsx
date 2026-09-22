@@ -2,7 +2,7 @@ import { FolderOpen, Save, SlidersHorizontal, X, Zap } from "lucide-react";
 import { useI18n } from "../i18n";
 import { useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { pickFiles } from "../tauri";
-import type { ModelAsset, Profile } from "../types";
+import type { LlamaEngine, ModelAsset, Profile } from "../types";
 import { fileName, cn } from "../utils";
 
 const CACHE_TYPES = ["f32", "f16", "q8_0", "q4_0"];
@@ -67,12 +67,32 @@ function PickerGroup({ value = "", placeholder, browseLabel, replaceLabel, clear
   );
 }
 
-export default function ProfileEditor({ model, profile, defaultProfileId, onClose, onSave }: { model?: ModelAsset; profile: Profile; defaultProfileId?: string; onClose: () => void; onSave: (profile: Profile, isDefault: boolean) => void }) {
+export default function ProfileEditor({
+  model,
+  profile,
+  defaultProfileId,
+  engines = [],
+  activeEngineId,
+  onClose,
+  onSave,
+}: {
+  model?: ModelAsset;
+  profile: Profile;
+  defaultProfileId?: string;
+  engines?: LlamaEngine[];
+  activeEngineId?: string;
+  onClose: () => void;
+  onSave: (profile: Profile, isDefault: boolean) => void;
+}) {
   const { t } = useI18n();
   const [draft, setDraft] = useState(profile);
   const [isDefault, setIsDefault] = useState(profile.id === defaultProfileId);
   const [visionError, setVisionError] = useState<string | null>(null);
   const [mtpDraftError, setMtpDraftError] = useState<string | null>(null);
+
+  const activeEngine = engines.find((e) => e.id === activeEngineId) || engines[0];
+  const activeEngineName = activeEngine?.name;
+
   const update = <K extends keyof Profile>(key: K, value: Profile[K]) => setDraft((current) => ({ ...current, [key]: value }));
   const number = (key: keyof Profile) => (event: ChangeEvent<HTMLInputElement>) => update(key, Number(event.target.value) as never);
   const select = (key: keyof Profile) => (event: ChangeEvent<HTMLSelectElement>) => update(key, event.target.value as never);
@@ -129,12 +149,55 @@ export default function ProfileEditor({ model, profile, defaultProfileId, onClos
         <div className="editor-body">
           <div className="form-section">
             <div className="form-section-title"><span>01</span><div><h3>{t("ed.s1Title")}</h3><p>{t("ed.s1Desc")}</p></div></div>
-            <div className="form-grid three">
-              <Field label={t("f.name")}><input value={draft.name} onChange={(e) => update("name", e.target.value)} /></Field>
-              <Field label={t("f.host")} hint="--host"><input value={draft.host} onChange={(e) => update("host", e.target.value)} /></Field>
-              <Field label={t("f.port")} hint="--port"><input type="number" value={draft.port} onChange={number("port")} /></Field>
-              <Field label={t("f.description")} wide><input value={draft.description} onChange={(e) => update("description", e.target.value)} /></Field>
-              <Field label={t("f.defaultConfig")} wide><ToggleField label={t("f.defaultToggle")} checked={isDefault} onChange={setIsDefault} /></Field>
+            <div className="form-grid profile-info-grid">
+              {/* 第一行：预设名称、监听地址、监听端口（各占 2 列，共 6 列，均分） */}
+              <Field label={t("f.name")} colSpan={2}>
+                <input value={draft.name} onChange={(e) => update("name", e.target.value)} />
+              </Field>
+              <Field label={t("f.host")} hint="--host" colSpan={2}>
+                <input value={draft.host} onChange={(e) => update("host", e.target.value)} />
+              </Field>
+              <Field label={t("f.port")} hint="--port" colSpan={2}>
+                <input type="number" value={draft.port} onChange={number("port")} />
+              </Field>
+
+              {/* 第二行：说明与 llama.cpp 版本并排（各占 3 列，共 6 列，各 50%） */}
+              <Field label={t("f.description")} colSpan={3}>
+                <input value={draft.description} onChange={(e) => update("description", e.target.value)} />
+              </Field>
+              <Field
+                label={t("llama.presetEngineLabel")}
+                hint={draft.engineId ? t("llama.presetPinnedHint") : t("llama.presetInheritedHint")}
+                colSpan={3}
+              >
+                <select
+                  value={draft.engineId || ""}
+                  onChange={(e) => update("engineId", e.target.value || undefined)}
+                >
+                  <optgroup label={t("llama.optgroupInherit")}>
+                    <option value="">
+                      {t("llama.followGlobalWithActive", { name: activeEngineName || "llama.cpp" })}
+                    </option>
+                  </optgroup>
+                  <optgroup label={t("llama.optgroupFixed")}>
+                    {engines.map((eng) => (
+                      <option key={eng.id} value={eng.id}>
+                        {eng.name} ({eng.backend?.toUpperCase() || "CUDA"}{eng.version ? ` · ${eng.version}` : ""})
+                      </option>
+                    ))}
+                  </optgroup>
+                  {draft.engineId && !engines.some((e) => e.id === draft.engineId) && (
+                    <option value={draft.engineId} disabled>
+                      {t("profile.engineMissing")} (ID: {draft.engineId})
+                    </option>
+                  )}
+                </select>
+              </Field>
+
+              {/* 第三行：设为该模型默认预设 */}
+              <Field label={t("f.defaultConfig")} wide>
+                <ToggleField label={t("f.defaultToggle")} checked={isDefault} onChange={setIsDefault} />
+              </Field>
             </div>
           </div>
           <div className="form-section">
@@ -234,6 +297,14 @@ export default function ProfileEditor({ model, profile, defaultProfileId, onClos
   );
 }
 
-function Field({ label, hint, wide, children }: { label: string; hint?: string; wide?: boolean; children: ReactNode }) {
-  return <div className={cn("field", wide && "wide")}><span>{label}{hint && <em>{hint}</em>}</span>{children}</div>;
+function Field({ label, hint, wide, colSpan, children }: { label: string; hint?: string; wide?: boolean; colSpan?: number; children: ReactNode }) {
+  return (
+    <div
+      className={cn("field", wide && "wide")}
+      style={colSpan ? { gridColumn: `span ${colSpan}` } : undefined}
+    >
+      <span>{label}{hint && <em>{hint}</em>}</span>
+      {children}
+    </div>
+  );
 }

@@ -19,6 +19,9 @@ import ExplorePage from "./components/ExplorePage";
 import ProfileEditor from "./components/ProfileEditor";
 import AppUpdateDialog from "./components/AppUpdateDialog";
 import OrphanServerModal from "./components/OrphanServerModal";
+import EngineHubModal from "./components/EngineHubModal";
+import EngineModal from "./components/EngineModal";
+import type { LlamaEngine } from "./types";
 import { APP_VERSION } from "./data";
 
 /** 下载任务持久化 key：重开程序后恢复任务列表（含未完成的断点续传） */
@@ -122,6 +125,84 @@ export default function App() {
   const [zenMode, setZenMode] = useState(false);
   /** 配置加载完成前不启用 GPU/状态轮询，避免「关闭监测」用户首次挂载闪现图表 */
   const [configReady, setConfigReady] = useState(false);
+
+  /** llama.cpp 运行时管理中心（Ctrl+E） */
+  const [engineHubOpen, setEngineHubOpen] = useState(false);
+  const [engineAddModalOpen, setEngineAddModalOpen] = useState(false);
+
+  useEffect(() => {
+    const handleGlobalKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "e") {
+        e.preventDefault();
+        setEngineHubOpen((prev) => !prev);
+      }
+    };
+    window.addEventListener("keydown", handleGlobalKeyDown);
+    return () => window.removeEventListener("keydown", handleGlobalKeyDown);
+  }, []);
+
+  const appEngines = useMemo<LlamaEngine[]>(() => {
+    return config.engines && config.engines.length > 0
+      ? config.engines
+      : config.serverPath
+        ? [{ id: "engine-default", name: "默认引擎", path: config.serverPath, backend: "cuda" }]
+        : [];
+  }, [config.engines, config.serverPath]);
+
+  const activeAppEngine = useMemo(() => {
+    return (
+      appEngines.find((e) => e.id === config.activeEngineId) ||
+      appEngines.find((e) => e.path.toLowerCase() === (config.serverPath || "").toLowerCase()) ||
+      appEngines[0]
+    );
+  }, [appEngines, config.activeEngineId, config.serverPath]);
+
+  const handleSelectActiveEngine = async (engine: LlamaEngine) => {
+    setToast(t("llama.switchedTo", { name: engine.name }));
+    await persist({
+      ...config,
+      activeEngineId: engine.id,
+      serverPath: engine.path,
+    });
+  };
+
+  const handleSaveEngine = async (engine: LlamaEngine) => {
+    let nextEngines = config.engines && config.engines.length > 0 ? [...config.engines] : [];
+    const idx = nextEngines.findIndex((e) => e.id === engine.id);
+    if (idx >= 0) {
+      nextEngines[idx] = engine;
+    } else {
+      nextEngines.push(engine);
+    }
+    const isCurActive = engine.id === config.activeEngineId;
+    await persist(
+      {
+        ...config,
+        engines: nextEngines,
+        serverPath: isCurActive ? engine.path : config.serverPath,
+      },
+      t("toast.settingsSaved"),
+    );
+  };
+
+  const handleDeleteEngine = async (engineId: string) => {
+    const nextEngines = (config.engines || []).filter((e) => e.id !== engineId);
+    let nextActiveId = config.activeEngineId;
+    let nextServerPath = config.serverPath;
+    if (config.activeEngineId === engineId && nextEngines.length > 0) {
+      nextActiveId = nextEngines[0].id;
+      nextServerPath = nextEngines[0].path;
+    }
+    await persist(
+      {
+        ...config,
+        engines: nextEngines,
+        activeEngineId: nextActiveId,
+        serverPath: nextServerPath,
+      },
+      t("toast.settingsSaved"),
+    );
+  };
 
   /** 日志批量 flush：缓冲 100ms 聚合一次 setState，llama-server 启动期逐行刷日志不再触发全树重渲染 */
   const logBufferRef = useRef<LlamaLogPayload[]>([]);
@@ -668,6 +749,27 @@ export default function App() {
 
   const activeModel = config.models.find((model) => model.id === status.modelId);
   const activeProfile = activeModel?.profiles.find((profile) => profile.id === status.profileId);
+
+  /** 底部状态栏胶囊展示的引擎分支：运行中准确展示当前服务实际使用的引擎分支，未运行时展示全局默认引擎 */
+  const dockEngine = useMemo(() => {
+    if (status.running) {
+      if (activeProfile?.engineId) {
+        const matched = appEngines.find((e) => e.id === activeProfile.engineId);
+        if (matched) return matched;
+      }
+      if (status.engineName) {
+        const matched = appEngines.find((e) => e.name === status.engineName);
+        if (matched) return matched;
+        return {
+          id: "running",
+          name: status.engineName,
+          path: "",
+          backend: status.engineBackend || "cuda",
+        };
+      }
+    }
+    return activeAppEngine;
+  }, [status.running, status.engineName, status.engineBackend, activeProfile?.engineId, appEngines, activeAppEngine]);
   /** 浏览器/iframe 无法导航到 0.0.0.0，统一替换为 127.0.0.1（用户显式配置的局域网 IP 保留原样） */
   const browserHost = (() => { const host = activeProfile?.host || "0.0.0.0"; return host === "0.0.0.0" ? "127.0.0.1" : host; })();
   const port = status.port || activeProfile?.port || 9931;
@@ -696,17 +798,32 @@ export default function App() {
       } catch { }
     }
 
-    setBusy(true); setMenuModelId(null); appendLog(t("toast.starting", { model: modelTitle(model), profile: profile.name }));
+    const engineName = profile.engineId
+      ? config.engines?.find((e) => e.id === profile.engineId)?.name || profile.engineId
+      : config.engines?.find((e) => e.id === config.activeEngineId)?.name || "默认引擎";
+    setBusy(true); setMenuModelId(null); appendLog(t("toast.starting", { model: modelTitle(model), profile: `${profile.name} [${engineName}]` }));
     try {
       if (isTauri()) setStatus(await startServer(model.id, profile.id));
       else {
         await new Promise((resolve) => window.setTimeout(resolve, 650));
-        setStatus({ running: true, pid: 18420, port: profile.port, modelId: model.id, modelName: model.name, profileId: profile.id, profileName: profile.name, startedAt: Date.now() });
+        setStatus({
+          running: true,
+          pid: 18420,
+          port: profile.port,
+          modelId: model.id,
+          modelName: model.name,
+          profileId: profile.id,
+          profileName: profile.name,
+          startedAt: Date.now(),
+          engineName,
+          engineBackend: profile.engineId ? config.engines?.find((e) => e.id === profile.engineId)?.backend : "cuda",
+        });
         [`llama_model_loader: loaded meta data with ${model.parameters} parameters`, `load_tensors: offloading ${profile.gpuLayers} repeating layers to GPU`, `llama_context: n_ctx = ${profile.contextSize}, n_batch = ${profile.batchSize}, n_ubatch = ${profile.ubatchSize}`, `server is listening on http://${profile.host}:${profile.port}`].forEach((line, index) => window.setTimeout(() => appendLog(line, "stdout"), 180 * index));
       }
       setServiceAbnormal(false); // 启动成功 → 清除异常标记
       setTokSample(null);
       dockAutoCollapseRef.current = true; // 武装：本次启动期间收到就绪日志后自动收起 Dock
+      appendLog(`[engine] ${engineName}`, "system");
       if (profile.mmprojPath) appendLog(`--mmproj ${profile.mmprojPath}`, "stdout");
       if (profile.mtpDraftPath) appendLog(`-md ${profile.mtpDraftPath}`, "stdout");
       if (profile.mtp && !profile.mtpDraftPath) appendLog(`--spec-type draft-mtp`, "stdout");
@@ -933,17 +1050,48 @@ export default function App() {
     <div className={cn("workspace", isDockPage && "dock-mode")}><Topbar page={page} status={status} busy={busy} onToggleService={status.running ? handleStop : startQuick} models={config.models} modelId={quickModelId || config.preferredModelId || config.models[0]?.id || ""} onSelectModel={setQuickModelId} zenMode={zenMode} onToggleZenMode={() => setZenMode((v) => !v)} /><main className="main-content">
       {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} query={query} onQuery={setQuery} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onAddProfile={(model) => setProfileEditing({ modelId: model.id, profile: { ...DEFAULT_PROFILES[0], id: uid("profile"), name: t("newProfile") } })} onRenameModel={renameModel} onUpdateModelTags={updateModelTags} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} justImportedIds={justImportedIds} />}
       <ExplorePage visible={page === "explore"} config={config} onPersist={persist} onToast={setToast} onLog={appendLog} diskUsage={diskUsage} onPickModelsDir={pickModelsDirFlow} onDownload={handleModelDownload} activeDownloads={downloads} progressMap={modelProgress} onPauseTask={handlePauseTask} onResumeTasks={handleResumeTasks} onPauseTasks={handlePauseTasks} onClearDone={handleClearDone} onCancelTask={handleCancelTask} onDeleteTask={handleDeleteTask} onDeleteTasks={deleteTasksImpl} onRetry={handleRetry} onReveal={handleReveal} onGoSettings={() => setPage("settings")} />
-      {page === "profiles" && <ProfilesPage models={config.models} onEdit={(modelId, profile) => setProfileEditing({ modelId, profile })} onDelete={deleteProfile} onDuplicate={duplicateProfile} onSetDefault={setDefaultProfile} onReorderProfile={reorderProfiles} onDeleteProfiles={deleteMultipleProfiles} />}
+      {page === "profiles" && <ProfilesPage models={config.models} engines={config.engines} activeEngineId={config.activeEngineId} onEdit={(modelId, profile) => setProfileEditing({ modelId, profile })} onDelete={deleteProfile} onDuplicate={duplicateProfile} onSetDefault={setDefaultProfile} onReorderProfile={reorderProfiles} onDeleteProfiles={deleteMultipleProfiles} />}
       {/* 会话页保持常驻（隐藏而非卸载）：切换菜单不销毁内嵌 WebUI，回来时无需从聊天记录重新进入；WebUI 始终填满 Dock 下全部剩余高度 */}
       <Playground visible={page === "playground"} status={status} webUiUrl={webUiUrl} modelName={activeModel ? modelTitle(activeModel) : undefined} onOpenWebUi={openWebUi} zenMode={zenMode} onToggleZenMode={() => setZenMode((v) => !v)} />
       {page === "logs" && <LogsPage logs={logs} status={status} tokPerSec={tokSample ? tokSample.rate : null} onClear={() => setLogs([])} />}
-      <SettingsPage visible={page === "settings"} config={config} appUpdate={appUpdate} checkingUpdate={appUpdateChecking} onCheckUpdate={checkAppUpdate} onPersist={persist} onLog={appendLog} />
+      <SettingsPage visible={page === "settings"} config={config} appUpdate={appUpdate} checkingUpdate={appUpdateChecking} onCheckUpdate={checkAppUpdate} onPersist={persist} onLog={appendLog} onOpenEngineHub={() => setEngineHubOpen(true)} />
     </main>
       {/* Dock 日志参与布局（收起=底部状态栏 / 展开=可调高度面板），各页面共用同一份状态，不遮挡内容；仅"日志"整页除外 */}
-      {isDockPage && <LogDock open={logDockOpen} height={logDockHeight} logs={logs} status={status} modelName={activeModel ? modelTitle(activeModel) : undefined} abnormal={serviceAbnormal} tokPerSec={tokSample ? tokSample.rate : null} onToggle={() => setLogDockOpen((value) => !value)} onHeightChange={setLogDockHeight} onClear={() => setLogs([])} />}
+      {isDockPage && <LogDock open={logDockOpen} height={logDockHeight} logs={logs} status={status} modelName={activeModel ? modelTitle(activeModel) : undefined} abnormal={serviceAbnormal} tokPerSec={tokSample ? tokSample.rate : null} activeEngineName={dockEngine?.name} activeEngineBackend={dockEngine?.backend} onOpenEnginePicker={() => setEngineHubOpen(true)} onToggle={() => setLogDockOpen((value) => !value)} onHeightChange={setLogDockHeight} onClear={() => setLogs([])} />}
     </div>
-    {profileEditing && <ProfileEditor model={config.models.find((m) => m.id === profileEditing.modelId)} profile={profileEditing.profile} defaultProfileId={config.models.find((m) => m.id === profileEditing.modelId)?.defaultProfileId} onClose={() => setProfileEditing(null)} onSave={(profile, isDefault) => saveProfile(profileEditing.modelId, profile, isDefault)} />}
+    {profileEditing && <ProfileEditor engines={config.engines} activeEngineId={config.activeEngineId} model={config.models.find((m) => m.id === profileEditing.modelId)} profile={profileEditing.profile} defaultProfileId={config.models.find((m) => m.id === profileEditing.modelId)?.defaultProfileId} onClose={() => setProfileEditing(null)} onSave={(profile, isDefault) => saveProfile(profileEditing.modelId, profile, isDefault)} />}
     {importOpen && <ImportModelModal existingPaths={new Set(config.models.map((model) => model.path.toLowerCase()))} onClose={() => setImportOpen(false)} onImport={handleImportModels} />}
+    <EngineHubModal
+      open={engineHubOpen}
+      onClose={() => setEngineHubOpen(false)}
+      activeEngineId={config.activeEngineId}
+      engines={appEngines}
+      onSelectActiveEngine={handleSelectActiveEngine}
+      onSaveEngine={handleSaveEngine}
+      onDeleteEngine={handleDeleteEngine}
+      onOpenAddModal={() => setEngineAddModalOpen(true)}
+    />
+    {engineAddModalOpen && (
+      <EngineModal
+        onSave={(engine, setAsActive) => {
+          let nextEngines = config.engines && config.engines.length > 0 ? [...config.engines] : [];
+          nextEngines.push(engine);
+          const nextActiveId = setAsActive ? engine.id : config.activeEngineId;
+          const nextServerPath = setAsActive ? engine.path : config.serverPath;
+          void persist(
+            {
+              ...config,
+              engines: nextEngines,
+              activeEngineId: nextActiveId,
+              serverPath: nextServerPath,
+            },
+            t("toast.settingsSaved"),
+          );
+          setEngineAddModalOpen(false);
+        }}
+        onClose={() => setEngineAddModalOpen(false)}
+      />
+    )}
     {toast && <Toast>{toast}</Toast>}
     <AppUpdateDialog open={appUpdateDialogOpen} update={appUpdate} onClose={() => setAppUpdateDialogOpen(false)} />
     {orphanPids && orphanPids.length > 0 && (
@@ -953,7 +1101,12 @@ export default function App() {
         isStartingService={Boolean(orphanPendingModel)}
         onKill={handleKillOrphan}
         onAdoptPath={async (path) => {
-          await persist({ ...config, serverPath: path }, t("toast.settingsSaved"));
+          let nextEngines = config.engines && config.engines.length > 0 ? [...config.engines] : [];
+          if (config.activeEngineId) {
+            const idx = nextEngines.findIndex((e) => e.id === config.activeEngineId);
+            if (idx >= 0) nextEngines[idx] = { ...nextEngines[idx], path };
+          }
+          await persist({ ...config, serverPath: path, engines: nextEngines }, t("toast.settingsSaved"));
           setToast(t("toast.settingsSaved"));
         }}
         onClose={handleCloseOrphanModal}

@@ -1,21 +1,25 @@
-import { Activity, AlertTriangle, ArrowRight, Check, Cpu, Download, Eye, EyeOff, FolderOpen, Github, KeyRound, Languages, Loader2, Moon, RefreshCw, RotateCw, SlidersHorizontal, Sparkles, Sun, Wifi, Wrench, X } from "lucide-react";
+import { Activity, AlertTriangle, ArrowRight, Check, ChevronRight, Cpu, Download, Eye, EyeOff, FolderOpen, Github, KeyRound, Languages, Loader2, Moon, Pencil, Plus, RefreshCw, RotateCw, Search, SlidersHorizontal, Sparkles, Star, Sun, Trash2, Wifi, Wrench, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { APP_REPO, PROJECT_URL } from "../data";
 import { useI18n } from "../i18n";
 import { cn, formatBytes, formatMB } from "../utils";
-import { cancelLlamaCppUpdate, checkLlamaCppUpdate, checkOrphanServer, detectHardware, downloadLlamaCpp, getAppVersion, getGpuInfo, getLlamaCppStatus, getModelsDir, getSystemProxy, hfWhoami, onDownloadProgress, openConfigDir, openExternal, pickModelsDir, pickServerDir, pickServerFile, testProxyConnection, type DownloadProgress, type GpuInfo, type HardwareSuggestion, type LlamaCppLocalStatus, type LlamaCppRelease, type OrphanProcessItem, type ProxyTestResult, type ServerCandidate, type UpdateCheckResult } from "../tauri";
-import type { AppConfig, DiskUsage, LlamaLogPayload } from "../types";
-import ServerCandidateModal from "./ServerCandidateModal";
+import { cancelLlamaCppUpdate, checkLlamaCppUpdate, checkOrphanServer, detectHardware, downloadLlamaCpp, getAppVersion, getGpuInfo, getLlamaCppStatus, getModelsDir, getSystemProxy, hfWhoami, onDownloadProgress, openConfigDir, openExternal, pickModelsDir, pickServerDir, pickServerFile, revealInFolder, testProxyConnection, type DownloadProgress, type GpuInfo, type HardwareSuggestion, type LlamaCppLocalStatus, type LlamaCppRelease, type OrphanProcessItem, type ProxyTestResult, type ServerCandidate, type UpdateCheckResult } from "../tauri";
+import type { AppConfig, DiskUsage, LlamaEngine, LlamaLogPayload } from "../types";
+import ConfirmModal from "./ConfirmModal";
+import EngineModal from "./EngineModal";
 
 type ProxyMode = "system" | "manual" | "direct";
 
-export default function SettingsPage({ visible, config, appUpdate, checkingUpdate, onCheckUpdate, onPersist, onLog }: { visible: boolean; config: AppConfig; appUpdate: UpdateCheckResult | null; checkingUpdate: boolean; onCheckUpdate: (openWhenAvailable?: boolean) => Promise<UpdateCheckResult>; onPersist: (config: AppConfig, message?: string) => Promise<void>; onLog: (line: string, stream?: LlamaLogPayload["stream"]) => void }) {
+export default function SettingsPage({ visible, config, appUpdate, checkingUpdate, onCheckUpdate, onPersist, onLog, onOpenEngineHub }: { visible: boolean; config: AppConfig; appUpdate: UpdateCheckResult | null; checkingUpdate: boolean; onCheckUpdate: (openWhenAvailable?: boolean) => Promise<UpdateCheckResult>; onPersist: (config: AppConfig, message?: string) => Promise<void>; onLog: (line: string, stream?: LlamaLogPayload["stream"]) => void; onOpenEngineHub?: () => void }) {
   const { t } = useI18n();
   const [serverPath, setServerPath] = useState(config.serverPath);
-  const [serverPicking, setServerPicking] = useState(false);
   const [serverBrowseError, setServerBrowseError] = useState<string | null>(null);
   const [gpuInfo, setGpuInfo] = useState<GpuInfo | null>(null);
   const [modelsDisk, setModelsDisk] = useState<DiskUsage | null>(null);
+
+  const [engineModalOpen, setEngineModalOpen] = useState(false);
+  const [editingEngine, setEditingEngine] = useState<LlamaEngine | null>(null);
+  const [deletingEngine, setDeletingEngine] = useState<LlamaEngine | null>(null);
 
   useEffect(() => {
     setServerPath(config.serverPath);
@@ -23,6 +27,71 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
 
   useEffect(() => { void getGpuInfo().then(setGpuInfo).catch(() => undefined); }, []);
   useEffect(() => { void getModelsDir().then(setModelsDisk).catch(() => undefined); }, [config.modelsDir]);
+
+  const engines: LlamaEngine[] = config.engines && config.engines.length > 0
+    ? config.engines
+    : config.serverPath
+      ? [{ id: "engine-default", name: "默认引擎", path: config.serverPath, backend: "cuda" }]
+      : [];
+
+  const activeEngine = engines.find((e) => e.id === config.activeEngineId)
+    || engines.find((e) => e.path.toLowerCase() === serverPath.toLowerCase())
+    || engines[0];
+
+  const handleSaveEngine = async (engine: LlamaEngine, setAsActive: boolean) => {
+    let nextEngines = config.engines && config.engines.length > 0 ? [...config.engines] : (config.serverPath ? [{ id: "engine-default", name: "默认引擎", path: config.serverPath, backend: "cuda" }] : []);
+    const existingIndex = nextEngines.findIndex((e) => e.id === engine.id);
+    if (existingIndex >= 0) {
+      nextEngines[existingIndex] = engine;
+    } else {
+      nextEngines.push(engine);
+    }
+    let nextActiveId = config.activeEngineId || engine.id;
+    let nextServerPath = config.serverPath;
+    if (setAsActive || !config.activeEngineId) {
+      nextActiveId = engine.id;
+      nextServerPath = engine.path;
+    } else if (engine.id === config.activeEngineId) {
+      nextServerPath = engine.path;
+    }
+    setServerPath(nextServerPath);
+    await onPersist({ ...config, engines: nextEngines, activeEngineId: nextActiveId, serverPath: nextServerPath }, t("toast.settingsSaved"));
+    setEngineModalOpen(false);
+    setEditingEngine(null);
+    void refreshEngine();
+  };
+
+  const handleSetActiveEngine = async (engine: LlamaEngine) => {
+    setServerPath(engine.path);
+    await onPersist({ ...config, activeEngineId: engine.id, serverPath: engine.path }, t("toast.settingsSaved"));
+    void refreshEngine();
+  };
+
+  const handleDeleteEngine = async (engineId: string) => {
+    const nextEngines = (config.engines || []).filter((e) => e.id !== engineId);
+    let nextActiveId = config.activeEngineId;
+    let nextServerPath = config.serverPath;
+    if (config.activeEngineId === engineId) {
+      if (nextEngines.length > 0) {
+        nextActiveId = nextEngines[0].id;
+        nextServerPath = nextEngines[0].path;
+      } else {
+        nextActiveId = undefined;
+      }
+    }
+    setServerPath(nextServerPath);
+    await onPersist({ ...config, engines: nextEngines, activeEngineId: nextActiveId, serverPath: nextServerPath }, t("toast.settingsSaved"));
+    setDeletingEngine(null);
+    void refreshEngine();
+  };
+
+  const handleRevealFolder = async (filePath: string) => {
+    try {
+      await revealInFolder(filePath);
+    } catch (err) {
+      onLog(err instanceof Error ? err.message : String(err), "stderr");
+    }
+  };
 
   const gpuOn = config.gpuMonitorEnabled !== false;
   const trayOn = config.minimizeToTrayOnClose !== false;
@@ -44,52 +113,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
   };
 
   const [detectedServer, setDetectedServer] = useState<OrphanProcessItem | null>(null);
-  const [candidateList, setCandidateList] = useState<ServerCandidate[] | null>(null);
 
-  const choose = async () => {
-    setServerPicking(true); setServerBrowseError(null);
-    try {
-      const result = await pickServerDir();
-      if (result.status === "selected" && result.selectedPath) {
-        setServerPath(result.selectedPath);
-        await onPersist({ ...config, serverPath: result.selectedPath }, t("toast.settingsSaved"));
-        void refreshEngine();
-      } else if (result.status === "multiple") {
-        setCandidateList(result.candidates);
-      } else if (result.status === "none") {
-        // 未检测到已知程序，自动唤起文件选择器直接选择
-        const manual = await pickServerFile();
-        if (manual) {
-          setServerPath(manual);
-          await onPersist({ ...config, serverPath: manual }, t("toast.settingsSaved"));
-          void refreshEngine();
-        }
-      }
-    } catch (error) {
-      setServerBrowseError(error instanceof Error ? error.message : String(error));
-    } finally { setServerPicking(false); }
-  };
-
-  const handleSelectCandidate = async (candidate: ServerCandidate) => {
-    setCandidateList(null);
-    setServerPath(candidate.path);
-    await onPersist({ ...config, serverPath: candidate.path }, t("toast.settingsSaved"));
-    void refreshEngine();
-  };
-
-  const handleCandidateManualFile = async () => {
-    setCandidateList(null);
-    try {
-      const manual = await pickServerFile();
-      if (manual) {
-        setServerPath(manual);
-        await onPersist({ ...config, serverPath: manual }, t("toast.settingsSaved"));
-        void refreshEngine();
-      }
-    } catch (error) {
-      setServerBrowseError(error instanceof Error ? error.message : String(error));
-    }
-  };
   // ---- 项目信息：当前版本 + 检测更新（GitHub Releases）----
   const [appVersion, setAppVersion] = useState("");
   useEffect(() => { void getAppVersion().then(setAppVersion).catch(() => undefined); }, []);
@@ -279,7 +303,15 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
     let cancelled = false;
     try {
       const path = await downloadLlamaCpp({ backend: useBackend, cudaVersion, tag: remote?.tag });
-      await onPersist({ ...config, serverPath: path }, "");
+      let nextEngines = config.engines && config.engines.length > 0 ? [...config.engines] : [];
+      if (config.activeEngineId && nextEngines.length > 0) {
+        const idx = nextEngines.findIndex((e) => e.id === config.activeEngineId);
+        if (idx >= 0) {
+          nextEngines[idx] = { ...nextEngines[idx], path, backend: useBackend, version: remote?.tag };
+        }
+      }
+      setServerPath(path);
+      await onPersist({ ...config, serverPath: path, engines: nextEngines }, "");
       onLog(t("llama.updated", { path }), "system");
       await refreshEngine();
       // 更新已完成：将 remote 标记为已是最新，避免按钮仍显示“立即更新”
@@ -420,99 +452,112 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
             {hfError && <p className="hf-token-error">{hfError}</p>}
           </div>
         </div>
-{/* llama.cpp 引擎更新 */}
-        <div className="settings-card engine-card">
-          <div className="settings-card-icon"><Wrench size={18} /></div>
+        {/* llama.cpp 管理及更新 */}
+        <div className="settings-card settings-group engine-management-card">
+          <div className="settings-card-icon"><Cpu size={18} /></div>
           <div className="settings-card-body">
-            <div className="engine-head">
-              <h3>{t("llama.title")}</h3>
-              <span className="engine-spacer" />
-              {isUpToDate && <span className="engine-badge ok"><Check size={12} />{t("llama.upToDate")}</span>}
-              {hasNewVersion && <span className="engine-badge warn"><AlertTriangle size={12} />{t("llama.newVersionBadge")}</span>}
-            </div>
-
-            {/* 顶部版本看板：单行（当前 → 最新）大字体，右上角内嵌刷新按钮 */}
-            <div className="engine-version-board">
-              <span className="engine-version-label">{t("llama.currentShort")} <strong>{engineStatus?.localVersion ?? t("llama.localVersionNone")}{engineStatus?.localBackend ? " (" + backendLabel(engineStatus.localBackend) + ")" : ""}</strong></span>
-              <ArrowRight size={14} className="engine-version-arrow" />
-              <span className="engine-version-label">{t("llama.latestShort")} <strong className={hasNewVersion ? "new" : ""}>{remote?.tag ?? "--"}</strong></span>
-            </div>
-
-            {/* 卡片式后端选择：CUDA 版本下拉收进标题行，三卡天然等高 */}
-            <div className="backend-seg">
-              {BACKENDS.map((option) => (
-                <button key={option.value} className={"backend-card" + (backend === option.value ? " active" : "")} onClick={() => setBackend(option.value)}>
-                  <span className="backend-card-head">
-                    <span className="backend-card-name">
-                      {option.value === hardware?.recommendedBackend ? <Check size={12} /> : null}
-                      {option.label}
-                    </span>
-                    {option.value === "cuda" && (
-                      <select className="engine-select" value={cudaVersion} onChange={(e) => setCudaVersion(e.target.value)} onClick={(e) => e.stopPropagation()}>
-                        <option value="auto">{t("llama.cudaAuto")}</option>
-                        {cudaOptions.map((version) => <option key={version} value={version}>CUDA {version}</option>)}
-                      </select>
-                    )}
-                  </span>
-                  <span className="backend-card-sub">
-                    {option.value === "cuda"
-                      ? (hardware?.gpuName ?? t("llama.subNvidia"))
-                      : option.value === "vulkan" ? t("llama.subVulkan") : t("llama.subCpu")}
-                  </span>
-                </button>
-              ))}
-            </div>
-
-            {/* 路径输入框：单一浏览按钮 */}
-            <div className="engine-path">
-              <span className="engine-path-label">{t("llama.installPath")}</span>
-              <div className="engine-path-row">
-                <input value={serverPath} onChange={(e) => setServerPath(e.target.value)} onBlur={(e) => saveServerPath(e.target.value)} placeholder="C:\llama.cpp\llama-server.exe" />
-                <button className="engine-browse" disabled={serverPicking} onClick={() => void choose()} title={t("llama.pickDirTitle")}>
-                  {serverPicking ? <Loader2 size={14} className="spin" /> : <FolderOpen size={14} />}
-                  {t("browse")}
-                </button>
+            {/* 顶栏：标题 + 描述 + 右侧管理版本全局入口 */}
+            <div className="engine-card-header">
+              <div className="engine-card-header-left">
+                <h3>{t("llama.title")}</h3>
+                <p className="about-desc">{t("llama.desc")}</p>
               </div>
+              <button
+                type="button"
+                className="secondary-button compact engine-header-hub-btn"
+                onClick={() => onOpenEngineHub?.()}
+                title="Ctrl+E"
+              >
+                <Wrench size={13} />
+                <span>{t("llama.manageHubBtn")}</span>
+                <kbd className="engine-kbd">Ctrl+E</kbd>
+              </button>
             </div>
 
-            {/* 若检测到系统中正在运行的 server 进程，提供一键快捷采用 / 指定 */}
-            {detectedServer && (
-              <div className="detected-server-hint">
-                <div className="detected-server-info">
-                  <Sparkles size={14} style={{ color: "#f59e0b", flex: "none" }} />
-                  <span>
-                    {t("llama.detectedRunning", {
-                      name: detectedServer.name,
-                      pid: detectedServer.pid,
-                    })}
-                    {detectedServer.path && <code className="detected-path">{detectedServer.path}</code>}
+            {/* 单一聚合主卡片 */}
+            <div className="engine-unified-card">
+              {/* 第一行：当前运行分支 */}
+              <div className="engine-unified-branch-row">
+                <span className="engine-unified-label">{t("llama.currentBranchPrefix")}</span>
+                <span className="engine-unified-name">{activeEngine?.name || "llama.cpp"}</span>
+                <span className="engine-pill-tag backend">
+                  {activeEngine?.backend?.toUpperCase() || "CUDA"}
+                </span>
+                {(activeEngine?.version || engineStatus?.localVersion) && (
+                  <span className="engine-pill-tag version">
+                    {activeEngine?.version || engineStatus?.localVersion}
                   </span>
-                </div>
-                {detectedServer.path && detectedServer.path.toLowerCase() !== serverPath.toLowerCase() && (
-                  <button
-                    className="secondary-button compact"
-                    onClick={() => {
-                      if (detectedServer.path) {
-                        saveServerPath(detectedServer.path);
-                      }
-                    }}
-                  >
-                    {t("llama.adoptDetectedPath")}
-                  </button>
                 )}
               </div>
-            )}
 
-            {/* 底部按钮：次级描边 + 主橙色，统一靠右，宽度自适应 */}
-            <div className="engine-actions">
-              <button className="secondary-button compact" disabled={checking || updating} onClick={() => void runCheck()}>
-                {checking ? <Loader2 size={14} className="spin" /> : checkResult ? <Check size={14} /> : <RefreshCw size={14} />}
-                {checking ? t("llama.checking") : checkResult === "updated" ? t("llama.checkDoneShort") : checkResult === "new" ? t("llama.newVersionShort") : t("llama.check")}
-              </button>
-              {isUpToDate
-                ? <button className="primary-button compact engine-update-btn" disabled={updating || checking} onClick={() => void forceReinstall()}>{updating ? <Loader2 size={15} className="spin" /> : <RotateCw size={15} />}{t("llama.forceReinstall")}</button>
-                : <button className="primary-button compact engine-update-btn" disabled={updating || checking} onClick={() => void startUpdate()}>{updating ? <Loader2 size={15} className="spin" /> : <Download size={15} />}{remote ? t("llama.updateToTag", { tag: remote.tag }) : t("llama.checkAndUpdate")}</button>}
+              {/* 分割线 */}
+              <div className="engine-unified-divider" />
+
+              {/* 第二行：硬件加速环境单选 + 版本信息状态 */}
+              <div className="engine-unified-status-row">
+                <div className="mini-seg">
+                  {BACKENDS.map((b) => (
+                    <button
+                      key={b.value}
+                      type="button"
+                      className={backend === b.value ? "active" : ""}
+                      onClick={() => setBackend(b.value)}
+                    >
+                      {b.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="engine-unified-version-group">
+                  <span className="engine-ver-item">
+                    <span className="ver-key">{t("llama.localVersionLabel")}</span>
+                    <span className="ver-val">{engineStatus?.localVersion || t("llama.localVersionNone")}</span>
+                  </span>
+                  <span className="engine-ver-item">
+                    <span className="ver-key">{t("llama.remoteVersionLabel")}</span>
+                    <span className={cn("ver-val", hasNewVersion && "new")}>
+                      {remote?.tag || (checking ? t("llama.checking") : "--")}
+                    </span>
+                  </span>
+                </div>
+              </div>
             </div>
+
+            {/* 右下角操作聚合 */}
+            <div className="engine-unified-actions">
+              <button
+                type="button"
+                className="secondary-button compact"
+                disabled={checking || updating}
+                onClick={() => void runCheck()}
+              >
+                <RefreshCw size={13} className={checking ? "spin" : ""} />
+                <span>{t("llama.checkUpdateBtn")}</span>
+              </button>
+
+              {isUpToDate ? (
+                <button
+                  type="button"
+                  className="secondary-button compact"
+                  disabled={updating || checking}
+                  onClick={() => void forceReinstall()}
+                >
+                  <RotateCw size={13} className={updating ? "spin" : ""} />
+                  <span>{t("llama.forceReinstall")}</span>
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="engine-primary-btn compact"
+                  disabled={updating || checking}
+                  onClick={() => void startUpdate()}
+                >
+                  {updating ? <Loader2 size={13} className="spin" /> : <Download size={13} />}
+                  <span>{remote?.tag ? t("llama.updateBtnTag", { tag: remote.tag }) : t("llama.checkAndUpdate")}</span>
+                </button>
+              )}
+            </div>
+
             {serverBrowseError && <p className="import-error">{serverBrowseError}</p>}
             {engineError && <p className="import-error">{engineError}</p>}
           </div>
@@ -699,12 +744,24 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
           </div>
         </div>
       )}
-      {candidateList && candidateList.length > 0 && (
-        <ServerCandidateModal
-          candidates={candidateList}
-          onSelect={handleSelectCandidate}
-          onPickManualFile={handleCandidateManualFile}
-          onClose={() => setCandidateList(null)}
+      {engineModalOpen && (
+        <EngineModal
+          engine={editingEngine}
+          isDefault={editingEngine ? editingEngine.id === activeEngine?.id : false}
+          onSave={handleSaveEngine}
+          onClose={() => {
+            setEngineModalOpen(false);
+            setEditingEngine(null);
+          }}
+        />
+      )}
+      {deletingEngine && (
+        <ConfirmModal
+          title={t("llama.deleteBranch")}
+          description={t("llama.deleteBranchConfirm", { name: deletingEngine.name })}
+          confirmLabel={t("confirmDeleteLabel")}
+          onConfirm={() => void handleDeleteEngine(deletingEngine.id)}
+          onClose={() => setDeletingEngine(null)}
         />
       )}
     </div>
