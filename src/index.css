@@ -6093,7 +6093,7 @@ select:disabled {
 }
 
 .form-grid.two {
-  grid-template-columns: 1fr 160px
+  grid-template-columns: repeat(2, minmax(0, 1fr))
 }
 
 .form-grid.three {
@@ -6136,13 +6136,17 @@ select:disabled {
 .field>span {
   display: flex;
   justify-content: space-between;
+  align-items: center;
+  gap: 8px;
   color: #818b9d;
-  font-size: 12px
+  font-size: 12px;
+  white-space: nowrap;
 }
 
 .field em {
   color: #5f6878;
-  font: 12px JetBrains Mono, monospace
+  font: 12px JetBrains Mono, monospace;
+  white-space: nowrap;
 }
 
 .field input,
