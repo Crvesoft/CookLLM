@@ -76,10 +76,13 @@ jobs:
 
           if gh release view "$TAG" > /dev/null 2>&1; then
             gh release upload "$TAG" "${ARTIFACTS[@]}" --clobber
+            gh release edit "$TAG" --draft=false --latest "${NOTES_ARGS[@]}"
           else
             gh release create "$TAG" \
               --title "CookLLM $TAG" \
               --target master \
+              --draft=false \
+              --latest \
               "${NOTES_ARGS[@]}" \
               "${ARTIFACTS[@]}"
           fi
