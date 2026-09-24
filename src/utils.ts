@@ -101,3 +101,26 @@ export function isNewerVersion(release: string, current: string): boolean {
   const currentPre = /[-+]/.test(current.replace(/^v/i, ""));
   return !releasePre && currentPre;
 }
+
+/** 统一格式化引擎后端与 CUDA 版本标识：如 "CUDA 12.4"、"CUDA 12"、"Vulkan"、"CPU" */
+export function formatEngineBackend(
+  backend?: string | null,
+  cudaVersion?: string | null,
+): string {
+  const b = (backend || "cuda").toLowerCase();
+  if (b.includes("cuda")) {
+    if (cudaVersion && cudaVersion.trim()) {
+      const v = cudaVersion.trim().replace(/^cuda[-_]?/i, "").replace(/^cu/i, "");
+      return `CUDA ${v}`;
+    }
+    const match = b.match(/(?:cuda[-_]?|cu)(\d+(?:\.\d+)?)/i);
+    if (match && match[1]) {
+      return `CUDA ${match[1]}`;
+    }
+    return "CUDA";
+  }
+  if (b === "vulkan") return "Vulkan";
+  if (b === "cpu") return "CPU";
+  return backend?.toUpperCase() || "CUDA";
+}
+

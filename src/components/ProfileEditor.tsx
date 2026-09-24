@@ -3,7 +3,7 @@ import { useI18n } from "../i18n";
 import { useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { pickFiles } from "../tauri";
 import type { LlamaEngine, ModelAsset, Profile } from "../types";
-import { fileName, cn } from "../utils";
+import { fileName, cn, formatEngineBackend } from "../utils";
 
 const CACHE_TYPES = ["f32", "f16", "q8_0", "q4_0"];
 const LOAD_MODES = ["mmap", "mlock", "ragged", "row", "direct"];
@@ -182,7 +182,7 @@ export default function ProfileEditor({
                   <optgroup label={t("llama.optgroupFixed")}>
                     {engines.map((eng) => (
                       <option key={eng.id} value={eng.id}>
-                        {eng.name} ({eng.backend?.toUpperCase() || "CUDA"}{eng.version ? ` · ${eng.version}` : ""})
+                        {eng.name} ({formatEngineBackend(eng.backend, eng.cudaVersion)}{eng.version ? ` · ${eng.version}` : ""})
                       </option>
                     ))}
                   </optgroup>

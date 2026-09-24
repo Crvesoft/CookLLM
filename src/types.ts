@@ -72,6 +72,7 @@ export interface LlamaEngine {
   name: string;
   path: string;
   backend?: "cuda" | "vulkan" | "cpu" | string;
+  cudaVersion?: string;
   version?: string;
   createdAt?: number;
 }

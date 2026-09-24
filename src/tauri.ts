@@ -271,6 +271,7 @@ export interface LlamaCppLocalStatus {
   installDir: string;
   localVersion?: string | null;
   localBackend: "cuda" | "vulkan" | "cpu";
+  cudaVersion?: string | null;
   serverAvailable: boolean;
   serverPath?: string | null;
 }

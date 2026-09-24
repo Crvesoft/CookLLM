@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import type { LlamaEngine } from "../types";
 import { useI18n } from "../i18n";
-import { cn } from "../utils";
+import { cn, formatEngineBackend } from "../utils";
 import { getLlamaCppStatus, pickServerFile, revealInFolder, type LlamaCppLocalStatus } from "../tauri";
 import ConfirmModal from "./ConfirmModal";
 
@@ -130,6 +130,7 @@ export default function EngineHubModal({
       name: draftName.trim() || selectedEngine.name,
       path: draftPath.trim(),
       backend: draftBackend,
+      cudaVersion: draftBackend === "cuda" ? (probeStatus?.cudaVersion || selectedEngine.cudaVersion) : undefined,
       version: probeStatus?.localVersion || selectedEngine.version,
     };
     onSaveEngine(updated);
@@ -233,7 +234,10 @@ export default function EngineHubModal({
                             (item.backend || "cuda").toLowerCase(),
                           )}
                         >
-                          {(item.backend || "CUDA").toUpperCase()}
+                          {formatEngineBackend(
+                            item.backend,
+                            item.cudaVersion || (item.id === selectedEngine?.id ? probeStatus?.cudaVersion : undefined),
+                          )}
                         </span>
                       </div>
                     </div>
@@ -345,7 +349,14 @@ export default function EngineHubModal({
                 {/* 字段 3：计算后端与状态检测 */}
                 <div className="engine-hub-grid-row">
                   <div className="engine-hub-field">
-                    <label className="engine-hub-label">{t("llama.branchBackend")}</label>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <label className="engine-hub-label">{t("llama.branchBackend")}</label>
+                      {draftBackend === "cuda" && (probeStatus?.cudaVersion || selectedEngine.cudaVersion) && (
+                        <span className="engine-pill-tag backend" style={{ padding: "1px 6px", fontSize: 10 }}>
+                          {formatEngineBackend("cuda", probeStatus?.cudaVersion || selectedEngine.cudaVersion)}
+                        </span>
+                      )}
+                    </div>
                     <select
                       className="engine-hub-select"
                       value={draftBackend}

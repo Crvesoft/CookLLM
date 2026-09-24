@@ -4,7 +4,7 @@ import { useI18n } from "../i18n";
 import { uid } from "../data";
 import { getLlamaCppStatus, pickServerDir, pickServerFile, type LlamaCppLocalStatus, type ServerCandidate } from "../tauri";
 import type { LlamaEngine } from "../types";
-import { cn, formatBytes } from "../utils";
+import { cn, formatBytes, formatEngineBackend } from "../utils";
 
 interface Props {
   engine?: LlamaEngine | null;
@@ -49,6 +49,7 @@ export default function EngineModal({ engine, isDefault = false, onSave, onClose
   const [name, setName] = useState(engine?.name ?? "");
   const [path, setPath] = useState(engine?.path ?? "");
   const [backend, setBackend] = useState<string>(engine?.backend ?? "cuda");
+  const [cudaVersion, setCudaVersion] = useState<string>(engine?.cudaVersion ?? "");
   const [version, setVersion] = useState<string>(engine?.version ?? "");
   const [setAsActive, setSetAsActive] = useState<boolean>(isDefault);
 
@@ -79,6 +80,7 @@ export default function EngineModal({ engine, isDefault = false, onSave, onClose
       setDetectionStatus(status);
       if (status) {
         if (status.localBackend) setBackend(status.localBackend);
+        if (status.cudaVersion) setCudaVersion(status.cudaVersion);
         if (status.localVersion) setVersion(status.localVersion);
         if (status.serverPath && status.serverPath !== targetPath) {
           setPath(status.serverPath);
@@ -184,6 +186,7 @@ export default function EngineModal({ engine, isDefault = false, onSave, onClose
       name: finalName,
       path: trimmedPath,
       backend: backend || "cuda",
+      cudaVersion: (backend || "cuda") === "cuda" ? (cudaVersion || detectionStatus?.cudaVersion || engine?.cudaVersion) : undefined,
       version: version || undefined,
       createdAt: engine?.createdAt || Date.now(),
     };
@@ -331,7 +334,14 @@ export default function EngineModal({ engine, isDefault = false, onSave, onClose
               </div>
               <div className="engine-det-grid">
                 <div>
-                  <span className="det-label">{t("llama.branchBackend")}</span>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <span className="det-label">{t("llama.branchBackend")}</span>
+                    {backend === "cuda" && (cudaVersion || detectionStatus?.cudaVersion) && (
+                      <span className="engine-pill-tag backend" style={{ padding: "0 5px", fontSize: 10 }}>
+                        {formatEngineBackend("cuda", cudaVersion || detectionStatus?.cudaVersion)}
+                      </span>
+                    )}
+                  </div>
                   <select
                     className="engine-select"
                     style={{ height: 24, fontSize: 11 }}

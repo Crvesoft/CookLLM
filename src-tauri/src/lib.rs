@@ -102,6 +102,8 @@ struct LlamaEngine {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     backend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    cuda_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     created_at: Option<u64>,
@@ -317,7 +319,15 @@ fn read_config(app: &AppHandle) -> Result<AppConfig, String> {
         }
     }
     let contents = fs::read_to_string(&path).map_err(|error| error.to_string())?;
-    let config: AppConfig = serde_json::from_str(&contents).map_err(|error| error.to_string())?;
+    let mut config: AppConfig = serde_json::from_str(&contents).map_err(|error| error.to_string())?;
+    for eng in &mut config.engines {
+        if eng.backend.as_deref() == Some("cuda") && eng.cuda_version.is_none() {
+            let p = PathBuf::from(&eng.path);
+            if let Some(parent) = p.parent() {
+                eng.cuda_version = get_installed_cuda_version(parent);
+            }
+        }
+    }
     if let Ok(mut guard) = CONFIG_CACHE.get_or_init(|| Mutex::new(None)).lock() {
         *guard = Some(ConfigCacheEntry { path: path.clone(), modified, config: config.clone() });
     }
@@ -1203,15 +1213,129 @@ fn flatten_dlls(root: &Path, bin_dir: &Path) {
     }
 }
 
+/// 从文件名或路径文本中提取 CUDA 完整版本（如 "12.4"、"13.4"、"11.8"、"13.2.86"）
+fn extract_cuda_full_version(lower: &str) -> String {
+    // 1. 扫描所有 "cuda" 出现位置（跳过 "cudart" 自身）
+    let mut search_from = 0;
+    while let Some(pos) = lower[search_from..].find("cuda") {
+        let abs_pos = search_from + pos;
+        search_from = abs_pos + 4;
+        let after = &lower[abs_pos + 4..];
+        if after.starts_with("rt") {
+            continue;
+        }
+        let mut rest = after.trim_start_matches(|c| c == '-' || c == '_' || c == ' ');
+        if rest.starts_with("cu") {
+            rest = rest[2..].trim_start_matches(|c| c == '-' || c == '_');
+        }
+        if rest.starts_with(|c: char| c.is_ascii_digit()) {
+            let mut out = String::new();
+            for c in rest.chars() {
+                if c.is_ascii_digit() || (c == '.' && !out.is_empty() && !out.ends_with('.')) {
+                    out.push(c);
+                } else {
+                    break;
+                }
+            }
+            while out.ends_with('.') {
+                out.pop();
+            }
+            if !out.is_empty() {
+                return out;
+            }
+        }
+    }
+
+    // 2. 扫描所有单独的 "cu" 后面直接跟数字（如 "cu12.4", "cu118", "cu12"）
+    let mut search_from = 0;
+    while let Some(pos) = lower[search_from..].find("cu") {
+        let abs_pos = search_from + pos;
+        search_from = abs_pos + 2;
+        if lower[abs_pos..].starts_with("cuda") || lower[abs_pos..].starts_with("cudart") {
+            continue;
+        }
+        let rest = lower[abs_pos + 2..].trim_start_matches(|c| c == '-' || c == '_');
+        if rest.starts_with(|c: char| c.is_ascii_digit()) {
+            let mut out = String::new();
+            for c in rest.chars() {
+                if c.is_ascii_digit() || (c == '.' && !out.is_empty() && !out.ends_with('.')) {
+                    out.push(c);
+                } else {
+                    break;
+                }
+            }
+            while out.ends_with('.') {
+                out.pop();
+            }
+            if !out.is_empty() {
+                return out;
+            }
+        }
+    }
+
+    String::new()
+}
+
+/// 提取 CUDA 主版本号（如 "12"、"13"、"11"）
+fn extract_cuda_major_version(full_or_text: &str) -> String {
+    let trimmed = full_or_text.trim();
+    if trimmed.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false) {
+        trimmed.split('.').next().unwrap_or("").to_string()
+    } else {
+        let full = extract_cuda_full_version(&trimmed.to_lowercase());
+        full.split('.').next().unwrap_or("").to_string()
+    }
+}
+
 /// 判断安装目录是否已包含指定主版本的 CUDA 运行时 dll（如 cudart64_12.dll / cublas64_12.dll）。
-/// 正式版 cudart 包通常同时带这几个文件；任一存在即视为该主版本运行时已就绪。
 fn has_cuda_runtime_dll(dir: &Path, major: &str) -> bool {
     for name in [format!("cudart64_{}.dll", major), format!("cublas64_{}.dll", major), format!("cublasLt64_{}.dll", major)] {
         if dir.join(&name).is_file() {
             return true;
         }
     }
+    if major == "11" && dir.join("cudart64_110.dll").is_file() {
+        return true;
+    }
     false
+}
+
+/// 判断安装目录是否具备指定主版本且完整的 CUDA 运行时（cudart 与 cublas 均就绪且未损坏）
+fn is_cuda_runtime_complete(dir: &Path, major: &str) -> bool {
+    if major.is_empty() {
+        return false;
+    }
+    let has_cudart = dir.join(format!("cudart64_{}.dll", major)).is_file()
+        || (major == "11" && dir.join("cudart64_110.dll").is_file());
+    let has_cublas = dir.join(format!("cublas64_{}.dll", major)).is_file()
+        || dir.join(format!("cublasLt64_{}.dll", major)).is_file();
+    has_cudart && has_cublas
+}
+
+/// 获取指定目录下的 CUDA 版本（如 "12.4"、"13.4"、"12"）
+fn get_installed_cuda_version(dir: &Path) -> Option<String> {
+    if let Ok(text) = fs::read_to_string(dir.join("cuda_version.txt")) {
+        let v = text.trim();
+        if !v.is_empty() {
+            return Some(v.to_string());
+        }
+    }
+    let path_text = dir.to_string_lossy().to_lowercase();
+    let from_path = extract_cuda_full_version(&path_text);
+    if !from_path.is_empty() {
+        return Some(from_path);
+    }
+    for major in ["13", "12", "11"] {
+        if is_cuda_runtime_complete(dir, major) {
+            return Some(major.to_string());
+        }
+    }
+    for major in ["13", "12", "11"] {
+        if has_cuda_runtime_dll(dir, major) {
+            return Some(major.to_string());
+        }
+    }
+    None
 }
 
 /// 在目录树中查找可执行文件：当前目录优先，其次按子目录就近递归，深度上限 6。
@@ -3214,6 +3338,8 @@ struct LlamaCppLocalStatus {
     install_dir: String,
     local_version: Option<String>,
     local_backend: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cuda_version: Option<String>,
     server_available: bool,
     server_path: Option<String>,
 }
@@ -3327,13 +3453,26 @@ fn get_llamacpp_status(app: AppHandle, custom_path: Option<String>) -> Result<Ll
             let has_vulkan = path_text.contains("vulkan") || bin_dir.join("vulkan-1.dll").is_file();
             local_backend = if has_cuda { "cuda" } else if has_vulkan { "vulkan" } else { "cpu" }.into();
         }
+        let mut local_cuda_version = None;
+        if local_backend == "cuda" {
+            local_cuda_version = get_installed_cuda_version(&bin_dir);
+        }
+        return Ok(LlamaCppLocalStatus {
+            install_dir: install_dir.to_string_lossy().to_string(),
+            local_version,
+            local_backend,
+            cuda_version: local_cuda_version,
+            server_available: server_path.as_ref().map(|p| p.is_file()).unwrap_or(false),
+            server_path: server_path.map(|path| path.to_string_lossy().to_string()),
+        });
     }
     Ok(LlamaCppLocalStatus {
         install_dir: install_dir.to_string_lossy().to_string(),
         local_version,
         local_backend,
-        server_available: server_path.as_ref().map(|p| p.is_file()).unwrap_or(false),
-        server_path: server_path.map(|path| path.to_string_lossy().to_string()),
+        cuda_version: None,
+        server_available: false,
+        server_path: None,
     })
 }
 
@@ -3626,46 +3765,9 @@ fn parse_win_assets(value: &serde_json::Value) -> Vec<LlamaCppAsset> {
         }
         let size = item.get("size").and_then(|value| value.as_u64()).unwrap_or(0);
         let backend = if lower.contains("win-cuda") { "cuda" } else if lower.contains("win-vulkan") { "vulkan" } else if lower.contains("win-cpu") || lower.contains("win-avx2") { "cpu" } else { continue };
-        // 提取 CUDA 主版本 / 完整版本：如 win-cuda-12.4-x64 -> "12" / "12.4"
-        let mut cuda_version = String::new();
-        if backend == "cuda" {
-            if let Some(pos) = lower.find("cuda-") {
-                let rest = &lower[pos + 5..];
-                let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-                if !digits.is_empty() {
-                    cuda_version = digits;
-                }
-            }
-            if cuda_version.is_empty() {
-                if let Some(pos) = lower.find("cu") {
-                    let rest = &lower[pos + 2..];
-                    let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-                    if !digits.is_empty() {
-                        cuda_version = digits;
-                    }
-                }
-            }
-        }
         let cuda_full_version = if backend == "cuda" { extract_cuda_full_version(&lower) } else { String::new() };
-        out.push(LlamaCppAsset { backend: backend.into(), cuda_version: cuda_version.clone(), cuda_full_version: cuda_full_version.clone(), file_name: name.to_string(), url, size });
-    }
-    out
-}
-
-/// 从资产名提取 CUDA 完整版本（如 "cuda-12.4-x64" -> "12.4"）。
-fn extract_cuda_full_version(lower: &str) -> String {
-    let Some(pos) = lower.find("cuda-") else { return String::new() };
-    let rest = &lower[pos + 5..];
-    let mut out = String::new();
-    for c in rest.chars() {
-        if c.is_ascii_digit() || (c == '.' && !out.is_empty() && !out.contains('.')) {
-            out.push(c);
-        } else {
-            break;
-        }
-    }
-    while out.ends_with('.') {
-        out.pop();
+        let cuda_version = if backend == "cuda" { extract_cuda_major_version(&cuda_full_version) } else { String::new() };
+        out.push(LlamaCppAsset { backend: backend.into(), cuda_version, cuda_full_version, file_name: name.to_string(), url, size });
     }
     out
 }
@@ -3691,7 +3793,7 @@ fn parse_cudart_assets(value: &serde_json::Value) -> Vec<LlamaCppAsset> {
         }
         let size = item.get("size").and_then(|value| value.as_u64()).unwrap_or(0);
         let cuda_full_version = extract_cuda_full_version(&lower);
-        let cuda_version = cuda_full_version.split('.').next().unwrap_or("").to_string();
+        let cuda_version = extract_cuda_major_version(&cuda_full_version);
         out.push(LlamaCppAsset { backend: "cuda".into(), cuda_version, cuda_full_version, file_name: name.to_string(), url, size });
     }
     out
@@ -3702,11 +3804,11 @@ fn pick_cudart_asset<'a>(assets: &'a [LlamaCppAsset], cuda_full: &str) -> Option
     if cuda_full.is_empty() {
         return assets.iter().find(|asset| asset.backend == "cuda");
     }
-    let major = cuda_full.split('.').next().unwrap_or("");
+    let major = extract_cuda_major_version(cuda_full);
     assets
         .iter()
         .find(|asset| asset.cuda_full_version == cuda_full)
-        .or_else(|| assets.iter().find(|asset| asset.cuda_version == major))
+        .or_else(|| assets.iter().find(|asset| !major.is_empty() && asset.cuda_version == major))
         .or_else(|| assets.iter().find(|asset| asset.backend == "cuda"))
 }
 
@@ -3949,13 +4051,14 @@ fn install_bin_dir(bin_dir: &Path, target: &Path, version: &str, backend: &str) 
         }
         return Err(format!("原子替换安装目录失败（可能 llama-server 仍在运行占用文件）：{}", error));
     }
-    // 保留旧目录中目标目录缺失的 DLL（如 cudart 等 CUDA 运行时），best effort
+    // 保留旧目录中目标目录缺失的 DLL（如 cudart 等 CUDA 运行时）及元数据文件，best effort
     if backup.exists() {
         if let Ok(entries) = fs::read_dir(&backup) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 let is_dll = path.extension().map(|ext| ext.eq_ignore_ascii_case("dll")).unwrap_or(false);
-                if !is_dll || !path.is_file() {
+                let is_cuda_meta = path.file_name().map(|n| n == "cuda_version.txt").unwrap_or(false);
+                if (!is_dll && !is_cuda_meta) || !path.is_file() {
                     continue;
                 }
                 let name = path.file_name().unwrap_or_default();
@@ -4065,14 +4168,26 @@ fn download_llamacpp_impl(app: AppHandle, backend: String, cuda_version: Option<
         return Err(error);
     }
 
-    // 4.5) cuda 后端：需要配套的 cudart 运行时包。
-    // 若安装目录已存在同主版本的 CUDA 运行时 dll（如 cudart64_12.dll）则跳过下载；
-    // 否则下载并缓存到应用数据目录 llamacpp_cache：缓存存在则直接解压复用；
-    // 缓存损坏时自动删除并回退重新下载，避免同版本重复走网络。
+    // 4.5) cuda 后端：检查是否需要配套的 cudart 运行时包。
+    // 若当前安装目录中已具备同主版本且完整的 CUDA 运行时 DLL（如 cudart64_12.dll + cublas64_12.dll），
+    // 且 CUDA 版本未发生变化，则无需重新下载与解压 CUDA 运行时包，直接复用现有环境！
     if backend == "cuda" && !cudart_url.is_empty() && !cudart_name.is_empty() {
-        let cuda_major = cuda_full.split('.').next().unwrap_or("").to_string();
-        if !cuda_major.is_empty() && has_cuda_runtime_dll(&target, &cuda_major) {
-            emit_download_progress(&app, "install", 0, 0, 0, 0, format!("已安装 CUDA {} 运行时，跳过下载", cuda_full));
+        let target_cuda_major = if !cuda_full.is_empty() {
+            extract_cuda_major_version(&cuda_full)
+        } else {
+            extract_cuda_major_version(&file_name)
+        };
+
+        let installed_cuda = get_installed_cuda_version(&target);
+        let runtime_complete = !target_cuda_major.is_empty() && is_cuda_runtime_complete(&target, &target_cuda_major);
+        let same_version = installed_cuda
+            .as_deref()
+            .map(|v| extract_cuda_major_version(v) == target_cuda_major)
+            .unwrap_or(false);
+
+        if runtime_complete && same_version {
+            let display_ver = if !cuda_full.is_empty() { cuda_full.as_str() } else { target_cuda_major.as_str() };
+            emit_download_progress(&app, "install", 0, 0, 0, 0, format!("检测到已有完整的 CUDA {} 运行时且未发生变更，复用现有环境，跳过下载", display_ver));
         } else {
             let cache_dir = app.path().app_data_dir().map_err(|e| e.to_string())?.join("llamacpp_cache");
             fs::create_dir_all(&cache_dir).map_err(|e| format!("创建 CUDA 缓存目录失败：{}", e))?;
@@ -4125,8 +4240,7 @@ fn download_llamacpp_impl(app: AppHandle, backend: String, cuda_version: Option<
         return Err(error);
     }
     if backend == "cuda" && !cuda_full.is_empty() {
-        let _ = fs::write(target.join("cuda_version.txt"), format!("{}
-", cuda_full));
+        let _ = fs::write(target.join("cuda_version.txt"), format!("{}\n", cuda_full));
     }
 
     // 7) 更新配置：serverPath 指向新引擎，并持久化安装目录；若当前在多分支中，同步更新该分支信息
@@ -4136,15 +4250,26 @@ fn download_llamacpp_impl(app: AppHandle, backend: String, cuda_version: Option<
     let new_path_str = new_server_path.to_string_lossy().to_string();
     updated.server_path = new_path_str.clone();
     updated.llamacpp_dir = Some(target.to_string_lossy().to_string());
+    let saved_cuda_ver = if backend == "cuda" {
+        if !cuda_full.is_empty() {
+            Some(cuda_full.clone())
+        } else {
+            get_installed_cuda_version(&target)
+        }
+    } else {
+        None
+    };
     if let Some(active_id) = updated.active_engine_id.as_ref() {
         if let Some(active_eng) = updated.engines.iter_mut().find(|e| &e.id == active_id) {
             active_eng.path = new_path_str.clone();
             active_eng.backend = Some(backend.clone());
+            active_eng.cuda_version = saved_cuda_ver.clone();
             active_eng.version = Some(version.clone());
         }
     } else if !updated.engines.is_empty() {
         updated.engines[0].path = new_path_str.clone();
         updated.engines[0].backend = Some(backend.clone());
+        updated.engines[0].cuda_version = saved_cuda_ver;
         updated.engines[0].version = Some(version.clone());
     }
     save_config(app.clone(), updated)?;
@@ -4235,6 +4360,24 @@ mod tests {
         assert_eq!(candidates.len(), 1, "RPC 和 CLI 必须被排除，仅保留标准 server");
         assert_eq!(candidates[0].name, "llama-server.exe");
         let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn extract_cuda_version_patterns() {
+        use super::{extract_cuda_full_version, extract_cuda_major_version};
+        assert_eq!(extract_cuda_full_version("llama-b11149-bin-win-cuda-12.4-x64.zip"), "12.4");
+        assert_eq!(extract_cuda_major_version("12.4"), "12");
+
+        assert_eq!(extract_cuda_full_version("llama-b11149-bin-win-cuda-13.4-x64.zip"), "13.4");
+        assert_eq!(extract_cuda_major_version("13.4"), "13");
+
+        assert_eq!(extract_cuda_full_version("llama-b5000-bin-win-cuda-cu12.4-x64.zip"), "12.4");
+        assert_eq!(extract_cuda_full_version("cudart-llama-bin-win-cuda-12.4-x64.zip"), "12.4");
+        assert_eq!(extract_cuda_full_version("cudart-llama-bin-win-cu12.4-x64.zip"), "12.4");
+        assert_eq!(extract_cuda_full_version("e:\\ai\\kvmem-v0.16.0-rc3-windows-x86_64-cuda13.2.86\\bin"), "13.2.86");
+        assert_eq!(extract_cuda_major_version("13.2.86"), "13");
+
+        assert_eq!(extract_cuda_full_version("llama-b11149-bin-win-vulkan-x64.zip"), "");
     }
 }
 

@@ -3,7 +3,7 @@ import type React from "react";
 import { useI18n } from "../i18n";
 import { useEffect, useRef, useState } from "react";
 import type { LlamaLogPayload, ServerStatus } from "../types";
-import { cn, lineKind, timeLabel } from "../utils";
+import { cn, formatEngineBackend, lineKind, timeLabel } from "../utils";
 
 interface LogDockProps {
   /** Dock 是否展开；收起时只显示底部状态栏（不遮挡 WebUI，WebUI 获得全部剩余高度） */
@@ -22,6 +22,8 @@ interface LogDockProps {
   activeEngineName?: string;
   /** 当前主引擎计算后端 */
   activeEngineBackend?: string;
+  /** 当前主引擎 CUDA 版本 */
+  activeEngineCudaVersion?: string;
   /** 点击快速切换引擎面板 */
   onOpenEnginePicker?: () => void;
   onToggle: () => void;
@@ -44,6 +46,7 @@ export default function LogDock({
   tokPerSec,
   activeEngineName,
   activeEngineBackend,
+  activeEngineCudaVersion,
   onOpenEnginePicker,
   onToggle,
   onHeightChange,
@@ -143,7 +146,9 @@ export default function LogDock({
               <Zap size={11} className="dock-engine-zap" />
               <span className="dock-engine-name">{activeEngineName}</span>
               {activeEngineBackend && (
-                <span className="dock-engine-backend">{activeEngineBackend.toUpperCase()}</span>
+                <span className="dock-engine-backend">
+                  {formatEngineBackend(activeEngineBackend, activeEngineCudaVersion)}
+                </span>
               )}
             </button>
           )}

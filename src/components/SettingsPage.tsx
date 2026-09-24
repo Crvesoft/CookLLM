@@ -2,7 +2,7 @@ import { Activity, AlertTriangle, ArrowRight, Check, ChevronRight, Cpu, Download
 import { useEffect, useRef, useState } from "react";
 import { APP_REPO, PROJECT_URL } from "../data";
 import { useI18n } from "../i18n";
-import { cn, formatBytes, formatMB } from "../utils";
+import { cn, formatBytes, formatMB, formatEngineBackend } from "../utils";
 import { cancelLlamaCppUpdate, checkLlamaCppUpdate, checkOrphanServer, detectHardware, downloadLlamaCpp, getAppVersion, getGpuInfo, getLlamaCppStatus, getModelsDir, getSystemProxy, hfWhoami, onDownloadProgress, openConfigDir, openExternal, pickModelsDir, pickServerDir, pickServerFile, revealInFolder, testProxyConnection, type DownloadProgress, type GpuInfo, type HardwareSuggestion, type LlamaCppLocalStatus, type LlamaCppRelease, type OrphanProcessItem, type ProxyTestResult, type ServerCandidate, type UpdateCheckResult } from "../tauri";
 import type { AppConfig, DiskUsage, LlamaEngine, LlamaLogPayload } from "../types";
 import ConfirmModal from "./ConfirmModal";
@@ -506,7 +506,10 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
                 <span className="engine-unified-label">{t("llama.currentBranchPrefix")}</span>
                 <span className="engine-unified-name">{activeEngine?.name || "llama.cpp"}</span>
                 <span className="engine-pill-tag backend">
-                  {activeEngine?.backend?.toUpperCase() || "CUDA"}
+                  {formatEngineBackend(
+                    activeEngine?.backend,
+                    activeEngine?.cudaVersion || (activeEngine?.id === config.activeEngineId || !config.activeEngineId ? engineStatus?.cudaVersion : undefined)
+                  )}
                 </span>
                 {(activeEngine?.version || engineStatus?.localVersion) && (
                   <span className="engine-pill-tag version">
