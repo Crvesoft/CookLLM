@@ -5,6 +5,19 @@
       // 最早启动计时锚点：记录文档解析开始时间（performance 相对值 + 墙上时间），供 main.tsx 上报 splash/React 挂载耗时
       window.__startup = { t0: performance.now(), wall0: Date.now(), domReady: 0 };
       document.addEventListener("DOMContentLoaded", () => { window.__startup.domReady = Date.now(); }, { once: true });
+      // 启动前同步应用主题：立即设置 data-theme，消除样式重算与黑白闪烁
+      try {
+        var t = localStorage.getItem("cookllm.theme");
+        if (!t) {
+          var c = localStorage.getItem("cookllm-config");
+          if (c) {
+            var p = JSON.parse(c);
+            if (p && p.theme) t = p.theme;
+          }
+        }
+        var activeTheme = t === "dark" ? "dark" : "light";
+        document.documentElement.setAttribute("data-theme", activeTheme);
+      } catch (e) {}
     </script>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />

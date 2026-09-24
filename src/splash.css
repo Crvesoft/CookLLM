@@ -1,16 +1,52 @@
-/* 启动 splash：JS 未就绪前避免黑屏，React 挂载后 #splash 被替换 */
-html, body { margin: 0; background: #080b10; }
+/* 启动 splash：JS 未就绪前避免白屏/黑屏，React 挂载后 #splash 被完整替换 */
+html, body {
+  margin: 0;
+  background: #f2f4f9;
+  color-scheme: light;
+}
+
 #splash {
-  height: 100vh; display: flex; flex-direction: column; align-items: center;
-  justify-content: center; gap: 18px; background: radial-gradient(circle at 72% 0%, rgba(238,155,85,.12), transparent 29%), #080b10;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  background: radial-gradient(circle at 72% 0%, rgba(255, 107, 40, .10), transparent 29%), #f2f4f9;
   font-family: Inter, "Noto Sans SC", system-ui, sans-serif;
 }
+
 #splash .mark { display: grid; place-items: center; }
-#splash .title { margin-top: 2px; color: #eef2f8; font-size: 20px; font-weight: 600; letter-spacing: -.02em; }
-#splash .subtitle { margin-top: 5px; color: #6f7888; font: 600 11px/1 Inter, system-ui, sans-serif; letter-spacing: .16em; text-transform: uppercase; }
+#splash .title { margin-top: 2px; color: #141a24; font-size: 20px; font-weight: 600; letter-spacing: -.02em; }
+#splash .subtitle { margin-top: 5px; color: #5c6575; font: 600 11px/1 Inter, system-ui, sans-serif; letter-spacing: .16em; text-transform: uppercase; }
 #splash .spinner {
   margin-top: 10px; width: 20px; height: 20px; border-radius: 50%;
-  border: 2px solid #2a3443; border-top-color: #ee9b55;
+  border: 2px solid #dfe4ed; border-top-color: #ee9b55;
   animation: splash-spin 0.9s linear infinite;
 }
+
 @keyframes splash-spin { to { transform: rotate(360deg); } }
+
+/* 暗色主题启动屏 */
+[data-theme="dark"] html,
+[data-theme="dark"] body {
+  background: #181818;
+  color-scheme: dark;
+}
+
+[data-theme="dark"] #splash {
+  background: radial-gradient(circle at 72% 0%, rgba(255, 107, 40, .12), transparent 29%), #181818;
+}
+
+[data-theme="dark"] #splash .title {
+  color: #eef2f8;
+}
+
+[data-theme="dark"] #splash .subtitle {
+  color: #6f7888;
+}
+
+[data-theme="dark"] #splash .spinner {
+  border-color: #2a3443;
+  border-top-color: #ee9b55;
+}

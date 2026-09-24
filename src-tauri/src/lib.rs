@@ -1787,13 +1787,22 @@ fn clipboard_write(text: String) -> Result<(), String> {
 fn configure_main_window(app: &mut tauri::App) -> tauri::Result<()> {
     let navigation_handle = app.handle().clone();
     let new_window_handle = app.handle().clone();
-    let window_config = app
+    let mut window_config = app
         .config()
         .app
         .windows
         .first()
         .cloned()
         .ok_or_else(|| tauri::Error::WindowNotFound)?;
+
+    let config = read_config(&app.handle()).unwrap_or_default();
+    let is_dark = config.theme.as_deref() == Some("dark");
+    window_config.background_color = if is_dark {
+        Some(tauri::utils::config::Color(24, 24, 24, 255))
+    } else {
+        Some(tauri::utils::config::Color(242, 244, 249, 255))
+    };
+
     let window = tauri::WebviewWindowBuilder::from_config(app.handle(), &window_config)?
         .enable_clipboard_access()
         .initialization_script_for_all_frames(IFRAME_BRIDGE_SCRIPT)
@@ -1811,6 +1820,14 @@ fn configure_main_window(app: &mut tauri::App) -> tauri::Result<()> {
             NewWindowResponse::Deny
         })
         .build()?;
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Ok(hwnd) = window.hwnd() {
+            let raw: *mut std::ffi::c_void = unsafe { std::mem::transmute(hwnd) };
+            titlebar::set_dark_mode(raw, is_dark);
+        }
+    }
 
     let win = window.clone();
     let app_handle = app.handle().clone();

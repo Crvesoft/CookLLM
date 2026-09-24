@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
 import { DEMO_CONFIG, DEFAULT_PROFILES, INITIAL_LOGS, migrateConfig, uid } from "./data";
 import { setLocale, useI18n } from "./i18n";
 import { checkForUpdate, checkOrphanServer, getGpuStats, getModelsDir, getServerStatus, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, isTauri, killOrphanServer, loadConfig, onLlamaLog, openExternal, pickModelsDir, removeLocalFile, revealInFolder, saveConfig, setWindowTheme, startServer, stopServer, type OrphanProcessItem, type UpdateCheckResult } from "./tauri";
@@ -336,7 +337,41 @@ export default function App() {
 
   /** 默认亮色主题；同时把标题栏同步给系统（Windows：暗色=黑，亮色=默认） */
   const theme = config.theme || "light";
-  useEffect(() => { document.documentElement.setAttribute("data-theme", theme); void setWindowTheme(theme === "dark"); }, [theme]);
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", theme);
+    try {
+      localStorage.setItem("cookllm.theme", theme);
+    } catch {}
+    void setWindowTheme(theme === "dark");
+  }, [theme]);
+
+  /** 首帧完成渲染后显示窗口：使用双 requestAnimationFrame 确保 React DOM 真正绘制到 WebView2 缓冲区后再显示窗口，彻底消除黑屏与闪烁 */
+  useLayoutEffect(() => {
+    if (!isTauri()) return;
+    let cancelled = false;
+    let count = 0;
+    const checkFrame = () => {
+      if (cancelled) return;
+      count++;
+      if (count >= 2) {
+        invoke("show_main_window").catch(() => {});
+        const now = Date.now();
+        const startup = window.__startup;
+        invoke("report_startup_timing", {
+          pageLoadMs: startup?.wall0 ?? now,
+          splashShownMs: startup?.domReady || now,
+          reactMountedMs: now,
+        }).catch(() => {});
+      } else {
+        requestAnimationFrame(checkFrame);
+      }
+    };
+    requestAnimationFrame(checkFrame);
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => { if (!toast) return; const timeout = window.setTimeout(() => setToast(null), 2200); return () => window.clearTimeout(timeout); }, [toast]);
 
   // 离开会话页时自动退出沉浸模式
