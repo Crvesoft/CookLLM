@@ -4372,6 +4372,61 @@ select:disabled {
   flex-wrap: wrap;
 }
 
+.engine-backend-control-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.engine-cuda-picker {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px 0 10px;
+  border: 1px solid #3c3c3c;
+  border-radius: 8px;
+  background: #1f1f1f;
+  transition: border-color .15s, background .15s;
+}
+
+.engine-cuda-picker:hover {
+  border-color: #52525b;
+}
+
+.engine-cuda-picker-label {
+  font-size: 11.5px;
+  color: #a1a1aa;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.engine-cuda-picker-select {
+  height: 22px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 5px;
+  outline: none;
+  background: #27272a;
+  color: #ffd3a0;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  color-scheme: dark;
+  transition: background .15s, color .15s;
+}
+
+.engine-cuda-picker-select:hover {
+  background: #323238;
+}
+
+.engine-cuda-picker-select option {
+  background: #18181b;
+  color: #f4f4f5;
+  font-weight: 500;
+}
+
 .engine-unified-version-group {
   display: flex;
   align-items: center;
@@ -5271,6 +5326,34 @@ select:disabled {
 
 [data-theme="light"] .engine-unified-divider {
   background: #f1f5f9;
+}
+
+[data-theme="light"] .engine-cuda-picker {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+}
+
+[data-theme="light"] .engine-cuda-picker:hover {
+  border-color: #cbd5e1;
+}
+
+[data-theme="light"] .engine-cuda-picker-label {
+  color: #64748b;
+}
+
+[data-theme="light"] .engine-cuda-picker-select {
+  background: #e2e8f0;
+  color: #0f172a;
+  color-scheme: light;
+}
+
+[data-theme="light"] .engine-cuda-picker-select:hover {
+  background: #cbd5e1;
+}
+
+[data-theme="light"] .engine-cuda-picker-select option {
+  background: #ffffff;
+  color: #0f172a;
 }
 
 [data-theme="light"] .engine-ver-item .ver-key {

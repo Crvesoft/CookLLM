@@ -251,23 +251,36 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
       else if (st?.localBackend) setBackend(st.localBackend);
     } catch { /* 非 Tauri 环境忽略 */ }
   };
-  useEffect(() => { void refreshEngine(); }, []);
+  useEffect(() => {
+    void refreshEngine();
+    void ensureRemote(undefined, undefined, true);
+  }, []);
 
   /** 检查远程最新版本并与本地版本比对；检查更新 / 一键更新 / 强制重装三处共用的前置步骤 */
-  const ensureRemote = async (): Promise<LlamaCppRelease | null> => {
-    setChecking(true); setEngineError(null);
+  const ensureRemote = async (
+    overrideBackend?: "cuda" | "vulkan" | "cpu",
+    overrideCuda?: string,
+    silent = false
+  ): Promise<LlamaCppRelease | null> => {
+    const useBackend = overrideBackend ?? backend;
+    const useCuda = overrideCuda ?? cudaVersion;
+    setChecking(true);
+    if (!silent) setEngineError(null);
     try {
-      const result = await checkLlamaCppUpdate(backend, cudaVersion);
+      const result = await checkLlamaCppUpdate(useBackend, useCuda);
       const local = engineStatus?.localVersion ?? "";
-      const upToDate = !!local && result.tag.toLowerCase().endsWith(local.toLowerCase());
+      const isSameBackend = engineStatus?.localBackend ? engineStatus.localBackend === useBackend : true;
+      const upToDate = !!local && isSameBackend && result.tag.toLowerCase().endsWith(local.toLowerCase());
       const next = { ...result, upToDate };
       setRemote(next);
       return next;
     } catch (error) {
-      setEngineError(error instanceof Error ? error.message : String(error));
+      if (!silent) setEngineError(error instanceof Error ? error.message : String(error));
       setRemote(null);
       return null;
-    } finally { setChecking(false); }
+    } finally {
+      setChecking(false);
+    }
   };
 
   const runCheck = async () => {
@@ -280,12 +293,24 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
     checkResultTimer.current = window.setTimeout(() => setCheckResult(null), 2000);
   };
 
-    const backendLabel = (value: "cuda" | "vulkan" | "cpu") => value.toUpperCase();
-  // 从远程资产提取可用的 CUDA 主版本（去重、降序）
-  const cudaOptions = Array.from(new Set((remote?.assets ?? [])
-    .filter((asset) => asset.backend === "cuda" && asset.cudaVersion)
-    .map((asset) => asset.cudaVersion as string)))
-    .sort((a, b) => Number(b) - Number(a));
+  const backendLabel = (value: "cuda" | "vulkan" | "cpu") => value.toUpperCase();
+  // 从远程资产提取可用的 CUDA 主版本（去重、降序；远程尚未拉取时提供常用版本候选）
+  const discoveredCuda = Array.from(
+    new Set(
+      (remote?.assets ?? [])
+        .filter((asset) => asset.backend === "cuda" && asset.cudaVersion)
+        .map((asset) => asset.cudaVersion as string)
+    )
+  ).sort((a, b) => Number(b) - Number(a));
+
+  const cudaOptions = discoveredCuda.length > 0 ? discoveredCuda : ["13", "12", "11"];
+
+  const cudaSelectOptions = cudaOptions.map((ver) => {
+    const asset = remote?.assets?.find((a) => a.backend === "cuda" && a.cudaVersion === ver);
+    const full = asset?.cudaFullVersion;
+    const label = full && full !== ver ? `CUDA ${ver} (${full})` : `CUDA ${ver}`;
+    return { value: ver, label };
+  });
 
   // 强制重装：忽略版本比较，直接重新下载安装（用于修复损坏文件）
   const forceReinstall = async () => {
@@ -495,17 +520,44 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
 
               {/* 第二行：硬件加速环境单选 + 版本信息状态 */}
               <div className="engine-unified-status-row">
-                <div className="mini-seg">
-                  {BACKENDS.map((b) => (
-                    <button
-                      key={b.value}
-                      type="button"
-                      className={backend === b.value ? "active" : ""}
-                      onClick={() => setBackend(b.value)}
-                    >
-                      {b.label}
-                    </button>
-                  ))}
+                <div className="engine-backend-control-group">
+                  <div className="mini-seg">
+                    {BACKENDS.map((b) => (
+                      <button
+                        key={b.value}
+                        type="button"
+                        className={backend === b.value ? "active" : ""}
+                        onClick={() => {
+                          setBackend(b.value);
+                          if (remote) void ensureRemote(b.value, cudaVersion);
+                        }}
+                      >
+                        {b.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {backend === "cuda" && (
+                    <div className="engine-cuda-picker" title={t("llama.cudaVersionLabel")}>
+                      <span className="engine-cuda-picker-label">{t("llama.cudaVersionLabel")}</span>
+                      <select
+                        className="engine-cuda-picker-select"
+                        value={cudaVersion}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setCudaVersion(val);
+                          if (remote) void ensureRemote(backend, val);
+                        }}
+                      >
+                        <option value="auto">{t("llama.cudaAuto")}</option>
+                        {cudaSelectOptions.map((opt) => (
+                          <option key={opt.value} value={opt.value}>
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
                 </div>
 
                 <div className="engine-unified-version-group">

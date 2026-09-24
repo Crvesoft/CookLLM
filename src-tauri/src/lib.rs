@@ -3306,7 +3306,7 @@ fn get_llamacpp_status(app: AppHandle, custom_path: Option<String>) -> Result<Ll
             }
         } else {
             let path_text = bin_dir.to_string_lossy().to_lowercase();
-            let has_cuda = path_text.contains("cuda") || has_cuda_runtime_dll(&bin_dir, "12") || has_cuda_runtime_dll(&bin_dir, "11");
+            let has_cuda = path_text.contains("cuda") || has_cuda_runtime_dll(&bin_dir, "13") || has_cuda_runtime_dll(&bin_dir, "12") || has_cuda_runtime_dll(&bin_dir, "11");
             let has_vulkan = path_text.contains("vulkan") || bin_dir.join("vulkan-1.dll").is_file();
             local_backend = if has_cuda { "cuda" } else if has_vulkan { "vulkan" } else { "cpu" }.into();
         }
@@ -3722,10 +3722,10 @@ fn pick_asset<'a>(assets: &'a [LlamaCppAsset], backend: &'a str, cuda_version: &
             let version = if cuda_version == "auto" || cuda_version.is_empty() { "12" } else { cuda_version };
             assets
                 .iter()
-                .find(|asset| asset.backend == "cuda" && asset.cuda_version == version)
+                .find(|asset| asset.backend == "cuda" && (asset.cuda_version == version || asset.cuda_full_version == version))
                 .or_else(|| {
                     if cuda_version == "auto" || cuda_version.is_empty() {
-                        assets.iter().find(|asset| asset.backend == "cuda" && asset.cuda_version == "13")
+                        assets.iter().find(|asset| asset.backend == "cuda" && (asset.cuda_version == "13" || asset.cuda_full_version.starts_with("13")))
                     } else {
                         None
                     }

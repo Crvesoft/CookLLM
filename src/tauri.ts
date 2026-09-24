@@ -249,6 +249,8 @@ export interface LlamaCppAsset {
   backend: "cuda" | "vulkan" | "cpu";
   /** CUDA 主版本（如 "12" / "13"）；非 cuda 后端为空字符串 */
   cudaVersion?: string;
+  /** CUDA 完整版本（如 "12.4" / "13.4"）；非 cuda 后端为空字符串 */
+  cudaFullVersion?: string;
   fileName: string;
   url: string;
   size: number;
