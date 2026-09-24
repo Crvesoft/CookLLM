@@ -4306,7 +4306,9 @@ select:disabled {
   background: #18181b;
   border: 1px solid #27272a;
   border-radius: 10px;
-  overflow: hidden;
+  overflow: visible;
+  position: relative;
+  z-index: 20;
   margin-top: 2px;
 }
 
@@ -4317,6 +4319,7 @@ select:disabled {
   gap: 10px;
   padding: 12px 16px;
   flex-wrap: wrap;
+  border-radius: 10px 10px 0 0;
 }
 
 .engine-unified-label {
@@ -4370,6 +4373,7 @@ select:disabled {
   gap: 16px;
   padding: 10px 16px;
   flex-wrap: wrap;
+  border-radius: 0 0 10px 10px;
 }
 
 .engine-backend-control-group {
