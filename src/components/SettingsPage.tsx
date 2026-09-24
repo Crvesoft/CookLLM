@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, ArrowRight, Check, ChevronRight, Cpu, Download, Eye, EyeOff, FolderOpen, Github, KeyRound, Languages, Loader2, Moon, Pencil, Plus, RefreshCw, RotateCw, Search, SlidersHorizontal, Sparkles, Star, Sun, Trash2, Wifi, Wrench, X, Zap } from "lucide-react";
+import { Activity, AlertTriangle, ArrowRight, Check, ChevronDown, ChevronRight, Cpu, Download, Eye, EyeOff, FolderOpen, Github, KeyRound, Languages, Loader2, Moon, Pencil, Plus, RefreshCw, RotateCw, Search, SlidersHorizontal, Sparkles, Star, Sun, Trash2, Wifi, Wrench, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { APP_REPO, PROJECT_URL } from "../data";
 import { useI18n } from "../i18n";
@@ -220,12 +220,32 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
   const [remote, setRemote] = useState<LlamaCppRelease | null>(null);
   const [checking, setChecking] = useState(false);
   const [backend, setBackend] = useState<"cuda" | "vulkan" | "cpu">("cuda");
-  const [cudaVersion, setCudaVersion] = useState("auto");
+  const [cudaVersion, setCudaVersion] = useState("12");
+  const [cudaMenuOpen, setCudaMenuOpen] = useState(false);
+  const cudaMenuRef = useRef<HTMLDivElement>(null);
   const [updating, setUpdating] = useState(false);
   const [progress, setProgress] = useState<DownloadProgress | null>(null);
   const [engineError, setEngineError] = useState<string | null>(null);
   const [checkResult, setCheckResult] = useState<"updated" | "new" | null>(null);
   const checkResultTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!cudaMenuOpen) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      if (cudaMenuRef.current && !cudaMenuRef.current.contains(e.target as Node)) {
+        setCudaMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setCudaMenuOpen(false);
+    };
+    window.addEventListener("mousedown", handleClickOutside);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("mousedown", handleClickOutside);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [cudaMenuOpen]);
 
   const BACKENDS: Array<{ value: "cuda" | "vulkan" | "cpu"; label: string }> = [
     { value: "cuda", label: "CUDA" },
@@ -249,6 +269,10 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
       }
       if (hw) setBackend(hw.recommendedBackend);
       else if (st?.localBackend) setBackend(st.localBackend);
+      if (st?.cudaVersion) {
+        const major = st.cudaVersion.split(".")[0];
+        if (major) setCudaVersion(major);
+      }
     } catch { /* 非 Tauri 环境忽略 */ }
   };
   useEffect(() => {
@@ -303,14 +327,27 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
     )
   ).sort((a, b) => Number(b) - Number(a));
 
-  const cudaOptions = discoveredCuda.length > 0 ? discoveredCuda : ["13", "12", "11"];
+  const cudaOptions = discoveredCuda.length > 0 ? discoveredCuda : ["12", "11"];
 
   const cudaSelectOptions = cudaOptions.map((ver) => {
     const asset = remote?.assets?.find((a) => a.backend === "cuda" && a.cudaVersion === ver);
-    const full = asset?.cudaFullVersion;
+    const full = asset?.cudaFullVersion || (ver === "12" ? "12.4" : ver === "11" ? "11.8" : ver === "13" ? "13.4" : ver);
     const label = full && full !== ver ? `CUDA ${ver} (${full})` : `CUDA ${ver}`;
-    return { value: ver, label };
+    return { value: ver, label, full };
   });
+
+  const getCudaDisplayShort = () => {
+    if (cudaVersion && cudaVersion !== "auto") {
+      const opt = cudaSelectOptions.find((o) => o.value === cudaVersion);
+      if (opt?.full) return opt.full;
+      if (cudaVersion === "12") return "12.4";
+      if (cudaVersion === "11") return "11.8";
+      return cudaVersion;
+    }
+    if (engineStatus?.cudaVersion) return engineStatus.cudaVersion;
+    if (activeEngine?.cudaVersion) return activeEngine.cudaVersion;
+    return cudaSelectOptions[0]?.full || "12.4";
+  };
 
   // 强制重装：忽略版本比较，直接重新下载安装（用于修复损坏文件）
   const forceReinstall = async () => {
@@ -524,43 +561,113 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
               {/* 第二行：硬件加速环境单选 + 版本信息状态 */}
               <div className="engine-unified-status-row">
                 <div className="engine-backend-control-group">
-                  <div className="mini-seg">
-                    {BACKENDS.map((b) => (
+                  <div className="mini-seg engine-backend-seg" ref={cudaMenuRef}>
+                    {/* CUDA 复合胶囊按钮 */}
+                    <div className={cn("mini-seg-item cuda-compound-pill", backend === "cuda" && "active")}>
                       <button
-                        key={b.value}
                         type="button"
-                        className={backend === b.value ? "active" : ""}
+                        className="cuda-text-btn"
                         onClick={() => {
-                          setBackend(b.value);
-                          if (remote) void ensureRemote(b.value, cudaVersion);
+                          setBackend("cuda");
+                          if (backend === "cuda") {
+                            // 若已处于 CUDA 分支，再次点击 CUDA 文本也可顺畅触发/收起版本菜单
+                            setCudaMenuOpen((prev) => !prev);
+                          } else {
+                            setCudaMenuOpen(false);
+                            if (remote) void ensureRemote("cuda", cudaVersion);
+                          }
                         }}
                       >
-                        {b.label}
+                        CUDA
                       </button>
-                    ))}
-                  </div>
 
-                  {backend === "cuda" && (
-                    <div className="engine-cuda-picker" title={t("llama.cudaVersionLabel")}>
-                      <span className="engine-cuda-picker-label">{t("llama.cudaVersionLabel")}</span>
-                      <select
-                        className="engine-cuda-picker-select"
-                        value={cudaVersion}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setCudaVersion(val);
-                          if (remote) void ensureRemote(backend, val);
+                      <button
+                        type="button"
+                        className={cn("cuda-dropdown-trigger", cudaMenuOpen && "open")}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (backend !== "cuda") {
+                            setBackend("cuda");
+                            if (remote) void ensureRemote("cuda", cudaVersion);
+                          }
+                          setCudaMenuOpen((prev) => !prev);
                         }}
+                        title={t("llama.cudaVersionLabel")}
                       >
-                        <option value="auto">{t("llama.cudaAuto")}</option>
-                        {cudaSelectOptions.map((opt) => (
-                          <option key={opt.value} value={opt.value}>
-                            {opt.label}
-                          </option>
-                        ))}
-                      </select>
+                        <span className="cuda-version-badge">({getCudaDisplayShort()})</span>
+                        <ChevronDown size={11} className={cn("cuda-chevron", cudaMenuOpen && "open")} />
+                      </button>
+
+                      {/* 浮动下拉菜单 */}
+                      {cudaMenuOpen && (
+                        <div className="cuda-version-dropdown-menu" onClick={(e) => e.stopPropagation()}>
+                          <div className="cuda-dropdown-list">
+                            {cudaSelectOptions.map((opt) => {
+                              const isSelected = cudaVersion === opt.value || (cudaVersion === "auto" && opt.value === "12");
+                              return (
+                                <button
+                                  key={opt.value}
+                                  type="button"
+                                  className={cn("cuda-dropdown-item", isSelected && "selected")}
+                                  onClick={() => {
+                                    setCudaVersion(opt.value);
+                                    if (remote) void ensureRemote("cuda", opt.value);
+                                    setCudaMenuOpen(false);
+                                  }}
+                                >
+                                  <span className="opt-label">{opt.label}</span>
+                                  {isSelected && <Check size={13} className="opt-check" />}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          <div className="cuda-dropdown-divider" />
+                          <button
+                            type="button"
+                            className="cuda-dropdown-action"
+                            onClick={() => {
+                              setCudaMenuOpen(false);
+                              onOpenEngineHub?.();
+                            }}
+                          >
+                            <Wrench size={12} />
+                            <span>{t("llama.manageHubBtn")}</span>
+                            <kbd className="engine-kbd">Ctrl+E</kbd>
+                          </button>
+                        </div>
+                      )}
                     </div>
-                  )}
+
+                    <span className="mini-seg-divider" />
+
+                    {/* Vulkan */}
+                    <button
+                      type="button"
+                      className={cn("mini-seg-btn", backend === "vulkan" && "active")}
+                      onClick={() => {
+                        setCudaMenuOpen(false);
+                        setBackend("vulkan");
+                        if (remote) void ensureRemote("vulkan", cudaVersion);
+                      }}
+                    >
+                      Vulkan
+                    </button>
+
+                    <span className="mini-seg-divider" />
+
+                    {/* CPU */}
+                    <button
+                      type="button"
+                      className={cn("mini-seg-btn", backend === "cpu" && "active")}
+                      onClick={() => {
+                        setCudaMenuOpen(false);
+                        setBackend("cpu");
+                        if (remote) void ensureRemote("cpu", cudaVersion);
+                      }}
+                    >
+                      CPU
+                    </button>
+                  </div>
                 </div>
 
                 <div className="engine-unified-version-group">

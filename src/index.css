@@ -4379,52 +4379,203 @@ select:disabled {
   flex-wrap: wrap;
 }
 
-.engine-cuda-picker {
+/* 组合胶囊分段栏与 CUDA 复合下拉 (方案 B) */
+.engine-backend-seg {
+  position: relative;
+  align-items: center;
+}
+
+.mini-seg-divider {
+  width: 1px;
+  height: 14px;
+  background: #3c3c3c;
+  align-self: center;
+  margin: 0 1px;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.cuda-compound-pill {
+  position: relative;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  height: 30px;
-  padding: 0 8px 0 10px;
-  border: 1px solid #3c3c3c;
-  border-radius: 8px;
-  background: #1f1f1f;
-  transition: border-color .15s, background .15s;
+  border-radius: 6px;
+  transition: all 0.15s ease;
 }
 
-.engine-cuda-picker:hover {
-  border-color: #52525b;
-}
-
-.engine-cuda-picker-label {
-  font-size: 11.5px;
-  color: #a1a1aa;
-  white-space: nowrap;
-  user-select: none;
-}
-
-.engine-cuda-picker-select {
-  height: 22px;
-  padding: 0 6px;
-  border: 0;
-  border-radius: 5px;
-  outline: none;
-  background: #27272a;
+.cuda-compound-pill.active {
   color: #ffd3a0;
-  font-size: 11.5px;
+  background: #2b1c10;
+}
+
+.cuda-compound-pill:not(.active) {
+  color: #7a8598;
+  background: transparent;
+}
+
+.cuda-compound-pill:not(.active):hover {
+  color: #cbd2de;
+}
+
+.cuda-compound-pill .cuda-text-btn {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 3px 5px 10px;
+  border: 0;
+  border-radius: 6px 0 0 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  color-scheme: dark;
-  transition: background .15s, color .15s;
+  transition: opacity 0.15s ease;
 }
 
-.engine-cuda-picker-select:hover {
-  background: #323238;
+.cuda-compound-pill .cuda-text-btn:hover {
+  opacity: 0.85;
 }
 
-.engine-cuda-picker-select option {
-  background: #18181b;
-  color: #f4f4f5;
+.cuda-compound-pill .cuda-dropdown-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2.5px 6px;
+  margin-right: 3px;
+  margin-left: 1px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 0.15s ease, opacity 0.15s ease;
+}
+
+.cuda-compound-pill.active .cuda-dropdown-trigger:hover,
+.cuda-compound-pill.active .cuda-dropdown-trigger.open {
+  background: rgba(255, 211, 160, 0.18);
+}
+
+.cuda-compound-pill:not(.active) .cuda-dropdown-trigger:hover,
+.cuda-compound-pill:not(.active) .cuda-dropdown-trigger.open {
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
+}
+
+.cuda-version-badge {
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+  opacity: 0.95;
+}
+
+.cuda-chevron {
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  opacity: 0.75;
+}
+
+.cuda-chevron.open {
+  transform: rotate(180deg);
+  opacity: 1;
+}
+
+/* 浮动下拉菜单 */
+.cuda-version-dropdown-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  min-width: 176px;
+  background: #1e1e24;
+  border: 1px solid #383842;
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  z-index: 120;
+  animation: cudaMenuFadeIn 0.15s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes cudaMenuFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.cuda-dropdown-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cuda-dropdown-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #cbd5e1;
+  font-size: 12px;
   font-weight: 500;
+  cursor: pointer;
+  text-align: left;
+  transition: background 0.12s, color 0.12s;
+}
+
+.cuda-dropdown-item:hover {
+  background: #2a2a34;
+  color: #ffffff;
+}
+
+.cuda-dropdown-item.selected {
+  background: #2b1c10;
+  color: #ffd3a0;
+  font-weight: 600;
+}
+
+.cuda-dropdown-item .opt-check {
+  color: #ffd3a0;
+  margin-left: 6px;
+  flex-shrink: 0;
+}
+
+.cuda-dropdown-divider {
+  height: 1px;
+  background: #2e2e38;
+  margin: 4px 2px;
+}
+
+.cuda-dropdown-action {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 6px 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #8a94a6;
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.cuda-dropdown-action:hover {
+  background: #2a2a34;
+  color: #cbd5e1;
+}
+
+.cuda-dropdown-action .engine-kbd {
+  margin-left: auto;
+  font-size: 10px;
+  padding: 1px 4px;
 }
 
 .engine-unified-version-group {
@@ -5328,31 +5479,69 @@ select:disabled {
   background: #f1f5f9;
 }
 
-[data-theme="light"] .engine-cuda-picker {
+[data-theme="light"] .mini-seg-divider {
+  background: #d3dbe6;
+  opacity: 0.8;
+}
+
+[data-theme="light"] .cuda-compound-pill.active {
+  color: #b96a10;
+  background: #fdf1dd;
+}
+
+[data-theme="light"] .cuda-compound-pill:not(.active) {
+  color: #6b7384;
+}
+
+[data-theme="light"] .cuda-compound-pill:not(.active):hover {
+  color: #1e293b;
+}
+
+[data-theme="light"] .cuda-compound-pill.active .cuda-dropdown-trigger:hover,
+[data-theme="light"] .cuda-compound-pill.active .cuda-dropdown-trigger.open {
+  background: rgba(185, 106, 16, 0.12);
+}
+
+[data-theme="light"] .cuda-compound-pill:not(.active) .cuda-dropdown-trigger:hover,
+[data-theme="light"] .cuda-compound-pill:not(.active) .cuda-dropdown-trigger.open {
+  background: rgba(0, 0, 0, 0.06);
+  color: #0f172a;
+}
+
+[data-theme="light"] .cuda-version-dropdown-menu {
+  background: #ffffff;
   border-color: #e2e8f0;
-  background: #f8fafc;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.12), 0 2px 6px rgba(15, 23, 42, 0.04);
 }
 
-[data-theme="light"] .engine-cuda-picker:hover {
-  border-color: #cbd5e1;
+[data-theme="light"] .cuda-dropdown-item {
+  color: #334155;
 }
 
-[data-theme="light"] .engine-cuda-picker-label {
+[data-theme="light"] .cuda-dropdown-item:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+[data-theme="light"] .cuda-dropdown-item.selected {
+  background: #fdf1dd;
+  color: #b96a10;
+}
+
+[data-theme="light"] .cuda-dropdown-item .opt-check {
+  color: #b96a10;
+}
+
+[data-theme="light"] .cuda-dropdown-divider {
+  background: #f1f5f9;
+}
+
+[data-theme="light"] .cuda-dropdown-action {
   color: #64748b;
 }
 
-[data-theme="light"] .engine-cuda-picker-select {
-  background: #e2e8f0;
-  color: #0f172a;
-  color-scheme: light;
-}
-
-[data-theme="light"] .engine-cuda-picker-select:hover {
-  background: #cbd5e1;
-}
-
-[data-theme="light"] .engine-cuda-picker-select option {
-  background: #ffffff;
+[data-theme="light"] .cuda-dropdown-action:hover {
+  background: #f8fafc;
   color: #0f172a;
 }
 
