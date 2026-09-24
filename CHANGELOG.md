@@ -2,6 +2,11 @@
 
 本文档是发布流程提取 Release Notes 的唯一数据源（`.github/workflows/release.yml` 会自动读取，请在每次发版前更新本文件）。
 
+## v0.2.8
+
+- 新增 CUDA 版本识别
+- 客户端启动优化
+
 ## v0.2.7
 
 - 新增 llama.cpp 多引擎分支与版本管理体系，支持添加、扫描及主引擎热切换（快捷键 Ctrl+E）
