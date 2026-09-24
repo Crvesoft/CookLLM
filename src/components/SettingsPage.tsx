@@ -666,19 +666,6 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
                               );
                             })}
                           </div>
-                          <div className="cuda-dropdown-divider" />
-                          <button
-                            type="button"
-                            className="cuda-dropdown-action"
-                            onClick={() => {
-                              setCudaMenuOpen(false);
-                              onOpenEngineHub?.();
-                            }}
-                          >
-                            <Wrench size={12} />
-                            <span>{t("llama.manageHubBtn")}</span>
-                            <kbd className="engine-kbd">Ctrl+E</kbd>
-                          </button>
                         </div>
                       )}
                     </div>
