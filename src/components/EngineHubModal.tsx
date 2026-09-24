@@ -105,7 +105,17 @@ export default function EngineHubModal({
       if (selectedEngine.path) {
         setProbing(true);
         void getLlamaCppStatus(selectedEngine.path)
-          .then((st) => setProbeStatus(st))
+          .then((st) => {
+            setProbeStatus(st);
+            if (st?.cudaVersion && st.cudaVersion !== selectedEngine.cudaVersion) {
+              onSaveEngine({
+                ...selectedEngine,
+                cudaVersion: st.cudaVersion,
+                version: st.localVersion || selectedEngine.version,
+                backend: st.localBackend || selectedEngine.backend,
+              });
+            }
+          })
           .catch(() => setProbeStatus(null))
           .finally(() => setProbing(false));
       } else {
@@ -236,7 +246,7 @@ export default function EngineHubModal({
                         >
                           {formatEngineBackend(
                             item.backend,
-                            item.cudaVersion || (item.id === selectedEngine?.id ? probeStatus?.cudaVersion : undefined),
+                            (item.id === selectedEngine?.id && probeStatus?.cudaVersion) ? probeStatus.cudaVersion : item.cudaVersion,
                           )}
                         </span>
                       </div>

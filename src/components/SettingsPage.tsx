@@ -219,8 +219,8 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
   const [engineStatus, setEngineStatus] = useState<LlamaCppLocalStatus | null>(null);
   const [remote, setRemote] = useState<LlamaCppRelease | null>(null);
   const [checking, setChecking] = useState(false);
-  const [backend, setBackend] = useState<"cuda" | "vulkan" | "cpu">("cuda");
-  const [cudaVersion, setCudaVersion] = useState("12");
+  const [backend, setBackend] = useState<"cuda" | "vulkan" | "cpu">(config.llamaBackend || "cuda");
+  const [cudaVersion, setCudaVersion] = useState(config.llamaCudaVersion || "12");
   const [cudaMenuOpen, setCudaMenuOpen] = useState(false);
   const cudaMenuRef = useRef<HTMLDivElement>(null);
   const [updating, setUpdating] = useState(false);
@@ -228,6 +228,11 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
   const [engineError, setEngineError] = useState<string | null>(null);
   const [checkResult, setCheckResult] = useState<"updated" | "new" | null>(null);
   const checkResultTimer = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (config.llamaBackend) setBackend(config.llamaBackend);
+    if (config.llamaCudaVersion) setCudaVersion(config.llamaCudaVersion);
+  }, [config.llamaBackend, config.llamaCudaVersion]);
 
   useEffect(() => {
     if (!cudaMenuOpen) return;
@@ -267,9 +272,17 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
       } else {
         setDetectedServer(null);
       }
-      if (hw) setBackend(hw.recommendedBackend);
-      else if (st?.localBackend) setBackend(st.localBackend);
-      if (st?.cudaVersion) {
+      if (config.llamaBackend) {
+        setBackend(config.llamaBackend);
+      } else if (hw) {
+        setBackend(hw.recommendedBackend);
+      } else if (st?.localBackend) {
+        setBackend(st.localBackend);
+      }
+
+      if (config.llamaCudaVersion) {
+        setCudaVersion(config.llamaCudaVersion);
+      } else if (st?.cudaVersion) {
         const major = st.cudaVersion.split(".")[0];
         if (major) setCudaVersion(major);
       }
@@ -327,7 +340,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
     )
   ).sort((a, b) => Number(b) - Number(a));
 
-  const cudaOptions = discoveredCuda.length > 0 ? discoveredCuda : ["12", "11"];
+  const cudaOptions = discoveredCuda.length > 0 ? discoveredCuda : ["13", "12", "11"];
 
   const cudaSelectOptions = cudaOptions.map((ver) => {
     const asset = remote?.assets?.find((a) => a.backend === "cuda" && a.cudaVersion === ver);
@@ -342,6 +355,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
       if (opt?.full) return opt.full;
       if (cudaVersion === "12") return "12.4";
       if (cudaVersion === "11") return "11.8";
+      if (cudaVersion === "13") return "13.4";
       return cudaVersion;
     }
     if (engineStatus?.cudaVersion) return engineStatus.cudaVersion;
@@ -365,15 +379,43 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
     let cancelled = false;
     try {
       const path = await downloadLlamaCpp({ backend: useBackend, cudaVersion, tag: remote?.tag });
+      const parentDir = path.replace(/[/\\][^/\\]+$/, "");
+      const newStatus = await getLlamaCppStatus(parentDir).catch(() => null);
+      const installedCuda = newStatus?.cudaVersion || (useBackend === "cuda" ? getCudaDisplayShort() : undefined);
+      const installedVer = newStatus?.localVersion || remote?.tag;
+
       let nextEngines = config.engines && config.engines.length > 0 ? [...config.engines] : [];
       if (config.activeEngineId && nextEngines.length > 0) {
         const idx = nextEngines.findIndex((e) => e.id === config.activeEngineId);
         if (idx >= 0) {
-          nextEngines[idx] = { ...nextEngines[idx], path, backend: useBackend, version: remote?.tag };
+          nextEngines[idx] = {
+            ...nextEngines[idx],
+            path,
+            backend: useBackend,
+            cudaVersion: installedCuda,
+            version: installedVer,
+          };
         }
+      } else if (nextEngines.length > 0) {
+        nextEngines[0] = {
+          ...nextEngines[0],
+          path,
+          backend: useBackend,
+          cudaVersion: installedCuda,
+          version: installedVer,
+        };
       }
       setServerPath(path);
-      await onPersist({ ...config, serverPath: path, engines: nextEngines }, "");
+      await onPersist(
+        {
+          ...config,
+          serverPath: path,
+          llamaBackend: useBackend,
+          llamaCudaVersion: cudaVersion,
+          engines: nextEngines,
+        },
+        ""
+      );
       onLog(t("llama.updated", { path }), "system");
       await refreshEngine();
       // 更新已完成：将 remote 标记为已是最新，避免按钮仍显示“立即更新”
@@ -545,7 +587,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
                 <span className="engine-pill-tag backend">
                   {formatEngineBackend(
                     activeEngine?.backend,
-                    activeEngine?.cudaVersion || (activeEngine?.id === config.activeEngineId || !config.activeEngineId ? engineStatus?.cudaVersion : undefined)
+                    (activeEngine?.id === config.activeEngineId || !config.activeEngineId ? engineStatus?.cudaVersion : undefined) || activeEngine?.cudaVersion
                   )}
                 </span>
                 {(activeEngine?.version || engineStatus?.localVersion) && (
@@ -569,6 +611,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
                         className="cuda-text-btn"
                         onClick={() => {
                           setBackend("cuda");
+                          void onPersist({ ...config, llamaBackend: "cuda", llamaCudaVersion: cudaVersion }, "");
                           if (backend === "cuda") {
                             // 若已处于 CUDA 分支，再次点击 CUDA 文本也可顺畅触发/收起版本菜单
                             setCudaMenuOpen((prev) => !prev);
@@ -588,6 +631,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
                           e.stopPropagation();
                           if (backend !== "cuda") {
                             setBackend("cuda");
+                            void onPersist({ ...config, llamaBackend: "cuda", llamaCudaVersion: cudaVersion }, "");
                             if (remote) void ensureRemote("cuda", cudaVersion);
                           }
                           setCudaMenuOpen((prev) => !prev);
@@ -611,6 +655,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
                                   className={cn("cuda-dropdown-item", isSelected && "selected")}
                                   onClick={() => {
                                     setCudaVersion(opt.value);
+                                    void onPersist({ ...config, llamaCudaVersion: opt.value, llamaBackend: "cuda" }, "");
                                     if (remote) void ensureRemote("cuda", opt.value);
                                     setCudaMenuOpen(false);
                                   }}
@@ -647,6 +692,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
                       onClick={() => {
                         setCudaMenuOpen(false);
                         setBackend("vulkan");
+                        void onPersist({ ...config, llamaBackend: "vulkan" }, "");
                         if (remote) void ensureRemote("vulkan", cudaVersion);
                       }}
                     >
@@ -662,6 +708,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
                       onClick={() => {
                         setCudaMenuOpen(false);
                         setBackend("cpu");
+                        void onPersist({ ...config, llamaBackend: "cpu" }, "");
                         if (remote) void ensureRemote("cpu", cudaVersion);
                       }}
                     >

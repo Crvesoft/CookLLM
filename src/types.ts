@@ -114,6 +114,10 @@ export interface AppConfig {
   autoUpdateEnabled?: boolean;
   /** 关闭主窗口时是否最小化到托盘（默认开启） */
   minimizeToTrayOnClose?: boolean;
+  /** llama.cpp 选定的硬件加速后端（cuda / vulkan / cpu） */
+  llamaBackend?: "cuda" | "vulkan" | "cpu";
+  /** llama.cpp 选定的 CUDA 版本偏好（如 "13"、"13.4"、"12" 等） */
+  llamaCudaVersion?: string;
 }
 
 export interface ServerStatus {

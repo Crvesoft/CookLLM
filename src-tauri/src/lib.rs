@@ -187,6 +187,12 @@ struct AppConfig {
     /// 关闭主窗口时是否最小化到托盘（缺省开启）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     minimize_to_tray_on_close: Option<bool>,
+    /// 用户选定的硬件加速后端（cuda / vulkan / cpu）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    llama_backend: Option<String>,
+    /// 用户选定的 CUDA 版本偏好（如 "13"、"13.4"、"12" 等）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    llama_cuda_version: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -239,6 +245,8 @@ impl Default for AppConfig {
             models_dir: None,
             auto_update_enabled: None,
             minimize_to_tray_on_close: None,
+            llama_backend: None,
+            llama_cuda_version: None,
         }
     }
 }
@@ -321,10 +329,10 @@ fn read_config(app: &AppHandle) -> Result<AppConfig, String> {
     let contents = fs::read_to_string(&path).map_err(|error| error.to_string())?;
     let mut config: AppConfig = serde_json::from_str(&contents).map_err(|error| error.to_string())?;
     for eng in &mut config.engines {
-        if eng.backend.as_deref() == Some("cuda") && eng.cuda_version.is_none() {
-            let p = PathBuf::from(&eng.path);
-            if let Some(parent) = p.parent() {
-                eng.cuda_version = get_installed_cuda_version(parent);
+        let p = PathBuf::from(&eng.path);
+        if let Some(parent) = p.parent() {
+            if let Some(installed) = get_installed_cuda_version(parent) {
+                eng.cuda_version = Some(installed);
             }
         }
     }
@@ -3837,11 +3845,17 @@ fn fetch_latest_release_with_assets(client: &reqwest::blocking::Client) -> Resul
 fn pick_asset<'a>(assets: &'a [LlamaCppAsset], backend: &'a str, cuda_version: &'a str) -> Option<&'a LlamaCppAsset> {
     match backend {
         "cuda" => {
-            // 指定了 CUDA 主版本则精确匹配；否则优先 CUDA 12，其次 13，最后任意 cuda
+            // 指定了 CUDA 主版本则精确匹配；若传入 "13.4" 或 "13" 均能命中
             let version = if cuda_version == "auto" || cuda_version.is_empty() { "12" } else { cuda_version };
+            let version_major = extract_cuda_major_version(version);
             assets
                 .iter()
-                .find(|asset| asset.backend == "cuda" && (asset.cuda_version == version || asset.cuda_full_version == version))
+                .find(|asset| {
+                    asset.backend == "cuda"
+                        && (asset.cuda_version == version
+                            || asset.cuda_full_version == version
+                            || (!version_major.is_empty() && (asset.cuda_version == version_major || asset.cuda_full_version.starts_with(&version_major))))
+                })
                 .or_else(|| {
                     if cuda_version == "auto" || cuda_version.is_empty() {
                         assets.iter().find(|asset| asset.backend == "cuda" && (asset.cuda_version == "13" || asset.cuda_full_version.starts_with("13")))
@@ -4250,6 +4264,14 @@ fn download_llamacpp_impl(app: AppHandle, backend: String, cuda_version: Option<
     let new_path_str = new_server_path.to_string_lossy().to_string();
     updated.server_path = new_path_str.clone();
     updated.llamacpp_dir = Some(target.to_string_lossy().to_string());
+    updated.llama_backend = Some(backend.clone());
+    if backend == "cuda" {
+        if !cuda_full.is_empty() {
+            updated.llama_cuda_version = Some(cuda_full.clone());
+        } else if let Some(v) = cuda_version.as_ref() {
+            updated.llama_cuda_version = Some(v.clone());
+        }
+    }
     let saved_cuda_ver = if backend == "cuda" {
         if !cuda_full.is_empty() {
             Some(cuda_full.clone())
