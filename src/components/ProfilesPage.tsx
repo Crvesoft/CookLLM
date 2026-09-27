@@ -124,7 +124,17 @@ export default function ProfilesPage({
       {profile.jinja && <span className="feature-pill" title="Jinja template">Jinja</span>}
       {profile.cacheTypeK !== "f32" && <span className="feature-pill" title={`KV Cache: ${profile.cacheTypeK}`}>{profile.cacheTypeK}</span>}
       {profile.reasoning === "on" && profile.reasoningEffort !== "auto" && <span className="feature-pill" title={`Reasoning: ${profile.reasoningEffort}`}>{profile.reasoningEffort}</span>}
-      {profile.mmprojPath?.trim() && <span className="feature-pill" title={fileName(profile.mmprojPath)}>mmproj</span>}
+      {profile.reasoning !== "off" && profile.reasoning !== "none" && profile.reasoning !== "force-off" && typeof profile.reasoningBudget === "number" && profile.reasoningBudget >= 0 && (
+        <span className="feature-pill" title={`${t("f.reasoningBudget")}: ${profile.reasoningBudget}${profile.reasoningBudget === 0 ? ` (${t("f.reasoningBudgetZeroBadge")})` : ""}`}>Budget: {profile.reasoningBudget}</span>
+      )}
+      {profile.mmprojPath?.trim() && (
+        <span
+          className="feature-pill"
+          title={`${fileName(profile.mmprojPath)}${profile.noMmprojOffload ? ` (${t("f.noMmprojOffload")})` : ""}`}
+        >
+          {profile.noMmprojOffload ? "mmproj·RAM" : "mmproj"}
+        </span>
+      )}
     </div><div className="profile-card-actions" onClick={(event) => event.stopPropagation()}><button className="secondary-button" onClick={() => { setMenuProfileId(null); onEdit(owner.id, profile); }}><Pencil size={14} />{t("editProfileAction")}</button><button className="secondary-button" onClick={() => { setMenuProfileId(null); onDuplicate(owner.id, profile); }}><Copy size={14} />{t("duplicate")}</button></div></article>;
   };
   const profileRow = (owner: ModelAsset, profile: Profile, index: number) => {
@@ -172,7 +182,17 @@ export default function ProfilesPage({
           {profile.jinja && <span className="feature-pill" title="Jinja template">Jinja</span>}
           {profile.cacheTypeK !== "f32" && <span className="feature-pill" title={`KV Cache: ${profile.cacheTypeK}`}>{profile.cacheTypeK}</span>}
           {profile.reasoning === "on" && profile.reasoningEffort !== "auto" && <span className="feature-pill" title={`Reasoning: ${profile.reasoningEffort}`}>{profile.reasoningEffort}</span>}
-          {profile.mmprojPath?.trim() && <span className="feature-pill" title={fileName(profile.mmprojPath)}>mmproj</span>}
+          {profile.reasoning !== "off" && profile.reasoning !== "none" && profile.reasoning !== "force-off" && typeof profile.reasoningBudget === "number" && profile.reasoningBudget >= 0 && (
+            <span className="feature-pill" title={`${t("f.reasoningBudget")}: ${profile.reasoningBudget}${profile.reasoningBudget === 0 ? ` (${t("f.reasoningBudgetZeroBadge")})` : ""}`}>Budget: {profile.reasoningBudget}</span>
+          )}
+          {profile.mmprojPath?.trim() && (
+            <span
+              className="feature-pill"
+              title={`${fileName(profile.mmprojPath)}${profile.noMmprojOffload ? ` (${t("f.noMmprojOffload")})` : ""}`}
+            >
+              {profile.noMmprojOffload ? "mmproj·RAM" : "mmproj"}
+            </span>
+          )}
         </div>
       </div>
       <div className="profile-row-actions" onClick={(event) => event.stopPropagation()}>

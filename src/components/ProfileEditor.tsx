@@ -1,4 +1,4 @@
-import { FolderOpen, Save, SlidersHorizontal, X, Zap } from "lucide-react";
+import { Cpu, FolderOpen, Save, SlidersHorizontal, X, Zap } from "lucide-react";
 import { useI18n } from "../i18n";
 import { useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { pickFiles } from "../tauri";
@@ -17,11 +17,19 @@ type ToggleFieldProps = {
   checked: boolean;
   onChange: (next: boolean) => void;
   icon?: ReactNode;
+  disabled?: boolean;
 };
 
-function ToggleField({ label, hint, checked, onChange, icon }: ToggleFieldProps) {
+function ToggleField({ label, hint, checked, onChange, icon, disabled }: ToggleFieldProps) {
   return (
-    <button type="button" className={cn("toggle-row", checked && "enabled")} aria-pressed={checked} title={hint} onClick={() => onChange(!checked)}>
+    <button
+      type="button"
+      className={cn("toggle-row", checked && "enabled", disabled && "disabled")}
+      aria-pressed={checked}
+      title={hint}
+      disabled={disabled}
+      onClick={() => !disabled && onChange(!checked)}
+    >
       <span>{icon}{label}</span><i><b /></i>
     </button>
   );
@@ -224,7 +232,7 @@ export default function ProfileEditor({
           </div>
           <div className="form-section">
             <div className="form-section-title"><span>04</span><div><h3>{t("ed.s4Title")}</h3><p>{t("ed.s4Desc")}</p></div></div>
-            <div className="form-grid two">
+            <div className="form-grid three">
               <Field label={t("f.reasoningMode")} hint="--reasoning">
                 <select value={draft.reasoning === "none" ? "off" : draft.reasoning || "off"} onChange={select("reasoning")}>
                   {REASONING_MODES.map((value) => (
@@ -247,6 +255,27 @@ export default function ProfileEditor({
                   ))}
                 </select>
               </Field>
+              <Field label={t("f.reasoningBudget")} hint="--reasoning-budget">
+                <input
+                  type="number"
+                  min="-1"
+                  step="1"
+                  disabled={draft.reasoning === "off" || draft.reasoning === "none"}
+                  value={draft.reasoningBudget ?? ""}
+                  onChange={(e) => {
+                    const val = e.target.value.trim();
+                    if (val === "" || val === "-") {
+                      update("reasoningBudget", undefined);
+                      return;
+                    }
+                    const num = Number(val);
+                    if (Number.isFinite(num)) {
+                      update("reasoningBudget", Math.max(-1, Math.trunc(num)));
+                    }
+                  }}
+                  placeholder={t("f.reasoningBudgetPlaceholder")}
+                />
+              </Field>
             </div>
           </div>
           <div className="form-section">
@@ -262,7 +291,29 @@ export default function ProfileEditor({
             <div className="form-section-title"><span>06</span><div><h3>{t("ed.s6Title")}</h3><p>{t("ed.s6Desc")}</p></div></div>
             <div className="form-grid">
               <Field label={t("f.visionModel")} hint="--mmproj">
-                <PickerGroup value={draft.mmprojPath ?? ""} placeholder={t("mmproj.placeholder")} browseLabel={t("browse")} replaceLabel={t("filePicker.replace")} clearLabel={t("filePicker.clear")} onPick={attachMmproj} onClear={() => { update("mmprojPath", undefined); setVisionError(null); }} />
+                <div className="vision-input-row">
+                  <PickerGroup
+                    value={draft.mmprojPath ?? ""}
+                    placeholder={t("mmproj.placeholder")}
+                    browseLabel={t("browse")}
+                    replaceLabel={t("filePicker.replace")}
+                    clearLabel={t("filePicker.clear")}
+                    onPick={attachMmproj}
+                    onClear={() => {
+                      update("mmprojPath", undefined);
+                      update("noMmprojOffload", false);
+                      setVisionError(null);
+                    }}
+                  />
+                  <ToggleField
+                    label={t("f.noMmprojOffload")}
+                    hint={t("f.noMmprojOffloadHint")}
+                    icon={<Cpu size={14} />}
+                    checked={Boolean(draft.noMmprojOffload)}
+                    onChange={(next) => update("noMmprojOffload", next)}
+                    disabled={!draft.mmprojPath?.trim()}
+                  />
+                </div>
                 {visionError && <p className="import-error">{visionError}</p>}
               </Field>
             </div>
@@ -305,12 +356,37 @@ export default function ProfileEditor({
           </div>
           <div className="form-section">
             <div className="form-section-title"><span>08</span><div><h3>{t("ed.s7Title")}</h3><p>{t("ed.s7Desc")}</p></div></div>
-            <Field label="Extra Arguments" hint={t("f.extraHint")}><textarea value={draft.extraArgs} onChange={(e) => update("extraArgs", e.target.value)} placeholder="--no-warmup --cont-batching" /></Field>
+            <Field label="Extra Arguments" hint={t("f.extraHint")}>
+              <textarea value={draft.extraArgs} onChange={(e) => update("extraArgs", e.target.value)} placeholder="--no-warmup --cont-batching" />
+              {/(?:^|\s)--reasoning-budget(?:=|\s|$)/i.test(draft.extraArgs) && (
+                <p className="field-hint-warn">{t("ed.extraBudgetConflictWarn")}</p>
+              )}
+            </Field>
           </div>
         </div>
         <footer>
           <button className="secondary-button" onClick={onClose}>{t("cancel")}</button>
-          <button className="primary-button" onClick={() => onSave({ ...draft, mtpDraftPath: draft.mtpDraftPath?.trim() || undefined }, isDefault)}><Save size={16} />{t("saveProfile")}</button>
+          <button
+            className="primary-button"
+            onClick={() => {
+              const sanitizedBudget =
+                typeof draft.reasoningBudget === "number" && Number.isFinite(draft.reasoningBudget)
+                  ? Math.max(-1, Math.trunc(draft.reasoningBudget))
+                  : -1;
+              onSave(
+                {
+                  ...draft,
+                  mtpDraftPath: draft.mtpDraftPath?.trim() || undefined,
+                  reasoningBudget: sanitizedBudget,
+                  noMmprojOffload: Boolean(draft.noMmprojOffload),
+                },
+                isDefault
+              );
+            }}
+          >
+            <Save size={16} />
+            {t("saveProfile")}
+          </button>
         </footer>
       </section>
     </div>

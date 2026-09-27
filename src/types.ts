@@ -54,6 +54,8 @@ export interface Profile {
   jinja: boolean;
   reasoning: string;
   reasoningEffort: string;
+  /** 思考 Token 预算（-1 为不限制，0 立即结束，>0 具体上限，对应 --reasoning-budget） */
+  reasoningBudget?: number;
   loadMode: string;
   temperature: number;
   topP: number;
@@ -62,6 +64,8 @@ export interface Profile {
   extraArgs: string;
   /** 该预设挂载的图像识别视觉模型（mmproj）路径；非空时以 --mmproj 附加启动 */
   mmprojPath?: string;
+  /** 是否禁止将视觉多模态模型卸载到显存，强制纯系统内存运行（--no-mmproj-offload） */
+  noMmprojOffload?: boolean;
   /** 该预设关联的 llama.cpp 引擎分支 ID；未指定或为空则跟随全局默认引擎 */
   engineId?: string;
 }

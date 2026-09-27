@@ -6373,11 +6373,11 @@ select:disabled {
 }
 
 .form-grid.three {
-  grid-template-columns: repeat(3, 1fr)
+  grid-template-columns: repeat(3, minmax(0, 1fr))
 }
 
 .form-grid.four {
-  grid-template-columns: repeat(4, 1fr)
+  grid-template-columns: repeat(4, minmax(0, 1fr))
 }
 
 .form-grid.profile-info-grid {
@@ -6470,6 +6470,17 @@ select:disabled {
   border-color: #dd8239
 }
 
+.field-hint-warn {
+  margin: 6px 0 0;
+  color: #eba45c;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+[data-theme="light"] .field-hint-warn {
+  color: #b45309;
+}
+
 .toggle-row {
   display: flex;
   align-items: center;
@@ -6519,6 +6530,12 @@ select:disabled {
 .toggle-row.enabled b {
   transform: translateX(14px);
   background: #61e0a8
+}
+
+.toggle-row:disabled,
+.toggle-row.disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
 }
 
 .profile-editor>footer {
@@ -8178,6 +8195,26 @@ select:disabled {
 [data-theme="light"] .model-tags span {
   background: #f0f2f7;
   color: #5c6575;
+}
+
+/* 视觉模型输入行：文件选择器与纯内存加载开关单行平铺并列 */
+.vision-input-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+
+.vision-input-row .picker-shell {
+  flex: 1;
+  min-width: 0;
+}
+
+.vision-input-row .toggle-row {
+  flex-shrink: 0;
+  width: auto;
+  min-width: 140px;
+  gap: 10px;
 }
 
 /* 编辑器表单：文件选择框 = 单一外层容器 + 内部纯图标（无独立边框按钮） */

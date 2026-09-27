@@ -78,6 +78,8 @@ struct Profile {
     reasoning: String,
     #[serde(default = "default_reasoning")]
     reasoning_effort: String,
+    #[serde(default)]
+    reasoning_budget: Option<i32>,
     #[serde(default = "default_load_mode")]
     load_mode: String,
     temperature: f64,
@@ -88,6 +90,9 @@ struct Profile {
     /// 该预设挂载的图像识别视觉模型（mmproj）；非空时以 --mmproj 附加启动。
     #[serde(default)]
     mmproj_path: Option<String>,
+    /// 是否禁止将视觉模型卸载到显存，强制纯系统内存运行（--no-mmproj-offload）
+    #[serde(default)]
+    no_mmproj_offload: bool,
     /// 该预设关联的 llama.cpp 引擎分支 ID；未指定或为空则跟随全局默认主引擎。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     engine_id: Option<String>,
@@ -224,6 +229,7 @@ impl Default for AppConfig {
                 jinja: true,
                 reasoning: default_reasoning(),
                 reasoning_effort: default_reasoning(),
+                reasoning_budget: None,
                 load_mode: default_load_mode(),
                 temperature: 0.7,
                 top_p: 0.9,
@@ -231,6 +237,7 @@ impl Default for AppConfig {
                 repeat_penalty: 1.1,
                 extra_args: String::new(),
                 mmproj_path: None,
+                no_mmproj_offload: false,
                 engine_id: None,
             }],
             theme: None,
@@ -752,11 +759,20 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
         kill_managed_child(&mut running);
     }
 
+    // 解析 extra_args 用于防冲突去重检测与后续参数拼接
+    let extra_tokens = shlex::split(&profile.extra_args).unwrap_or_default();
+    let has_extra_arg = |flag: &str| -> bool {
+        extra_tokens.iter().any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
+    };
+
     let mut command = Command::new(&chosen_path);
     command
         .arg("-m").arg(&model.path);
     if let Some(mmproj) = mmproj_path {
         command.arg("--mmproj").arg(mmproj);
+        if profile.no_mmproj_offload && !has_extra_arg("--no-mmproj-offload") {
+            command.arg("--no-mmproj-offload");
+        }
     }
     if let Some(draft) = mtp_draft_path {
         command.arg("-md").arg(draft);
@@ -783,25 +799,32 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
     // - auto：官方默认自动探测 (--reasoning auto)
     // - on：强制开启推理输出 (--reasoning on)
     // - force-off：针对官方 llama.cpp 强制覆盖模板抑制思考 (--reasoning off)
-    match profile.reasoning.trim().to_lowercase().as_str() {
-        "on" => {
-            command.arg("--reasoning").arg("on");
+    if !has_extra_arg("--reasoning") {
+        match profile.reasoning.trim().to_lowercase().as_str() {
+            "on" => {
+                command.arg("--reasoning").arg("on");
+            }
+            "auto" => {
+                command.arg("--reasoning").arg("auto");
+            }
+            "force-off" => {
+                command.arg("--reasoning").arg("off");
+            }
+            _ => {}
         }
-        "auto" => {
-            command.arg("--reasoning").arg("auto");
-        }
-        "force-off" => {
-            command.arg("--reasoning").arg("off");
-        }
-        _ => {}
     }
 
-    // 仅当推理模式非关闭状态时，且指定了明确的强度等级（非 auto/none）才传递 --reasoning-effort
+    // 仅当推理模式非关闭状态时，传递推理参数（若用户在自定义参数中显式指定，则优先使用自定义参数不重复追加）
     let reasoning_mode = profile.reasoning.trim().to_lowercase();
-    if reasoning_mode != "off" && reasoning_mode != "none" {
+    if reasoning_mode != "off" && reasoning_mode != "none" && reasoning_mode != "force-off" {
         let effort = profile.reasoning_effort.trim().to_lowercase();
-        if !effort.is_empty() && effort != "auto" && effort != "none" {
+        if !effort.is_empty() && effort != "auto" && effort != "none" && !has_extra_arg("--reasoning-effort") {
             command.arg("--reasoning-effort").arg(&profile.reasoning_effort);
+        }
+        if let Some(budget) = profile.reasoning_budget {
+            if budget >= 0 && !has_extra_arg("--reasoning-budget") {
+                command.arg("--reasoning-budget").arg(budget.to_string());
+            }
         }
     }
     if profile.flash_attention {
@@ -819,8 +842,8 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
     if profile.jinja {
         command.arg("--jinja");
     }
-    if let Some(extra) = shlex::split(&profile.extra_args) {
-        command.args(extra);
+    if !extra_tokens.is_empty() {
+        command.args(&extra_tokens);
     }
     command.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
     #[cfg(windows)]

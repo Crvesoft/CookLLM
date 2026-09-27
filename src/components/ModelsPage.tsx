@@ -158,6 +158,10 @@ function ModelCard({ model, profiles, selectedProfileId, isDefaultModel, isRunni
   const isUnknownQuant = model.quantization === t("model.unknownQuant");
   const mmprojPath = selected?.mmprojPath?.trim();
   const hasMmproj = Boolean(mmprojPath);
+  const isMmprojRam = Boolean(selected?.noMmprojOffload);
+  const mmprojTitle = mmprojPath
+    ? `${t("models.mmprojAttached", { file: fileName(mmprojPath) })}${isMmprojRam ? ` (${t("f.noMmprojOffload")})` : ""}`
+    : undefined;
   return <article {...cardHandlers} className={cn("model-card", isDefaultModel && "default", isRunning && "running", selectMode && "selecting", isSelected && "selected", isDragging && "dragging", menuOpen && "menu-open")}
     onClick={selectMode ? onToggleSelect : undefined}>
     {isDefaultModel && <span className="corner-flag"><Star size={10} fill="currentColor" /></span>}
@@ -176,7 +180,7 @@ function ModelCard({ model, profiles, selectedProfileId, isDefaultModel, isRunni
         {model.quantization}
       </span>
       {model.architecture && model.architecture.toUpperCase() !== "GGUF" && <span>{model.architecture}</span>}
-      {hasMmproj && <span title={mmprojPath ? t("models.mmprojAttached", { file: fileName(mmprojPath) }) : undefined}>mmproj</span>}
+      {hasMmproj && <span title={mmprojTitle}>{isMmprojRam ? "mmproj·RAM" : "mmproj"}</span>}
       {model.tags?.map((tag) => (
         <span
           key={tag}
@@ -217,6 +221,10 @@ function ModelRow({ model, profiles, selectedProfileId, isDefaultModel, isRunnin
   const isUnknownQuant = model.quantization === t("model.unknownQuant");
   const mmprojPath = selected?.mmprojPath?.trim();
   const hasMmproj = Boolean(mmprojPath);
+  const isMmprojRam = Boolean(selected?.noMmprojOffload);
+  const mmprojTitle = mmprojPath
+    ? `${t("models.mmprojAttached", { file: fileName(mmprojPath) })}${isMmprojRam ? ` (${t("f.noMmprojOffload")})` : ""}`
+    : undefined;
   return <article {...cardHandlers} className={cn("model-row", isDefaultModel && "default", isRunning && "running", selectMode && "selecting", isSelected && "selected", isDragging && "dragging", menuOpen && "menu-open")}
     onClick={selectMode ? onToggleSelect : undefined}>
     <span className={cn("card-select-check", isSelected && "checked")} aria-hidden="true"><Check size={13} strokeWidth={2.5} /></span>
@@ -249,7 +257,7 @@ function ModelRow({ model, profiles, selectedProfileId, isDefaultModel, isRunnin
           {model.quantization}
         </span>
         {model.architecture && model.architecture.toUpperCase() !== "GGUF" && <span>{model.architecture}</span>}
-        {hasMmproj && <span title={mmprojPath ? t("models.mmprojAttached", { file: fileName(mmprojPath) }) : undefined}>mmproj</span>}
+        {hasMmproj && <span title={mmprojTitle}>{isMmprojRam ? "mmproj·RAM" : "mmproj"}</span>}
         {model.tags?.map((tag) => (
           <span
             key={tag}
