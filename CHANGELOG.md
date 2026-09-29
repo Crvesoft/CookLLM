@@ -2,6 +2,12 @@
 
 本文档是发布流程提取 Release Notes 的唯一数据源（`.github/workflows/release.yml` 会自动读取，请在每次发版前更新本文件）。
 
+## v0.2.10
+
+- 上线全新推理性能分析页 “日志-分析”
+- 支持 Decode/Prefill 双轨监控与多维指标洞察
+- 支持轮次锁定与多类型数据筛选
+
 ## v0.2.9
 
 - 运行预设新增思考预算（--reasoning-budget）配置

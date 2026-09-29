@@ -7,8 +7,8 @@ import type { ActiveDownload } from "./components/ExplorePage";
 import type { PickedFile } from "./tauri";
 import { onModelDownloadProgress } from "./tauri";
 import type { DiskUsage, ModelDownloadProgress } from "./types";
-import { PAGE_LOG_MODE, type AppConfig, type GpuStats, type LlamaLogPayload, type ModelAsset, type Page, type Profile, type ServerStatus, type TokSample } from "./types";
-import { ACCENTS, EMPTY_STATUS, cn, fileName, modelTitle, newLog, parseQuantization, parseTokPerSec, shallowEqualFields } from "./utils";
+import { PAGE_LOG_MODE, type AppConfig, type GpuStats, type InferenceMetrics, type LlamaLogPayload, type ModelAsset, type Page, type Profile, type ServerStatus, type TokSample } from "./types";
+import { ACCENTS, EMPTY_STATUS, cn, fileName, modelTitle, newLog, parseQuantization, parseTokPerSec, shallowEqualFields, InferenceTracker } from "./utils";
 import LogDock from "./components/LogDock";
 import { LogsPage, Sidebar, Toast, Topbar } from "./components/Layout";
 import ImportModelModal from "./components/ImportModelModal";
@@ -60,11 +60,15 @@ export default function App() {
   /** Dock 默认收起：只显示底部状态栏，主区空间最大 */
   const [logDockOpen, setLogDockOpen] = useState(false);
   /** Dock 展开高度 px（120 ~ 60% 视口），持久化到 localStorage */
-  const [logDockHeight, setLogDockHeight] = useState(() => { const stored = Number(localStorage.getItem("cookllm.logDock.height")); return Number.isFinite(stored) ? Math.max(120, Math.min(window.innerHeight * 0.6, stored)) : 280; });
+  const [logDockHeight, setLogDockHeight] = useState(() => { const stored = Number(localStorage.getItem("cookllm.logDock.height")); return Number.isFinite(stored) ? Math.max(120, Math.min(window.innerHeight * 0.6, stored)) : 160; });
   /** 服务异常：启动失败 / 进程意外退出；成功启动后清除 */
   const [serviceAbnormal, setServiceAbnormal] = useState(false);
   /** 最近一次从日志解析到的生成吞吐（带时间戳，微型状态卡据此判定"实时 / Idle"） */
   const [tokSample, setTokSample] = useState<TokSample | null>(null);
+  /** 推理指标聚合跟踪器：精准解析 Prefill、Decode、KV Cache 命中与首字耗时 */
+  const inferenceTrackerRef = useRef(new InferenceTracker());
+  const [latestInference, setLatestInference] = useState<InferenceMetrics | null>(null);
+  const [inferenceHistory, setInferenceHistory] = useState<InferenceMetrics[]>([]);
   /** GPU 实时指标（nvidia-smi，2s 轮询；浏览器模式恒为 null；初始从本地缓存读取实现首帧秒显） */
   const [gpuStats, setGpuStats] = useState<GpuStats | null>(() => {
     try {
@@ -270,7 +274,18 @@ export default function App() {
             queueLogs([payload]);
             // 检测到服务就绪 → 自动收起 Dock（仅启动期间武装，避免误关用户手动打开的 Dock）
             if (dockAutoCollapseRef.current && /is listening|listening on/i.test(payload.line)) { dockAutoCollapseRef.current = false; setLogDockOpen(false); }
-            const tps = parseTokPerSec(payload.line); if (tps !== null) setTokSample({ rate: tps, at: Date.now() });
+
+            // 结构化推理指标跟踪（Prefill / Decode / KV Cache 命中）
+            const trackerRes = inferenceTrackerRef.current.processLine(payload.line);
+            if (trackerRes.updated && trackerRes.latest) {
+              setLatestInference({ ...trackerRes.latest });
+              setInferenceHistory(inferenceTrackerRef.current.getHistory());
+              const speed = trackerRes.latest.decodeTps ?? trackerRes.latest.prefillTps;
+              if (speed != null) setTokSample({ rate: speed, at: Date.now() });
+            } else {
+              const tps = parseTokPerSec(payload.line);
+              if (tps !== null) setTokSample({ rate: tps, at: Date.now() });
+            }
           });
         } else {
           const stored = localStorage.getItem("cookllm-config"); if (stored && active) { const parsed = JSON.parse(stored) as AppConfig; adopt(parsed); }
@@ -287,7 +302,59 @@ export default function App() {
     let active = true;
     const refresh = () => {
       // 浅比较后去重：数据未变化时保持旧引用，避免每 2s 的轮询触发全树重渲染
-      void getServerStatus().then((st) => { if (active) setStatus((prev) => (shallowEqualFields(prev, st) ? prev : st)); }).catch(() => undefined);
+      void getServerStatus().then((st) => {
+        if (!active) return;
+        setStatus((prev) => (shallowEqualFields(prev, st) ? prev : st));
+        // 当服务处于运行状态时，直连原生 /slots 端点同步底层槽位真实指标（完美攻克官方与 kvmem 控制台不输出 prompt eval time 难题）
+        if (st.running && st.port) {
+          void fetch(`http://127.0.0.1:${st.port}/slots`, { signal: AbortSignal.timeout(1000) })
+            .then((r) => (r.ok ? r.json() : null))
+            .then((data) => {
+              if (!active || !data) return;
+              const slots = Array.isArray(data) ? data : (data.value && Array.isArray(data.value) ? data.value : []);
+              if (!slots.length) return;
+              const activeSlot = slots.find((s: any) => s.is_processing);
+              const anyProcessing = Boolean(activeSlot);
+              // 若当前完全没有槽位在运行，且跟踪器也没有活跃未完成的轮次，说明服务处于纯空闲状态，直接跳过
+              if (!anyProcessing && !inferenceTrackerRef.current.hasActiveTurn()) {
+                return;
+              }
+              const slot = activeSlot || slots[0];
+              if (!slot) return;
+              // 当前 llama.cpp 的缓存数与速率不在 slot 顶层，而在 timings（cache_n / prompt_per_second）
+              const timings = slot.timings && typeof slot.timings === "object" ? slot.timings : null;
+              const promptTokens = slot.n_prompt_tokens ?? timings?.prompt_n ?? slot.prompt_n ?? slot.n_prompt_tokens_processed;
+              const cachedTokens = slot.n_prompt_tokens_cache ?? timings?.cache_n ?? slot.n_past ?? 0;
+              const cacheHitRatio = promptTokens && promptTokens > 0 ? (cachedTokens / promptTokens) * 100 : undefined;
+              const decodeTokens = slot.next_token?.[0]?.n_decoded ?? timings?.predicted_n ?? slot.n_decoded ?? slot.predicted_n;
+              const res = inferenceTrackerRef.current.updateFromSlot({
+                taskId: slot.id_task,
+                promptTokens,
+                cachedTokens,
+                cacheHitRatio: cacheHitRatio != null ? parseFloat(cacheHitRatio.toFixed(1)) : undefined,
+                decodeTokens,
+                prefillTps: timings?.prompt_per_second ?? slot.prompt_per_second,
+                prefillTimeMs: timings?.prompt_ms ?? slot.prompt_ms ?? slot.t_prompt_processing,
+                decodeTps: timings?.predicted_per_second ?? slot.predicted_per_second,
+                isProcessing: anyProcessing,
+              });
+              if (res.updated && res.latest) {
+                setLatestInference({ ...res.latest });
+                setInferenceHistory(inferenceTrackerRef.current.getHistory());
+                const speed = res.latest.decodeTps ?? res.latest.prefillTps;
+                if (speed != null) setTokSample({ rate: speed, at: Date.now() });
+              } else {
+                // 空闲超时兜底检查（若生成停止但无显式完成信号，3 秒内自动结算）
+                const timeoutRes = inferenceTrackerRef.current.checkIdleTimeout(3000);
+                if (timeoutRes.updated && timeoutRes.latest) {
+                  setLatestInference({ ...timeoutRes.latest });
+                  setInferenceHistory(inferenceTrackerRef.current.getHistory());
+                }
+              }
+            })
+            .catch(() => undefined);
+        }
+      }).catch(() => undefined);
       // GPU 指标独立轮询：查询失败 / 无 NVIDIA 驱动 → null，卡片显示 "--"
       if (gpuMonitorEnabled) {
         // 响应到达时若已被关闭或 effect 已重跑（配置加载完成 / 用户切换），丢弃过期数据
@@ -856,6 +923,9 @@ export default function App() {
         [`llama_model_loader: loaded meta data with ${model.parameters} parameters`, `load_tensors: offloading ${profile.gpuLayers} repeating layers to GPU`, `llama_context: n_ctx = ${profile.contextSize}, n_batch = ${profile.batchSize}, n_ubatch = ${profile.ubatchSize}`, `server is listening on http://${profile.host}:${profile.port}`].forEach((line, index) => window.setTimeout(() => appendLog(line, "stdout"), 180 * index));
       }
       setServiceAbnormal(false); // 启动成功 → 清除异常标记
+      inferenceTrackerRef.current.reset();
+      setLatestInference(null);
+      setInferenceHistory([]);
       setTokSample(null);
       dockAutoCollapseRef.current = true; // 武装：本次启动期间收到就绪日志后自动收起 Dock
       appendLog(`[engine] ${engineName}`, "system");
@@ -876,6 +946,14 @@ export default function App() {
     try { if (isTauri()) setStatus(await stopServer()); else { await new Promise((resolve) => window.setTimeout(resolve, 380)); setStatus(EMPTY_STATUS); appendLog(t("log.stopSuccess")); } setToast(t("toast.stopped")); }
     catch (error) { appendLog(t("log.stopFailed", { error: String(error) }), "stderr"); }
     finally { setBusy(false); setTokSample(null); }
+  };
+
+  /** 清空当前模型会话的推理性能历史与统计 */
+  const handleClearInferenceStats = () => {
+    inferenceTrackerRef.current.reset();
+    setLatestInference(null);
+    setInferenceHistory([]);
+    setTokSample(null);
   };
 
   /** 终止后台残留的 llama-server 进程 */
@@ -1088,11 +1166,41 @@ export default function App() {
       {page === "profiles" && <ProfilesPage models={config.models} engines={config.engines} activeEngineId={config.activeEngineId} onEdit={(modelId, profile) => setProfileEditing({ modelId, profile })} onDelete={deleteProfile} onDuplicate={duplicateProfile} onSetDefault={setDefaultProfile} onReorderProfile={reorderProfiles} onDeleteProfiles={deleteMultipleProfiles} />}
       {/* 会话页保持常驻（隐藏而非卸载）：切换菜单不销毁内嵌 WebUI，回来时无需从聊天记录重新进入；WebUI 始终填满 Dock 下全部剩余高度 */}
       <Playground visible={page === "playground"} status={status} webUiUrl={webUiUrl} modelName={activeModel ? modelTitle(activeModel) : undefined} onOpenWebUi={openWebUi} zenMode={zenMode} onToggleZenMode={() => setZenMode((v) => !v)} />
-      {page === "logs" && <LogsPage logs={logs} status={status} tokPerSec={tokSample ? tokSample.rate : null} onClear={() => setLogs([])} />}
+      {page === "logs" && (
+        <LogsPage
+          logs={logs}
+          status={status}
+          tokPerSec={tokSample ? tokSample.rate : null}
+          latestMetrics={latestInference}
+          inferenceHistory={inferenceHistory}
+          onClearHistory={handleClearInferenceStats}
+          onClear={() => setLogs([])}
+        />
+      )}
       <SettingsPage visible={page === "settings"} config={config} appUpdate={appUpdate} checkingUpdate={appUpdateChecking} onCheckUpdate={checkAppUpdate} onPersist={persist} onLog={appendLog} onOpenEngineHub={() => setEngineHubOpen(true)} />
     </main>
       {/* Dock 日志参与布局（收起=底部状态栏 / 展开=可调高度面板），各页面共用同一份状态，不遮挡内容；仅"日志"整页除外 */}
-      {isDockPage && <LogDock open={logDockOpen} height={logDockHeight} logs={logs} status={status} modelName={activeModel ? modelTitle(activeModel) : undefined} abnormal={serviceAbnormal} tokPerSec={tokSample ? tokSample.rate : null} activeEngineName={dockEngine?.name} activeEngineBackend={dockEngine?.backend} activeEngineCudaVersion={dockEngine?.cudaVersion} onOpenEnginePicker={() => setEngineHubOpen(true)} onToggle={() => setLogDockOpen((value) => !value)} onHeightChange={setLogDockHeight} onClear={() => setLogs([])} />}
+      {isDockPage && (
+        <LogDock
+          open={logDockOpen}
+          height={logDockHeight}
+          logs={logs}
+          status={status}
+          modelName={activeModel ? modelTitle(activeModel) : undefined}
+          abnormal={serviceAbnormal}
+          tokPerSec={tokSample ? tokSample.rate : null}
+          latestMetrics={latestInference}
+          inferenceHistory={inferenceHistory}
+          onClearHistory={handleClearInferenceStats}
+          activeEngineName={dockEngine?.name}
+          activeEngineBackend={dockEngine?.backend}
+          activeEngineCudaVersion={dockEngine?.cudaVersion}
+          onOpenEnginePicker={() => setEngineHubOpen(true)}
+          onToggle={() => setLogDockOpen((value) => !value)}
+          onHeightChange={setLogDockHeight}
+          onClear={() => setLogs([])}
+        />
+      )}
     </div>
     {profileEditing && <ProfileEditor engines={config.engines} activeEngineId={config.activeEngineId} model={config.models.find((m) => m.id === profileEditing.modelId)} profile={profileEditing.profile} defaultProfileId={config.models.find((m) => m.id === profileEditing.modelId)?.defaultProfileId} onClose={() => setProfileEditing(null)} onSave={(profile, isDefault) => saveProfile(profileEditing.modelId, profile, isDefault)} />}
     {importOpen && <ImportModelModal existingPaths={new Set(config.models.map((model) => model.path.toLowerCase()))} onClose={() => setImportOpen(false)} onImport={handleImportModels} />}

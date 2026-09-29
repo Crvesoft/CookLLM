@@ -1,13 +1,14 @@
-import { Check, MessageSquareText, PanelLeftClose, PanelLeftOpen, Play, Settings, SlidersHorizontal, Square, SquareTerminal, Boxes, Globe, Loader2, Minimize, type LucideIcon } from "lucide-react";
+import { Activity, Check, MessageSquareText, PanelLeftClose, PanelLeftOpen, Play, Settings, SlidersHorizontal, Square, SquareTerminal, Boxes, Globe, Loader2, Minimize, type LucideIcon } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type React from "react";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { isTauri } from "../tauri";
-import type { GpuStats, LlamaLogPayload, ModelAsset, Page, ServerStatus } from "../types";
+import type { GpuStats, InferenceMetrics, LlamaLogPayload, ModelAsset, Page, ServerStatus } from "../types";
 import { cn, lineKind, modelTitle, timeLabel } from "../utils";
 import { LlamaMark } from "./LlamaMark";
 import MiniStatusBar from "./MiniStatusBar";
+import InferenceInspector from "./InferenceInspector";
 
 /* ==================== 自定义标题栏：窗口控制按钮（无边框窗口） ==================== */
 
@@ -142,12 +143,108 @@ export function Topbar({ page, status, busy, onToggleService, models, modelId, o
   );
 }
 
-export function LogsPage({ logs, status, tokPerSec, onClear }: { logs: LlamaLogPayload[]; status: ServerStatus; tokPerSec?: number | null; onClear: () => void }) {
+export function LogsPage({
+  logs,
+  status,
+  tokPerSec,
+  latestMetrics,
+  inferenceHistory,
+  onClearHistory,
+  onClear,
+}: {
+  logs: LlamaLogPayload[];
+  status: ServerStatus;
+  tokPerSec?: number | null;
+  latestMetrics?: InferenceMetrics | null;
+  inferenceHistory?: InferenceMetrics[];
+  onClearHistory?: () => void;
+  onClear: () => void;
+}) {
   const { t } = useI18n();
   const endRef = useRef<HTMLDivElement>(null);
+  /** 性能分析与运行日志记忆性选择：记录到 localStorage，切页回来时保持上次的选择 */
+  const [tab, setTabState] = useState<"logs" | "perf">(() => {
+    try {
+      const saved = localStorage.getItem("cookllm_logs_tab");
+      if (saved === "logs" || saved === "perf") return saved;
+    } catch {}
+    return "logs";
+  });
+
+  const setTab = (newTab: "logs" | "perf") => {
+    setTabState(newTab);
+    try {
+      localStorage.setItem("cookllm_logs_tab", newTab);
+    } catch {}
+  };
+
+  /** 服务若关闭后重新启动，自动切回"运行日志"以便查看启动状态；其余情况（如菜单切换）保留记忆性选择 */
+  const prevRunningRef = useRef(status.running);
+  useEffect(() => {
+    if (!prevRunningRef.current && status.running) {
+      setTabState("logs");
+      try {
+        localStorage.setItem("cookllm_logs_tab", "logs");
+      } catch {}
+    }
+    prevRunningRef.current = status.running;
+  }, [status.running]);
+
   // 立即跳到最后一行（无平滑动画，避免切页时从首行可见地滑到底）
-  useEffect(() => { endRef.current?.scrollIntoView(); }, [logs]);
-  return <div className="logs-page"><div className="console-toolbar"><div><span className="dot red" /><span className="dot yellow" /><span className="dot green" /><strong>llama-server · output</strong>{status.running ? <span className="live-badge"><i />{t("statusRunning")}{tokPerSec != null ? ` · ${tokPerSec} tok/s` : ""}</span> : <span className="logs-idle">{t("statusStopped")}</span>}</div><div><button onClick={onClear}>{t("clearLogs")}</button></div></div><div className="console-lines">{logs.length ? logs.map((log, index) => { const kind = lineKind(log.stream, log.line); return <div className={cn("log-line", kind)} key={`${log.timestamp}-${index}`}><span>{timeLabel(log.timestamp)}</span><em>{kind === "err" ? "ERR" : kind === "warn" ? "WRN" : kind === "system" ? "SYS" : "OUT"}</em><code>{log.line}</code></div>; }) : <div className="console-empty">{t("noLogs")}</div>}<div ref={endRef} /></div></div>;
+  useEffect(() => { endRef.current?.scrollIntoView(); }, [logs, tab]);
+
+  return (
+    <div className="logs-page">
+      <div className="console-toolbar">
+        <div className="dock-tabs" role="tablist">
+          <button type="button" role="tab" aria-selected={tab === "logs"} className={cn("dock-tab", tab === "logs" && "active")} onClick={() => setTab("logs")}>
+            <SquareTerminal size={12} />{t("dock.tabLogs")}
+          </button>
+          <button type="button" role="tab" aria-selected={tab === "perf"} className={cn("dock-tab", tab === "perf" && "active")} onClick={() => setTab("perf")}>
+            <Activity size={12} />{t("dock.tabPerf")}
+          </button>
+          {status.running ? (
+            <span className="live-badge">
+              <i />
+              {t("statusRunning")}
+            </span>
+          ) : (
+            <span className="logs-idle">{t("statusStopped")}</span>
+          )}
+        </div>
+        <div>
+          {tab === "logs"
+            ? <button onClick={onClear}>{t("clearLogs")}</button>
+            : onClearHistory && <button onClick={onClearHistory}>{t("perf.clearStats")}</button>}
+        </div>
+      </div>
+
+      {tab === "perf" ? (
+        <div className="dock-perf-pane">
+          <InferenceInspector
+            metrics={latestMetrics ?? null}
+            history={inferenceHistory || []}
+            onClearHistory={onClearHistory}
+            mode="page"
+          />
+        </div>
+      ) : (
+        <div className="console-lines">
+          {logs.length ? logs.map((log, index) => {
+            const kind = lineKind(log.stream, log.line);
+            return (
+              <div className={cn("log-line", kind)} key={`${log.timestamp}-${index}`}>
+                <span>{timeLabel(log.timestamp)}</span>
+                <em>{kind === "err" ? "ERR" : kind === "warn" ? "WRN" : kind === "system" ? "SYS" : "OUT"}</em>
+                <code>{log.line}</code>
+              </div>
+            );
+          }) : <div className="console-empty">{t("noLogs")}</div>}
+          <div ref={endRef} />
+        </div>
+      )}
+    </div>
+  );
 }
 
 export function Toast({ children }: { children: React.ReactNode }) { return <div className="toast"><Check size={15} />{children}</div>; }

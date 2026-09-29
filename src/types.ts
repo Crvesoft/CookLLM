@@ -153,6 +153,34 @@ export interface TokSample {
   at: number;
 }
 
+/** 单次推理的结构化性能分析指标 */
+export interface InferenceMetrics {
+  id: string;
+  timestamp: number;
+  /** 实际逐字生成速率 (Decode, tokens/sec) */
+  decodeTps?: number | null;
+  /** 生成 Token 数量 */
+  decodeTokens?: number | null;
+  /** 生成阶段耗时 (ms) */
+  decodeTimeMs?: number | null;
+  /** 预热/首字提示词处理速率 (Prefill, tokens/sec) */
+  prefillTps?: number | null;
+  /** 提示词处理计算 Token 数量（实际参与 prefill 计算的 tokens） */
+  prefillTokens?: number | null;
+  /** 预热阶段耗时 (ms) */
+  prefillTimeMs?: number | null;
+  /** KV Cache 命中 Token 数量 */
+  cachedTokens?: number | null;
+  /** 总提示词 Token 数量（含已缓存） */
+  promptTokens?: number | null;
+  /** 缓存命中率 (0 ~ 100) */
+  cacheHitRatio?: number | null;
+  /** 首字延迟估算 (TTFT, ms) */
+  ttftMs?: number | null;
+  /** 总耗时 (ms) */
+  totalTimeMs?: number | null;
+}
+
 export interface LlamaLogPayload {
   stream: "stdout" | "stderr" | "system";
   line: string;
