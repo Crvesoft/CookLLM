@@ -40,6 +40,9 @@ struct ModelAsset {
     #[serde(default)]
     default_profile_id: Option<String>,
     accent: String,
+    /// 自定义标签（如角色扮演、代码、未知量化补录等）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tags: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -163,6 +166,12 @@ struct AppConfig {
     /// 界面主题：light(默认) 或 dark。
     #[serde(default)]
     theme: Option<String>,
+    /// 全局标签库池（用户自定义维护的标签列表）
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    custom_tags: Vec<String>,
+    /// 界面语言：zh（默认）/ en，设置页可切换并持久化
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    language: Option<String>,
     /// GPU performance monitor toggle (default on; AMD/unsupported GPUs can disable).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     gpu_monitor_enabled: Option<bool>,
@@ -241,6 +250,8 @@ impl Default for AppConfig {
                 engine_id: None,
             }],
             theme: None,
+            custom_tags: Vec::new(),
+            language: None,
             gpu_monitor_enabled: None,
             explore_sidebar_collapsed: None,
             hf_token: None,
