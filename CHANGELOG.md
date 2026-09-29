@@ -2,7 +2,7 @@
 
 本文档是发布流程提取 Release Notes 的唯一数据源（`.github/workflows/release.yml` 会自动读取，请在每次发版前更新本文件）。
 
-## v0.2.10
+## v0.3.0
 
 - 上线全新推理性能分析页 “日志-分析”
 - 支持 Decode/Prefill 双轨监控与多维指标洞察
