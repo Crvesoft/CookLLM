@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { DEMO_CONFIG, DEFAULT_PROFILES, INITIAL_LOGS, migrateConfig, uid } from "./data";
+import { DEMO_CONFIG, DEFAULT_PROFILES, INITIAL_LOGS, mergeImportedConfig, migrateConfig, uid } from "./data";
 import { setLocale, useI18n } from "./i18n";
-import { checkForUpdate, checkOrphanServer, getGpuStats, getModelsDir, getServerStatus, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, isTauri, killOrphanServer, loadConfig, onLlamaLog, openExternal, pickModelsDir, removeLocalFile, revealInFolder, saveConfig, setWindowTheme, startServer, stopServer, type OrphanProcessItem, type UpdateCheckResult } from "./tauri";
+import { checkForUpdate, checkOrphanServer, exportConfigBackup, getGpuStats, getModelsDir, getServerStatus, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, inspectGguf, isTauri, killOrphanServer, loadConfig, onLlamaLog, openExternal, pathsExist, pickConfigBackup, pickModelsDir, removeLocalFile, revealInFolder, saveConfig, setWindowTheme, startServer, stopServer, type OrphanProcessItem, type UpdateCheckResult } from "./tauri";
 import type { ActiveDownload } from "./components/ExplorePage";
 import type { PickedFile } from "./tauri";
 import { onModelDownloadProgress } from "./tauri";
@@ -695,17 +695,19 @@ export default function App() {
         return;
       }
       const name = fileBaseName.replace(/\.gguf$/i, "").replace(/[-_]/g, " ");
+      const meta = await inspectGguf(path).catch(() => ({ architecture: "", parameters: "", quantization: "" }));
       const paramMatch = path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase();
-      const parameters = paramMatch || "—";
+      const parameters = meta.parameters || paramMatch || "—";
       const defaultProfile: Profile = { ...DEFAULT_PROFILES[0], id: uid("profile") };
       const model: ModelAsset = {
         id: uid("model"),
         name,
         path,
         sizeBytes: sizeBytes ?? download.sizeBytes,
-        architecture: "GGUF",
-        quantization: parseQuantization(path, t("model.unknownQuant")),
+        architecture: meta.architecture || "GGUF",
+        quantization: meta.quantization || parseQuantization(path, t("model.unknownQuant")),
         parameters,
+        metadataSource: meta.architecture || meta.quantization || meta.parameters ? "gguf" : "filename",
         profiles: [defaultProfile],
         accent: ACCENTS[currentConfig.models.length % ACCENTS.length],
       };
@@ -989,10 +991,12 @@ export default function App() {
     const existing = new Set(config.models.map((model) => model.path));
     const fresh = paths.filter((item) => !existing.has(item.path));
     if (!fresh.length) return setToast(t("toast.alreadyInLibrary"));
-    const additions: ModelAsset[] = fresh.map((item, index) => {
+    const additions: ModelAsset[] = [];
+    for (const [index, item] of fresh.entries()) {
       const path = item.path;
-      return { id: uid("model"), name: fileName(path).replace(/\.gguf$/i, "").replace(/[-_]/g, " "), path, sizeBytes: item.sizeBytes, architecture: "GGUF", quantization: parseQuantization(path, t("model.unknownQuant")), parameters: path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase() || "—", profiles: [{ ...DEFAULT_PROFILES[0], id: uid("profile") }], accent: ACCENTS[(config.models.length + index) % ACCENTS.length] };
-    });
+      const meta = await inspectGguf(path).catch(() => ({ architecture: "", parameters: "", quantization: "" }));
+      additions.push({ id: uid("model"), name: fileName(path).replace(/\.gguf$/i, "").replace(/[-_]/g, " "), path, sizeBytes: item.sizeBytes, architecture: meta.architecture || "GGUF", quantization: meta.quantization || parseQuantization(path, t("model.unknownQuant")), parameters: meta.parameters || path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase() || "—", metadataSource: meta.architecture || meta.quantization || meta.parameters ? "gguf" : "filename", profiles: [{ ...DEFAULT_PROFILES[0], id: uid("profile") }], accent: ACCENTS[(config.models.length + index) % ACCENTS.length] });
+    }
     setSelectedProfiles((previous) => { const next = { ...previous }; for (const model of additions) next[model.id] = model.profiles[0].id; return next; });
     await persist({ ...config, models: [...config.models, ...additions] }, t(additions.length === 1 ? "toast.modelAdded" : "toast.modelsAdded", { count: additions.length }));
   };
@@ -1106,6 +1110,28 @@ export default function App() {
     void persist({ ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, displayName: trimmed ? trimmed : undefined } : item)) }, t(trimmed ? "toast.renamed" : "toast.nameRestored"));
     setMenuModelId(null);
   };
+  const exportBackup = async () => {
+    try {
+      const path = await exportConfigBackup();
+      if (path) setToast(t("toast.backupExported"));
+    } catch (error) {
+      setToast(t("toast.backupFailed", { error: String(error) }));
+    }
+  };
+  const importBackup = async () => {
+    try {
+      const incoming = await pickConfigBackup();
+      if (!incoming) return;
+      const migrated = migrateConfig(incoming);
+      const candidates = [...(migrated.models || []).map((model) => model.path), ...(migrated.engines || []).map((engine) => engine.path)].filter(Boolean);
+      const present = new Set((await pathsExist(candidates)).map((path) => path.toLowerCase()));
+      const missing = new Set(candidates.map((path) => path.toLowerCase()).filter((path) => !present.has(path)));
+      const merged = mergeImportedConfig(config, migrated, missing);
+      await persist(merged.config, t("toast.backupImported", { added: merged.added, updated: merged.updated, skipped: merged.skipped }));
+    } catch (error) {
+      setToast(t("toast.backupFailed", { error: String(error) }));
+    }
+  };
   const updateModelTags = (modelId: string, quantization: string, tags: string[], nextPool?: string[]) => {
     const trimmedQuant = quantization?.trim();
     void persist(
@@ -1177,7 +1203,7 @@ export default function App() {
           onClear={() => setLogs([])}
         />
       )}
-      <SettingsPage visible={page === "settings"} config={config} appUpdate={appUpdate} checkingUpdate={appUpdateChecking} onCheckUpdate={checkAppUpdate} onPersist={persist} onLog={appendLog} onOpenEngineHub={() => setEngineHubOpen(true)} />
+      <SettingsPage visible={page === "settings"} config={config} appUpdate={appUpdate} checkingUpdate={appUpdateChecking} onCheckUpdate={checkAppUpdate} onPersist={persist} onLog={appendLog} onOpenEngineHub={() => setEngineHubOpen(true)} onExportBackup={exportBackup} onImportBackup={importBackup} />
     </main>
       {/* Dock 日志参与布局（收起=底部状态栏 / 展开=可调高度面板），各页面共用同一份状态，不遮挡内容；仅"日志"整页除外 */}
       {isDockPage && (

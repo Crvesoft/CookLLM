@@ -1,4 +1,4 @@
-import { Activity, AlertTriangle, ArrowRight, Check, ChevronDown, ChevronRight, Cpu, Download, Eye, EyeOff, FolderOpen, Github, KeyRound, Languages, Loader2, Moon, Pencil, Plus, RefreshCw, RotateCw, Search, SlidersHorizontal, Sparkles, Star, Sun, Trash2, Wifi, Wrench, X, Zap } from "lucide-react";
+import { Activity, AlertTriangle, ArrowRight, Check, ChevronDown, ChevronRight, Cpu, Download, Eye, EyeOff, FolderOpen, Github, KeyRound, Languages, Loader2, Moon, Pencil, Plus, RefreshCw, RotateCw, Search, SlidersHorizontal, Sparkles, Star, Sun, Trash2, Upload, Wifi, Wrench, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { APP_REPO, PROJECT_URL } from "../data";
 import { useI18n } from "../i18n";
@@ -10,13 +10,14 @@ import EngineModal from "./EngineModal";
 
 type ProxyMode = "system" | "manual" | "direct";
 
-export default function SettingsPage({ visible, config, appUpdate, checkingUpdate, onCheckUpdate, onPersist, onLog, onOpenEngineHub }: { visible: boolean; config: AppConfig; appUpdate: UpdateCheckResult | null; checkingUpdate: boolean; onCheckUpdate: (openWhenAvailable?: boolean) => Promise<UpdateCheckResult>; onPersist: (config: AppConfig, message?: string) => Promise<void>; onLog: (line: string, stream?: LlamaLogPayload["stream"]) => void; onOpenEngineHub?: () => void }) {
+export default function SettingsPage({ visible, config, appUpdate, checkingUpdate, onCheckUpdate, onPersist, onLog, onOpenEngineHub, onExportBackup, onImportBackup }: { visible: boolean; config: AppConfig; appUpdate: UpdateCheckResult | null; checkingUpdate: boolean; onCheckUpdate: (openWhenAvailable?: boolean) => Promise<UpdateCheckResult>; onPersist: (config: AppConfig, message?: string) => Promise<void>; onLog: (line: string, stream?: LlamaLogPayload["stream"]) => void; onOpenEngineHub?: () => void; onExportBackup: () => Promise<void>; onImportBackup: () => Promise<void> }) {
   const { t } = useI18n();
   const [serverPath, setServerPath] = useState(config.serverPath);
   const [serverBrowseError, setServerBrowseError] = useState<string | null>(null);
   const [gpuInfo, setGpuInfo] = useState<GpuInfo | null>(null);
   const [modelsDisk, setModelsDisk] = useState<DiskUsage | null>(null);
 
+  const [backupMenuOpen, setBackupMenuOpen] = useState(false);
   const [engineModalOpen, setEngineModalOpen] = useState(false);
   const [editingEngine, setEditingEngine] = useState<LlamaEngine | null>(null);
   const [deletingEngine, setDeletingEngine] = useState<LlamaEngine | null>(null);
@@ -26,6 +27,12 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
   }, [config.serverPath]);
 
   useEffect(() => { void getGpuInfo().then(setGpuInfo).catch(() => undefined); }, []);
+  useEffect(() => {
+    if (!backupMenuOpen) return;
+    const close = () => setBackupMenuOpen(false);
+    window.addEventListener("click", close);
+    return () => window.removeEventListener("click", close);
+  }, [backupMenuOpen]);
   useEffect(() => { void getModelsDir().then(setModelsDisk).catch(() => undefined); }, [config.modelsDir]);
 
   const engines: LlamaEngine[] = config.engines && config.engines.length > 0
@@ -788,7 +795,14 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
                 <span className="settings-row-label">{t("st.storageTitle")}</span>
                 <span className="settings-row-desc">{t("st.storageDesc")}</span>
                 <div className="settings-control">
-                  <button className="secondary-button compact" onClick={() => void openConfigDir().catch(() => undefined)}><FolderOpen size={14} />{t("st.openConfigDir")}</button>
+                  <div className="backup-menu" onClick={(event) => event.stopPropagation()}>
+                    <button className="secondary-button compact" onClick={() => setBackupMenuOpen((open) => !open)}><FolderOpen size={14} />{t("st.manageBackup")}<ChevronDown size={13} /></button>
+                    {backupMenuOpen && <div className="context-menu backup-menu-list">
+                      <button onClick={() => { setBackupMenuOpen(false); void onExportBackup(); }}><Download size={14} />{t("st.exportBackup")}</button>
+                      <button onClick={() => { setBackupMenuOpen(false); void onImportBackup(); }}><Upload size={14} />{t("st.importBackup")}</button>
+                      <button onClick={() => { setBackupMenuOpen(false); void openConfigDir().catch(() => undefined); }}><FolderOpen size={14} />{t("st.openConfigDir")}</button>
+                    </div>}
+                  </div>
                 </div>
               </div>
               <div className="settings-row">

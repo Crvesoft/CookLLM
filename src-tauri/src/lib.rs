@@ -1174,6 +1174,303 @@ struct HfDownloadResult {
     size_bytes: u64,
 }
 
+/// GGUF 文件头里能稳定读到的模型信息。读失败时字段留空，由前端继续用文件名兜底。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GgufMeta {
+    architecture: String,
+    parameters: String,
+    quantization: String,
+}
+
+fn gguf_string(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).trim_matches('\0').trim().to_string()
+}
+
+/// 把 GGUF 参数量格式化成与文件名解析一致的展示（32.8B / 8.0B / 512M）。
+fn format_parameter_count(count: f64) -> String {
+    if !count.is_finite() || count <= 0.0 {
+        return String::new();
+    }
+    if count >= 1_000_000_000.0 {
+        format!("{:.1}B", count / 1_000_000_000.0)
+    } else if count >= 1_000_000.0 {
+        format!("{:.0}M", count / 1_000_000.0)
+    } else if count >= 1_000.0 {
+        format!("{:.0}K", count / 1_000.0)
+    } else {
+        format!("{:.0}", count)
+    }
+}
+
+fn gguf_type_name(value: u32) -> Option<&'static str> {
+    Some(match value {
+        0 => "F32",
+        1 => "F16",
+        2 => "Q4_0",
+        3 => "Q4_1",
+        6 => "Q5_0",
+        7 => "Q5_1",
+        8 => "Q8_0",
+        9 => "Q8_1",
+        10 => "Q2_K",
+        11 => "Q3_K",
+        12 => "Q4_K",
+        13 => "Q5_K",
+        14 => "Q6_K",
+        15 => "Q8_K",
+        16 => "IQ2_XXS",
+        17 => "IQ2_XS",
+        18 => "IQ3_XXS",
+        19 => "IQ1_S",
+        20 => "IQ4_NL",
+        21 => "IQ3_S",
+        22 => "IQ2_S",
+        23 => "IQ4_XS",
+        24 => "I8",
+        25 => "I16",
+        26 => "I32",
+        27 => "I64",
+        28 => "F64",
+        29 => "IQ1_M",
+        30 => "BF16",
+        _ => return None,
+    })
+}
+
+/// 读取 GGUF 头部元数据：general.architecture、*.block_count、*.expert_count 与首个张量量化。
+/// 只顺序扫描键值，不把整个模型读进内存；遇到不认识的版本或损坏头即返回空结果。
+fn read_gguf_meta(path: &str) -> GgufMeta {
+    let empty = GgufMeta { architecture: String::new(), parameters: String::new(), quantization: String::new() };
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return empty,
+    };
+    use std::io::Read;
+    let mut header = [0u8; 24];
+    if file.read_exact(&mut header).is_err() {
+        return empty;
+    }
+    if &header[0..4] != b"GGUF" {
+        return empty;
+    }
+    let version = u32::from_le_bytes(header[4..8].try_into().unwrap_or([0; 4]));
+    if version < 2 {
+        return empty;
+    }
+    let tensor_count = u64::from_le_bytes(header[8..16].try_into().unwrap_or([0; 8]));
+    let kv_count = u64::from_le_bytes(header[16..24].try_into().unwrap_or([0; 8]));
+    if tensor_count > 1_000_000 || kv_count > 100_000 {
+        return empty;
+    }
+
+    let mut architecture = String::new();
+    let mut explicit_params: f64 = 0.0;
+    let mut ok = true;
+
+    fn read_exact(file: &mut fs::File, len: usize) -> Option<Vec<u8>> {
+        if len > 64 * 1024 * 1024 {
+            return None;
+        }
+        let mut buf = vec![0u8; len];
+        use std::io::Read;
+        file.read_exact(&mut buf).ok()?;
+        Some(buf)
+    }
+    fn read_u32(file: &mut fs::File) -> Option<u32> {
+        read_exact(file, 4).map(|buf| u32::from_le_bytes(buf.try_into().unwrap_or([0; 4])))
+    }
+    fn read_u64(file: &mut fs::File) -> Option<u64> {
+        read_exact(file, 8).map(|buf| u64::from_le_bytes(buf.try_into().unwrap_or([0; 8])))
+    }
+    fn read_string(file: &mut fs::File) -> Option<String> {
+        let len = read_u64(file)? as usize;
+        read_exact(file, len).map(|buf| gguf_string(&buf))
+    }
+
+    for _ in 0..kv_count {
+        let Some(key) = read_string(&mut file) else { ok = false; break; };
+        let Some(value_type) = read_u32(&mut file) else { ok = false; break; };
+        let key_tail = key.rsplit('.').next().unwrap_or("");
+        match value_type {
+            8 => {
+                let Some(text) = read_string(&mut file) else { ok = false; break; };
+                if key == "general.architecture" && !text.is_empty() {
+                    architecture = text;
+                }
+            }
+            4 | 5 => {
+                let Some(raw) = read_u32(&mut file) else { ok = false; break; };
+                if key_tail == "parameter_count" {
+                    explicit_params = raw as f64;
+                }
+            }
+            6 | 7 | 10 | 11 | 12 => {
+                let Some(raw) = read_u64(&mut file) else { ok = false; break; };
+                if key_tail == "parameter_count" {
+                    explicit_params = raw as f64;
+                }
+            }
+            0 | 1 | 24 | 25 | 26 | 27 | 28 | 30 => {
+                let len = match value_type { 24 | 26 => 4, 1 | 25 | 30 => 2, _ => 8 };
+                if read_exact(&mut file, len).is_none() { ok = false; break; }
+            }
+            9 => {
+                let Some(len) = read_u64(&mut file) else { ok = false; break; };
+                let mut index = 0u64;
+                while index < len {
+                    let Some(nested) = read_u32(&mut file) else { ok = false; break; };
+                    let size = match nested {
+                        8 => read_u64(&mut file).unwrap_or(0) as usize,
+                        4 | 5 | 24 | 26 => 4,
+                        6 | 7 | 10 | 11 | 12 | 0 | 28 => 8,
+                        1 | 25 | 30 => 2,
+                        _ => 0,
+                    };
+                    if size == 0 || read_exact(&mut file, size).is_none() { ok = false; break; }
+                    index += 1;
+                }
+                if !ok { break; }
+            }
+            _ => { ok = false; break; }
+        }
+    }
+
+    let mut quantization = String::new();
+    if ok && tensor_count > 0 {
+        if read_string(&mut file).is_some() {
+            let dims = read_u32(&mut file).unwrap_or(0);
+            let mut skipped = true;
+            for _ in 0..dims.min(8) {
+                if read_u64(&mut file).is_none() { skipped = false; break; }
+            }
+            if skipped {
+                if let Some(kind) = read_u32(&mut file).and_then(gguf_type_name) {
+                    quantization = kind.to_string();
+                }
+            }
+        }
+    }
+
+    let parameters = if explicit_params > 0.0 { format_parameter_count(explicit_params) } else { String::new() };
+
+    if !ok && architecture.is_empty() && parameters.is_empty() && quantization.is_empty() {
+        return empty;
+    }
+    GgufMeta { architecture, parameters, quantization }
+}
+
+#[tauri::command]
+fn paths_exist(paths: Vec<String>) -> Vec<String> {
+    paths.into_iter().filter(|path| !path.trim().is_empty() && Path::new(path).exists()).collect()
+}
+
+#[tauri::command]
+fn inspect_gguf(path: String) -> GgufMeta {
+    read_gguf_meta(&path)
+}
+
+#[cfg(test)]
+mod gguf_meta_tests {
+    use super::read_gguf_meta;
+
+    #[test]
+    fn read_gguf_meta_rejects_truncated_header() {
+        let path = std::env::temp_dir().join("cookllm-truncated.gguf");
+        std::fs::write(&path, b"GGUF").unwrap();
+        let meta = read_gguf_meta(&path.to_string_lossy());
+        assert!(meta.architecture.is_empty());
+        assert!(meta.parameters.is_empty());
+        assert!(meta.quantization.is_empty());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn read_gguf_meta_reads_architecture_and_quant() {
+        fn push_u32(buf: &mut Vec<u8>, value: u32) { buf.extend_from_slice(&value.to_le_bytes()); }
+        fn push_u64(buf: &mut Vec<u8>, value: u64) { buf.extend_from_slice(&value.to_le_bytes()); }
+        fn push_str(buf: &mut Vec<u8>, value: &str) { push_u64(buf, value.len() as u64); buf.extend_from_slice(value.as_bytes()); }
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        push_u32(&mut buf, 3);
+        push_u64(&mut buf, 1);
+        push_u64(&mut buf, 2);
+        push_str(&mut buf, "general.architecture");
+        push_u32(&mut buf, 8);
+        push_str(&mut buf, "qwen2");
+        push_str(&mut buf, "general.parameter_count");
+        push_u32(&mut buf, 10);
+        push_u64(&mut buf, 8_000_000_000);
+        push_str(&mut buf, "token_embd.weight");
+        push_u32(&mut buf, 2);
+        push_u64(&mut buf, 4096);
+        push_u64(&mut buf, 151936);
+        push_u32(&mut buf, 8);
+        push_u64(&mut buf, 0);
+        let path = std::env::temp_dir().join("cookllm-valid.gguf");
+        std::fs::write(&path, buf).unwrap();
+        let meta = read_gguf_meta(&path.to_string_lossy());
+        assert_eq!(meta.architecture, "qwen2");
+        assert_eq!(meta.parameters, "8.0B");
+        assert_eq!(meta.quantization, "Q8_0");
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ConfigBackupFile {
+    kind: String,
+    version: u32,
+    exported_at: u64,
+    config: AppConfig,
+}
+
+/// 导出当前配置。默认去掉 Hugging Face Token，避免明文令牌跟着备份文件传播。
+#[tauri::command]
+fn export_config_backup(app: AppHandle) -> Result<String, String> {
+    let mut config = read_config(&app)?;
+    config.hf_token = None;
+    let backup = ConfigBackupFile {
+        kind: "cookllm-config".into(),
+        version: 1,
+        exported_at: now_ms(),
+        config,
+    };
+    let contents = serde_json::to_vec_pretty(&backup).map_err(|error| error.to_string())?;
+    let file_name = format!("CookLLM-config-{}.json", backup.exported_at);
+    let Some(target) = app.dialog().file().set_file_name(&file_name).add_filter("CookLLM 配置", &["json"]).blocking_save_file() else {
+        return Ok(String::new());
+    };
+    let Some(path) = target.as_path() else {
+        return Err("无法写入所选路径".into());
+    };
+    fs::write(path, contents).map_err(|error| error.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+/// 读取一份备份。只校验信封，真正合并由前端按当前模型库决定，避免覆盖用户刚改的配置。
+#[tauri::command]
+fn pick_config_backup(app: AppHandle) -> Result<Option<AppConfig>, String> {
+    let Some(file_path) = app.dialog().file().add_filter("CookLLM 配置", &["json"]).blocking_pick_file() else {
+        return Ok(None);
+    };
+    let Some(path) = file_path.as_path() else {
+        return Err("无法读取所选文件".into());
+    };
+    let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let value: serde_json::Value = serde_json::from_str(&contents).map_err(|error| format!("配置文件不是有效 JSON：{}", error))?;
+    let config_value = if value.get("kind").and_then(|item| item.as_str()) == Some("cookllm-config") {
+        value.get("config").cloned().ok_or_else(|| "配置备份缺少 config 字段".to_string())?
+    } else if value.get("models").is_some() || value.get("serverPath").is_some() {
+        value
+    } else {
+        return Err("这不是 CookLLM 配置备份".into());
+    };
+    let config: AppConfig = serde_json::from_value(config_value).map_err(|error| format!("配置备份无法识别：{}", error))?;
+    Ok(Some(config))
+}
+
 #[tauri::command]
 fn pick_files(app: AppHandle, filters: Vec<String>) -> Vec<PickedFile> {
     let mut builder = app.dialog().file();
@@ -4459,7 +4756,7 @@ pub fn run() {
             react_mounted_ms: None,
             reported: false,
         })))
-        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_whoami, hf_avatar, hf_download, hf_download_url, hf_cancel_download, hf_pause_download, hf_clear_download, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, check_orphan_server, kill_orphan_server, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, pick_files, pick_folder, pick_server_dir, pick_server_file, expand_paths, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
+        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_whoami, hf_avatar, hf_download, hf_download_url, hf_cancel_download, hf_pause_download, hf_clear_download, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, check_orphan_server, kill_orphan_server, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, pick_files, pick_folder, pick_server_dir, pick_server_file, expand_paths, inspect_gguf, paths_exist, export_config_backup, pick_config_backup, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
         .setup(|app| {
             configure_main_window(app)?;
             setup_tray(app)?;

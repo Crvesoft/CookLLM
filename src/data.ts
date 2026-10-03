@@ -2,12 +2,60 @@ import type { AppConfig, LlamaLogPayload, ModelAsset, Profile } from "./types";
 import { formatMessage, getLocale } from "./i18n";
 
 /** 当前应用版本（与 tauri.conf.json / package.json 保持一致）：浏览器模式回退值，检测更新的比较基线 */
-export const APP_VERSION = "0.3.0";
+export const APP_VERSION = "0.3.1";
 /** 项目信息：GitHub 仓库（owner/repo）与主页地址 */
 export const APP_REPO = "Crvesoft/CookLLM";
 export const PROJECT_URL = `https://github.com/${APP_REPO}`;
 
 export const uid = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+/** 合并导入的配置：同路径模型保留本机条目并补齐缺失预设；调用方传入本机不存在的路径集合。 */
+export function mergeImportedConfig(current: AppConfig, incoming: AppConfig, missingPaths: Set<string> = new Set()): { config: AppConfig; added: number; updated: number; skipped: number } {
+  const missing = (path?: string) => missingPaths.has((path || "").toLowerCase());
+  const byPath = new Map(current.models.map((model) => [model.path.toLowerCase(), model]));
+  let added = 0;
+  let updated = 0;
+  let skipped = 0;
+  const models = [...current.models];
+  for (const raw of incoming.models || []) {
+    const path = raw.path?.trim();
+    if (!path || missing(path)) { skipped += 1; continue; }
+    const existing = byPath.get(path.toLowerCase());
+    if (!existing) {
+      models.push(raw);
+      added += 1;
+      continue;
+    }
+    const known = new Set(existing.profiles.map((profile) => profile.id));
+    const profiles = [...existing.profiles];
+    for (const profile of raw.profiles || []) {
+      if (!known.has(profile.id)) profiles.push(profile);
+    }
+    const index = models.findIndex((model) => model.id === existing.id);
+    if (index >= 0 && profiles.length !== existing.profiles.length) {
+      models[index] = { ...existing, profiles, tags: existing.tags?.length ? existing.tags : raw.tags };
+      updated += 1;
+    }
+  }
+  const engines = [...(current.engines || [])];
+  const engineIds = new Set(engines.map((engine) => engine.id));
+  for (const engine of incoming.engines || []) {
+    if (engine.path?.trim() && !missing(engine.path) && !engineIds.has(engine.id)) engines.push(engine);
+  }
+  return {
+    config: {
+      ...current,
+      models,
+      engines,
+      customTags: Array.from(new Set([...(current.customTags || []), ...(incoming.customTags || [])])),
+      serverPath: current.serverPath || incoming.serverPath,
+      activeEngineId: current.activeEngineId || incoming.activeEngineId,
+    },
+    added,
+    updated,
+    skipped,
+  };
+}
 export const DEFAULT_PROFILES: Profile[] = [
   { id: "balanced", name: "均衡模式", description: "日常对话与编码的推荐配置", host: "0.0.0.0", port: 9931, gpuLayers: 35, contextSize: 8192, threads: 8, parallel: 1, batchSize: 512, ubatchSize: 256, flashAttention: true, ncmoeLayers: 0, mtp: false, mtpDraftPath: undefined, specDraftNMax: 3, cacheTypeK: "f32", cacheTypeV: "f32", jinja: true, reasoning: "auto", reasoningEffort: "auto", reasoningBudget: -1, noMmprojOffload: false, loadMode: "mmap", temperature: 0.7, topP: 0.9, minP: 0.05, repeatPenalty: 1.1, extraArgs: "" },
   { id: "deep-thought", name: "深度思考", description: "长上下文与稳定输出，适合复杂推理", host: "0.0.0.0", port: 9931, gpuLayers: 48, contextSize: 32768, threads: 10, parallel: 1, batchSize: 512, ubatchSize: 256, flashAttention: true, ncmoeLayers: 0, mtp: false, mtpDraftPath: undefined, specDraftNMax: 3, cacheTypeK: "q8_0", cacheTypeV: "q8_0", jinja: true, reasoning: "on", reasoningEffort: "high", reasoningBudget: -1, noMmprojOffload: false, loadMode: "mmap", temperature: 0.55, topP: 0.92, minP: 0.03, repeatPenalty: 1.08, extraArgs: "" },

@@ -3872,6 +3872,9 @@ select:disabled {
   max-width: 220px
 }
 
+.backup-menu { position: relative; }
+.backup-menu-list { top: calc(100% + 6px); right: 0; width: max-content; min-width: 148px; }
+
 .mini-seg {
   display: inline-flex;
   padding: 3px;
@@ -13405,7 +13408,8 @@ body.reordering .profile-card:hover {
   color: #596375;
   font-size: 12px;
   border: 1px dashed #3c3c3c;
-  border-radius: 12px
+  border-radius: 12px;
+  flex-shrink: 0
 }
 
 .hf-files-list {
@@ -14343,7 +14347,12 @@ body.reordering .profile-card:hover {
   overscroll-behavior: contain;
   scrollbar-width: thin;
   scrollbar-color: #3c3c3c transparent;
-  padding-right: 2px
+  padding-right: 4px;
+  padding-bottom: 16px
+}
+
+.tasks-view > * {
+  flex-shrink: 0
 }
 
 .tasks-filterbar {
@@ -14355,7 +14364,8 @@ body.reordering .profile-card:hover {
   padding: 8px 12px;
   border: 1px solid #333333;
   border-radius: 12px;
-  background: #1e1e1e
+  background: #1e1e1e;
+  flex-shrink: 0
 }
 
 .tasks-section-title {
@@ -14363,7 +14373,8 @@ body.reordering .profile-card:hover {
   align-items: baseline;
   justify-content: space-between;
   gap: 10px;
-  margin: 2px 0 0
+  margin: 2px 0 0;
+  flex-shrink: 0
 }
 
 .tasks-section-title h2 {
@@ -14384,7 +14395,8 @@ body.reordering .profile-card:hover {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  transition: .18s ease
+  transition: .18s ease;
+  flex-shrink: 0
 }
 
 .task-card:hover {
@@ -14660,6 +14672,8 @@ body.reordering .profile-card:hover {
   padding: 0;
   display: block;
   gap: 0;
+  min-height: 60px;
+  flex-shrink: 0;
   border-radius: 12px;
   border: 1px solid #303030;
   background: #222222;
@@ -14880,7 +14894,8 @@ body.reordering .profile-card:hover {
   min-height: 60px;
   padding: 12px 20px;
   box-sizing: border-box;
-  justify-content: center
+  justify-content: center;
+  flex-shrink: 0
 }
 
 .task-card-done {

@@ -30,6 +30,8 @@ export interface ModelAsset {
   accent: "violet" | "cyan" | "amber" | "rose";
   /** 自定义标签（如角色扮演、代码、未知量化补录等） */
   tags?: string[];
+  /** 架构/参数量/量化来自 GGUF 文件头，而非文件名猜测 */
+  metadataSource?: "gguf" | "filename";
 }
 
 export interface Profile {

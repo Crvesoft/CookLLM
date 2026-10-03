@@ -128,6 +128,35 @@ export async function getGpuInfo(): Promise<GpuInfo | null> {
   return invoke<GpuInfo>("get_gpu_info");
 }
 
+export interface GgufMeta {
+  architecture: string;
+  parameters: string;
+  quantization: string;
+}
+
+/** 读取 GGUF 文件头。浏览器模式或读取失败时返回空字段，调用方继续用文件名兜底。 */
+export async function pathsExist(paths: string[]): Promise<string[]> {
+  if (!isTauri() || !paths.length) return paths;
+  return invoke<string[]>("paths_exist", { paths });
+}
+
+export async function inspectGguf(path: string): Promise<GgufMeta> {
+  if (!isTauri()) return { architecture: "", parameters: "", quantization: "" };
+  return invoke<GgufMeta>("inspect_gguf", { path });
+}
+
+/** 导出当前配置到用户选择的 JSON 文件；取消时返回空字符串。Token 不会写入备份。 */
+export async function exportConfigBackup(): Promise<string> {
+  if (!isTauri()) throw new Error("配置备份仅在桌面端可用");
+  return invoke<string>("export_config_backup");
+}
+
+/** 选择并解析一份配置备份；用户取消时返回 null。 */
+export async function pickConfigBackup(): Promise<AppConfig | null> {
+  if (!isTauri()) throw new Error("配置导入仅在桌面端可用");
+  return invoke<AppConfig | null>("pick_config_backup");
+}
+
 export async function openConfigDir(): Promise<void> {
   if (isTauri()) { await invoke("open_config_dir"); }
 }
