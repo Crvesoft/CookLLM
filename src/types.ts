@@ -30,8 +30,8 @@ export interface ModelAsset {
   accent: "violet" | "cyan" | "amber" | "rose";
   /** 自定义标签（如角色扮演、代码、未知量化补录等） */
   tags?: string[];
-  /** 架构/参数量/量化来自 GGUF 文件头，而非文件名猜测 */
-  metadataSource?: "gguf" | "filename";
+  /** 架构/参数量/量化来自 GGUF / NINFER 文件头，而非文件名猜测 */
+  metadataSource?: "gguf" | "ninfer" | "filename";
 }
 
 export interface Profile {
@@ -68,11 +68,56 @@ export interface Profile {
   mmprojPath?: string;
   /** 是否禁止将视觉多模态模型卸载到显存，强制纯系统内存运行（--no-mmproj-offload） */
   noMmprojOffload?: boolean;
-  /** 该预设关联的 llama.cpp 引擎分支 ID；未指定或为空则跟随全局默认引擎 */
+  /** 该预设关联的 llama.cpp / ninfer 引擎分支 ID；未指定或为空则跟随全局默认引擎 */
   engineId?: string;
+
+  /** ninfer / ninfer-kvmem 专属：KV 缓存量化类型（如 rk8v4 / int8 / bf16 / nvfp4） */
+  kvDtype?: string;
+  /** ninfer 专属：预填充分块 Token 数（128 的倍数，如 256 / 512） */
+  prefillChunk?: number;
+  /** ninfer 专属：快速预热内核开关（--fast-prefill-kernel） */
+  fastPrefillKernel?: boolean;
+  /** ninfer 专属：显存分配策略（strict / mixed / default） */
+  cudaMemoryPolicy?: string;
+  /** ninfer 专属：CUDA 显卡序号（--device N） */
+  deviceIndex?: number;
+  /** ninfer 专属：硬件调优 Profile（off / auto / calibrate） */
+  deviceProfile?: string;
+  /** ninfer 专属：自定义 Jinja 对话模板路径（--chat-template FILE） */
+  chatTemplatePath?: string;
+  /** ninfer 专属：硬件路线 profile 配置文件路径（--device-profile-path FILE） */
+  deviceProfilePath?: string;
+  /** ninfer 专属：自适应 MTP 投机采样开关 */
+  specMtp?: boolean;
+  /** ninfer 专属：MTP 草稿 Token 步数（--draft-tokens N） */
+  draftTokens?: number;
+  /** ninfer 专属：自适应草稿衰减（--adaptive-mtp） */
+  adaptiveMtp?: boolean;
+  /** ninfer 专属：N-gram 匹配步数（--ngram-draft-tokens N） */
+  ngramDraftTokens?: number;
+  /** 单 ninfer 专属：系统内存借用大小（--host-cache-mib MiB） */
+  hostCacheMib?: number;
+  /** 单 ninfer 专属：KV 缓存总上限（--kv-capacity tokens） */
+  kvCapacity?: number;
+  /** ninfer-kvmem 专属：GPU 历史 KV 预算（--kvmem-budget tokens） */
+  kvmemBudget?: number;
+  /** ninfer-kvmem 专属：GPU 生成预留显存（--kvmem-gen-reserve tokens） */
+  kvmemGenReserve?: number;
+  /** ninfer-kvmem 专属：主机内存预算配额（--kvmem-host-mib MiB） */
+  kvmemHostMib?: number;
+  /** ninfer-kvmem 专属：历史会话保持数量（--kvmem-sessions 1..16） */
+  kvmemSessions?: number;
+  /** ninfer 专属：默认输出 Token 上限（--default-max-tokens；0 = 不限制生成到上下文耗尽，未设置按引擎默认 8192） */
+  defaultMaxTokens?: number;
+  /** ninfer 专属：top-k 采样（--top-k，0..20） */
+  topK?: number;
+  /** ninfer 专属：采样随机种子（--seed） */
+  seed?: number;
+  /** ninfer 专属：CUDA Graph 驱动状态预留显存（--cuda-graph-allowance-mib MiB） */
+  cudaGraphAllowanceMib?: number;
 }
 
-/** 托管的 llama.cpp 引擎分支版本 */
+/** 托管的 llama.cpp / ninfer 引擎分支版本 */
 export interface LlamaEngine {
   id: string;
   name: string;
@@ -81,13 +126,15 @@ export interface LlamaEngine {
   cudaVersion?: string;
   version?: string;
   createdAt?: number;
+  /** 引擎架构类型：llamacpp | ninfer | ninfer_kvmem */
+  engineType?: "llamacpp" | "ninfer" | "ninfer_kvmem";
 }
 
 export interface AppConfig {
   serverPath: string;
-  /** 当前激活的默认 llama.cpp 引擎分支 ID */
+  /** 当前激活的默认 llama.cpp / ninfer 引擎分支 ID */
   activeEngineId?: string;
-  /** 已登记的 llama.cpp 引擎分支列表 */
+  /** 已登记的 llama.cpp / ninfer 引擎分支列表 */
   engines?: LlamaEngine[];
   models: ModelAsset[];
   /** 旧版全局预设池，仅兼容旧配置读取；新配置预设已归入每个模型的 ModelAsset.profiles */
@@ -139,6 +186,8 @@ export interface ServerStatus {
   engineName?: string;
   /** 启动当前服务所用的引擎计算后端 */
   engineBackend?: string;
+  /** 启动当前服务所用的引擎架构类型 */
+  engineType?: "llamacpp" | "ninfer" | "ninfer_kvmem";
 }
 
 /** GPU 实时指标（nvidia-smi 轮询，单位 MiB / % / W）；无 NVIDIA 驱动或字段不支持时为 null/缺省 */

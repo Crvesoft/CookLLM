@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { DEMO_CONFIG, DEFAULT_PROFILES, INITIAL_LOGS, mergeImportedConfig, migrateConfig, uid } from "./data";
+import { DEMO_CONFIG, DEFAULT_PROFILES, DEFAULT_NINFER_PROFILES, defaultProfilesForModel, INITIAL_LOGS, mergeImportedConfig, migrateConfig, uid } from "./data";
 import { setLocale, useI18n } from "./i18n";
 import { checkForUpdate, checkOrphanServer, exportConfigBackup, getGpuStats, getModelsDir, getServerStatus, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, inspectGguf, isTauri, killOrphanServer, loadConfig, onLlamaLog, openExternal, pathsExist, pickConfigBackup, pickModelsDir, removeLocalFile, revealInFolder, saveConfig, setWindowTheme, startServer, stopServer, type OrphanProcessItem, type UpdateCheckResult } from "./tauri";
 import type { ActiveDownload } from "./components/ExplorePage";
@@ -305,38 +305,22 @@ export default function App() {
       void getServerStatus().then((st) => {
         if (!active) return;
         setStatus((prev) => (shallowEqualFields(prev, st) ? prev : st));
-        // 当服务处于运行状态时，直连原生 /slots 端点同步底层槽位真实指标（完美攻克官方与 kvmem 控制台不输出 prompt eval time 难题）
+        // 当服务处于运行状态时，同步底层实时指标（针对不同引擎自动自适应）
         if (st.running && st.port) {
-          void fetch(`http://127.0.0.1:${st.port}/slots`, { signal: AbortSignal.timeout(1000) })
-            .then((r) => (r.ok ? r.json() : null))
-            .then((data) => {
-              if (!active || !data) return;
-              const slots = Array.isArray(data) ? data : (data.value && Array.isArray(data.value) ? data.value : []);
-              if (!slots.length) return;
-              const activeSlot = slots.find((s: any) => s.is_processing);
-              const anyProcessing = Boolean(activeSlot);
-              // 若当前完全没有槽位在运行，且跟踪器也没有活跃未完成的轮次，说明服务处于纯空闲状态，直接跳过
-              if (!anyProcessing && !inferenceTrackerRef.current.hasActiveTurn()) {
-                return;
-              }
-              const slot = activeSlot || slots[0];
-              if (!slot) return;
-              // 当前 llama.cpp 的缓存数与速率不在 slot 顶层，而在 timings（cache_n / prompt_per_second）
-              const timings = slot.timings && typeof slot.timings === "object" ? slot.timings : null;
-              const promptTokens = slot.n_prompt_tokens ?? timings?.prompt_n ?? slot.prompt_n ?? slot.n_prompt_tokens_processed;
-              const cachedTokens = slot.n_prompt_tokens_cache ?? timings?.cache_n ?? slot.n_past ?? 0;
-              const cacheHitRatio = promptTokens && promptTokens > 0 ? (cachedTokens / promptTokens) * 100 : undefined;
-              const decodeTokens = slot.next_token?.[0]?.n_decoded ?? timings?.predicted_n ?? slot.n_decoded ?? slot.predicted_n;
-              const res = inferenceTrackerRef.current.updateFromSlot({
-                taskId: slot.id_task,
-                promptTokens,
-                cachedTokens,
-                cacheHitRatio: cacheHitRatio != null ? parseFloat(cacheHitRatio.toFixed(1)) : undefined,
-                decodeTokens,
-                prefillTps: timings?.prompt_per_second ?? slot.prompt_per_second,
-                prefillTimeMs: timings?.prompt_ms ?? slot.prompt_ms ?? slot.t_prompt_processing,
-                decodeTps: timings?.predicted_per_second ?? slot.predicted_per_second,
-                isProcessing: anyProcessing,
+          const isNinfer = st.engineType === "ninfer" || st.engineType === "ninfer_kvmem";
+          if (isNinfer) {
+            void Promise.all([
+              fetch(`http://127.0.0.1:${st.port}/stats`, { signal: AbortSignal.timeout(1000) })
+                .then((r) => (r.ok ? r.json() : null))
+                .catch(() => null),
+              fetch(`http://127.0.0.1:${st.port}/slots`, { signal: AbortSignal.timeout(1000) })
+                .then((r) => (r.ok ? r.json() : null))
+                .catch(() => null),
+            ]).then(([statsData, slotsData]) => {
+              if (!active) return;
+              const res = inferenceTrackerRef.current.updateFromNinfer({
+                stats: statsData,
+                slots: slotsData,
               });
               if (res.updated && res.latest) {
                 setLatestInference({ ...res.latest });
@@ -344,15 +328,63 @@ export default function App() {
                 const speed = res.latest.decodeTps ?? res.latest.prefillTps;
                 if (speed != null) setTokSample({ rate: speed, at: Date.now() });
               } else {
-                // 空闲超时兜底检查（若生成停止但无显式完成信号，3 秒内自动结算）
                 const timeoutRes = inferenceTrackerRef.current.checkIdleTimeout(3000);
                 if (timeoutRes.updated && timeoutRes.latest) {
                   setLatestInference({ ...timeoutRes.latest });
                   setInferenceHistory(inferenceTrackerRef.current.getHistory());
                 }
               }
-            })
-            .catch(() => undefined);
+            }).catch(() => undefined);
+          } else {
+            // llama.cpp 专属直连 /slots 端点
+            void fetch(`http://127.0.0.1:${st.port}/slots`, { signal: AbortSignal.timeout(1000) })
+              .then((r) => (r.ok ? r.json() : null))
+              .catch(() => null)
+              .then((data) => {
+                if (!active || !data) return;
+                const slots = Array.isArray(data) ? data : (data.value && Array.isArray(data.value) ? data.value : []);
+                if (!slots.length) return;
+                const activeSlot = slots.find((s: any) => s.is_processing);
+                const anyProcessing = Boolean(activeSlot);
+                // 若当前完全没有槽位在运行，且跟踪器也没有活跃未完成的轮次，说明服务处于纯空闲状态，直接跳过
+                if (!anyProcessing && !inferenceTrackerRef.current.hasActiveTurn()) {
+                  return;
+                }
+                const slot = activeSlot || slots[0];
+                if (!slot) return;
+                // 当前 llama.cpp 的缓存数与速率不在 slot 顶层，而在 timings（cache_n / prompt_per_second）
+                const timings = slot.timings && typeof slot.timings === "object" ? slot.timings : null;
+                const promptTokens = slot.n_prompt_tokens ?? timings?.prompt_n ?? slot.prompt_n ?? slot.n_prompt_tokens_processed;
+                const cachedTokens = slot.n_prompt_tokens_cache ?? timings?.cache_n ?? slot.n_past ?? 0;
+                const cacheHitRatio = promptTokens && promptTokens > 0 ? (cachedTokens / promptTokens) * 100 : undefined;
+                const decodeTokens = slot.next_token?.[0]?.n_decoded ?? timings?.predicted_n ?? slot.n_decoded ?? slot.predicted_n;
+                const res = inferenceTrackerRef.current.updateFromSlot({
+                  taskId: slot.id_task,
+                  promptTokens,
+                  cachedTokens,
+                  cacheHitRatio: cacheHitRatio != null ? parseFloat(cacheHitRatio.toFixed(1)) : undefined,
+                  decodeTokens,
+                  prefillTps: timings?.prompt_per_second ?? slot.prompt_per_second,
+                  prefillTimeMs: timings?.prompt_ms ?? slot.prompt_ms ?? slot.t_prompt_processing,
+                  decodeTps: timings?.predicted_per_second ?? slot.predicted_per_second,
+                  isProcessing: anyProcessing,
+                });
+                if (res.updated && res.latest) {
+                  setLatestInference({ ...res.latest });
+                  setInferenceHistory(inferenceTrackerRef.current.getHistory());
+                  const speed = res.latest.decodeTps ?? res.latest.prefillTps;
+                  if (speed != null) setTokSample({ rate: speed, at: Date.now() });
+                } else {
+                  // 空闲超时兜底检查（若生成停止但无显式完成信号，3 秒内自动结算）
+                  const timeoutRes = inferenceTrackerRef.current.checkIdleTimeout(3000);
+                  if (timeoutRes.updated && timeoutRes.latest) {
+                    setLatestInference({ ...timeoutRes.latest });
+                    setInferenceHistory(inferenceTrackerRef.current.getHistory());
+                  }
+                }
+              })
+              .catch(() => undefined);
+          }
         }
       }).catch(() => undefined);
       // GPU 指标独立轮询：查询失败 / 无 NVIDIA 驱动 → null，卡片显示 "--"
@@ -694,21 +726,23 @@ export default function App() {
         patchByTaskId(download.taskId, { status: "done" as const, path, finishedAt: Date.now() });
         return;
       }
-      const name = fileBaseName.replace(/\.gguf$/i, "").replace(/[-_]/g, " ");
+      const name = fileBaseName.replace(/\.(gguf|ninfer)$/i, "").replace(/[-_]/g, " ");
+      const isNinfer = path.toLowerCase().endsWith(".ninfer");
       const meta = await inspectGguf(path).catch(() => ({ architecture: "", parameters: "", quantization: "" }));
       const paramMatch = path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase();
       const parameters = meta.parameters || paramMatch || "—";
-      const defaultProfile: Profile = { ...DEFAULT_PROFILES[0], id: uid("profile") };
+      const initialProfiles = defaultProfilesForModel(path);
+      const defaultProfile = initialProfiles[0];
       const model: ModelAsset = {
         id: uid("model"),
         name,
         path,
         sizeBytes: sizeBytes ?? download.sizeBytes,
-        architecture: meta.architecture || "GGUF",
+        architecture: meta.architecture || (isNinfer ? "NINFER" : "GGUF"),
         quantization: meta.quantization || parseQuantization(path, t("model.unknownQuant")),
         parameters,
-        metadataSource: meta.architecture || meta.quantization || meta.parameters ? "gguf" : "filename",
-        profiles: [defaultProfile],
+        metadataSource: meta.architecture || meta.quantization || meta.parameters ? (isNinfer ? "ninfer" : "gguf") : "filename",
+        profiles: initialProfiles,
         accent: ACCENTS[currentConfig.models.length % ACCENTS.length],
       };
       setSelectedProfiles((previous) => ({ ...previous, [model.id]: defaultProfile.id }));
@@ -915,7 +949,7 @@ export default function App() {
           pid: 18420,
           port: profile.port,
           modelId: model.id,
-          modelName: model.name,
+          modelName: modelTitle(model),
           profileId: profile.id,
           profileName: profile.name,
           startedAt: Date.now(),
@@ -931,10 +965,14 @@ export default function App() {
       setTokSample(null);
       dockAutoCollapseRef.current = true; // 武装：本次启动期间收到就绪日志后自动收起 Dock
       appendLog(`[engine] ${engineName}`, "system");
-      if (profile.mmprojPath) appendLog(`--mmproj ${profile.mmprojPath}`, "stdout");
-      if (profile.mtpDraftPath) appendLog(`-md ${profile.mtpDraftPath}`, "stdout");
-      if (profile.mtp && !profile.mtpDraftPath) appendLog(`--spec-type draft-mtp`, "stdout");
-      if (profile.mtp || profile.mtpDraftPath) appendLog(`--spec-draft-n-max ${profile.specDraftNMax ?? 2}`, "stdout");
+      const currentEng = profile.engineId ? config.engines?.find((e) => e.id === profile.engineId) : config.engines?.find((e) => e.id === config.activeEngineId);
+      const isLlama = !currentEng || currentEng.engineType === "llamacpp" || !currentEng.engineType;
+      if (isLlama) {
+        if (profile.mmprojPath) appendLog(`--mmproj ${profile.mmprojPath}`, "stdout");
+        if (profile.mtpDraftPath) appendLog(`-md ${profile.mtpDraftPath}`, "stdout");
+        if (profile.mtp && !profile.mtpDraftPath) appendLog(`--spec-type draft-mtp`, "stdout");
+        if (profile.mtp || profile.mtpDraftPath) appendLog(`--spec-draft-n-max ${profile.specDraftNMax ?? 2}`, "stdout");
+      }
       if (page !== "logs") setLogDockOpen(true); // 所有 Dock 页启动时自动展开，显示加载日志；就绪后自动收起（日志整页本身就在看日志）
       setToast(t("toast.started", { model: modelTitle(model) }));
     } catch (error) { appendLog(t("log.startFailed", { error: String(error) }), "stderr"); setServiceAbnormal(true); dockAutoCollapseRef.current = false; if (page !== "logs") setLogDockOpen(true); setToast(t("toast.startFailedToast")); }
@@ -994,8 +1032,21 @@ export default function App() {
     const additions: ModelAsset[] = [];
     for (const [index, item] of fresh.entries()) {
       const path = item.path;
+      const isNinfer = path.toLowerCase().endsWith(".ninfer");
       const meta = await inspectGguf(path).catch(() => ({ architecture: "", parameters: "", quantization: "" }));
-      additions.push({ id: uid("model"), name: fileName(path).replace(/\.gguf$/i, "").replace(/[-_]/g, " "), path, sizeBytes: item.sizeBytes, architecture: meta.architecture || "GGUF", quantization: meta.quantization || parseQuantization(path, t("model.unknownQuant")), parameters: meta.parameters || path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase() || "—", metadataSource: meta.architecture || meta.quantization || meta.parameters ? "gguf" : "filename", profiles: [{ ...DEFAULT_PROFILES[0], id: uid("profile") }], accent: ACCENTS[(config.models.length + index) % ACCENTS.length] });
+      const initialProfiles = defaultProfilesForModel(path);
+      additions.push({
+        id: uid("model"),
+        name: fileName(path).replace(/\.(gguf|ninfer)$/i, "").replace(/[-_]/g, " "),
+        path,
+        sizeBytes: item.sizeBytes,
+        architecture: meta.architecture || (isNinfer ? "NINFER" : "GGUF"),
+        quantization: meta.quantization || parseQuantization(path, t("model.unknownQuant")),
+        parameters: meta.parameters || path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase() || "—",
+        metadataSource: meta.architecture || meta.quantization || meta.parameters ? (isNinfer ? "ninfer" : "gguf") : "filename",
+        profiles: initialProfiles,
+        accent: ACCENTS[(config.models.length + index) % ACCENTS.length]
+      });
     }
     setSelectedProfiles((previous) => { const next = { ...previous }; for (const model of additions) next[model.id] = model.profiles[0].id; return next; });
     await persist({ ...config, models: [...config.models, ...additions] }, t(additions.length === 1 ? "toast.modelAdded" : "toast.modelsAdded", { count: additions.length }));
@@ -1187,7 +1238,7 @@ export default function App() {
   return <div className={cn("app-shell", sidebarCollapsed && "sidebar-collapsed", zenMode && "zen-mode")}>
     <Sidebar page={page} onPage={setPage} downloadBadge={exploreBadge} badgeProgress={exploreActive > 0 ? exploreProgress : undefined} updateAvailable={appUpdate?.status === "available"} status={status} abnormal={serviceAbnormal} gpuStats={gpuStats} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed((value) => !value)} theme={theme} onToggleTheme={() => void persist({ ...config, theme: theme === "dark" ? "light" : "dark" })} />
     <div className={cn("workspace", isDockPage && "dock-mode")}><Topbar page={page} status={status} busy={busy} onToggleService={status.running ? handleStop : startQuick} models={config.models} modelId={quickModelId || config.preferredModelId || config.models[0]?.id || ""} onSelectModel={setQuickModelId} zenMode={zenMode} onToggleZenMode={() => setZenMode((v) => !v)} /><main className="main-content">
-      {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} query={query} onQuery={setQuery} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onAddProfile={(model) => setProfileEditing({ modelId: model.id, profile: { ...DEFAULT_PROFILES[0], id: uid("profile"), name: t("newProfile") } })} onRenameModel={renameModel} onUpdateModelTags={updateModelTags} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} justImportedIds={justImportedIds} />}
+      {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} query={query} onQuery={setQuery} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onAddProfile={(model) => { const isN = model.path.toLowerCase().endsWith(".ninfer"); const baseP = isN ? DEFAULT_NINFER_PROFILES[0] : DEFAULT_PROFILES[0]; setProfileEditing({ modelId: model.id, profile: { ...baseP, id: uid("profile"), name: t("newProfile") } }); }} onRenameModel={renameModel} onUpdateModelTags={updateModelTags} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} justImportedIds={justImportedIds} />}
       <ExplorePage visible={page === "explore"} config={config} onPersist={persist} onToast={setToast} onLog={appendLog} diskUsage={diskUsage} onPickModelsDir={pickModelsDirFlow} onDownload={handleModelDownload} activeDownloads={downloads} progressMap={modelProgress} onPauseTask={handlePauseTask} onResumeTasks={handleResumeTasks} onPauseTasks={handlePauseTasks} onClearDone={handleClearDone} onCancelTask={handleCancelTask} onDeleteTask={handleDeleteTask} onDeleteTasks={deleteTasksImpl} onRetry={handleRetry} onReveal={handleReveal} onGoSettings={() => setPage("settings")} />
       {page === "profiles" && <ProfilesPage models={config.models} engines={config.engines} activeEngineId={config.activeEngineId} onEdit={(modelId, profile) => setProfileEditing({ modelId, profile })} onDelete={deleteProfile} onDuplicate={duplicateProfile} onSetDefault={setDefaultProfile} onReorderProfile={reorderProfiles} onDeleteProfiles={deleteMultipleProfiles} />}
       {/* 会话页保持常驻（隐藏而非卸载）：切换菜单不销毁内嵌 WebUI，回来时无需从聊天记录重新进入；WebUI 始终填满 Dock 下全部剩余高度 */}

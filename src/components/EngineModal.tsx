@@ -4,7 +4,7 @@ import { useI18n } from "../i18n";
 import { uid } from "../data";
 import { getLlamaCppStatus, pickServerDir, pickServerFile, type LlamaCppLocalStatus, type ServerCandidate } from "../tauri";
 import type { LlamaEngine } from "../types";
-import { cn, formatBytes, formatEngineBackend } from "../utils";
+import { cn, formatBytes, formatEngineBackend, detectEngineType, getEngineTypeDisplay, type EngineTypeKey } from "../utils";
 
 interface Props {
   engine?: LlamaEngine | null;
@@ -20,8 +20,15 @@ function inferBranchName(filePath: string, fileName?: string): string {
   const parts = normalized.split("/").filter(Boolean);
   const rawExe = (fileName || parts[parts.length - 1] || "").replace(/\.exe$/i, "");
 
-  // 若为专用定制或分支编译产物（如 llama-kvmem-server / kvmem-server）
+  // 若为专用定制或分支编译产物（如 ninfer / ninfer-kvmem / llama-kvmem-server）
   const lower = rawExe.toLowerCase();
+  const pathLower = filePath.toLowerCase();
+  if (lower.includes("ninfer") && (lower.includes("kvmem") || pathLower.includes("kvmem"))) {
+    return "NInfer KVMem";
+  }
+  if (lower.includes("ninfer")) {
+    return "NInfer";
+  }
   if (lower && lower !== "llama-server" && lower !== "server") {
     if (lower.includes("kvmem")) return "KVMem";
     if (lower.includes("vulkan")) return "Vulkan";
@@ -51,6 +58,9 @@ export default function EngineModal({ engine, isDefault = false, onSave, onClose
   const [backend, setBackend] = useState<string>(engine?.backend ?? "cuda");
   const [cudaVersion, setCudaVersion] = useState<string>(engine?.cudaVersion ?? "");
   const [version, setVersion] = useState<string>(engine?.version ?? "");
+  const [engineType, setEngineType] = useState<EngineTypeKey>(
+    (engine?.engineType as EngineTypeKey) || detectEngineType(engine?.path) || "llamacpp"
+  );
   const [setAsActive, setSetAsActive] = useState<boolean>(isDefault);
 
   const [detecting, setDetecting] = useState(false);
@@ -82,6 +92,7 @@ export default function EngineModal({ engine, isDefault = false, onSave, onClose
         if (status.localBackend) setBackend(status.localBackend);
         if (status.cudaVersion) setCudaVersion(status.cudaVersion);
         if (status.localVersion) setVersion(status.localVersion);
+        if (status.engineType) setEngineType(status.engineType as EngineTypeKey);
         if (status.serverPath && status.serverPath !== targetPath) {
           setPath(status.serverPath);
         }
@@ -101,6 +112,9 @@ export default function EngineModal({ engine, isDefault = false, onSave, onClose
 
   const handlePathChange = (val: string) => {
     setPath(val);
+    if (val.trim()) {
+      setEngineType(detectEngineType(val.trim()));
+    }
     if (!name.trim()) {
       setName(inferBranchName(val));
     }
@@ -117,6 +131,7 @@ export default function EngineModal({ engine, isDefault = false, onSave, onClose
       const result = await pickServerDir();
       if (result.status === "selected" && result.selectedPath) {
         setPath(result.selectedPath);
+        setEngineType(detectEngineType(result.selectedPath));
         if (!name.trim() || name === "llama.cpp" || name === "默认引擎") {
           setName(inferBranchName(result.selectedPath));
         }
@@ -127,6 +142,7 @@ export default function EngineModal({ engine, isDefault = false, onSave, onClose
         const match = result.candidates.find((c) => c.path.toLowerCase() === path.toLowerCase()) || result.candidates[0];
         if (match) {
           setPath(match.path);
+          setEngineType(detectEngineType(match.path));
           if (!name.trim() || name === "llama.cpp" || name === "默认引擎") {
             setName(inferBranchName(match.path, match.name));
           }
@@ -136,6 +152,7 @@ export default function EngineModal({ engine, isDefault = false, onSave, onClose
         const manual = await pickServerFile();
         if (manual) {
           setPath(manual);
+          setEngineType(detectEngineType(manual));
           if (!name.trim() || name === "llama.cpp" || name === "默认引擎") {
             setName(inferBranchName(manual));
           }
@@ -154,6 +171,7 @@ export default function EngineModal({ engine, isDefault = false, onSave, onClose
       const manual = await pickServerFile();
       if (manual) {
         setPath(manual);
+        setEngineType(detectEngineType(manual));
         if (!name.trim() || name === "llama.cpp" || name === "默认引擎") {
           setName(inferBranchName(manual));
         }
@@ -166,6 +184,7 @@ export default function EngineModal({ engine, isDefault = false, onSave, onClose
 
   const handleSelectCandidate = (cand: ServerCandidate) => {
     setPath(cand.path);
+    setEngineType(detectEngineType(cand.path));
     // 切换候选程序时，若当前分支名为未设置或为上一个程序的推导名，则同步更新为该分支的新推荐名称
     const inferred = inferBranchName(cand.path, cand.name);
     if (!name.trim() || name === "llama.cpp" || name === "默认引擎") {
@@ -189,6 +208,7 @@ export default function EngineModal({ engine, isDefault = false, onSave, onClose
       cudaVersion: (backend || "cuda") === "cuda" ? (cudaVersion || detectionStatus?.cudaVersion || engine?.cudaVersion) : undefined,
       version: version || undefined,
       createdAt: engine?.createdAt || Date.now(),
+      engineType: engineType,
     };
     onSave(newEngine, setAsActive);
   };
@@ -332,26 +352,12 @@ export default function EngineModal({ engine, isDefault = false, onSave, onClose
                   )}
                 </span>
               </div>
-              <div className="engine-det-grid">
+              <div className="engine-det-grid" style={{ marginBottom: 10 }}>
                 <div>
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <span className="det-label">{t("llama.branchBackend")}</span>
-                    {backend === "cuda" && (cudaVersion || detectionStatus?.cudaVersion) && (
-                      <span className="engine-pill-tag backend" style={{ padding: "0 5px", fontSize: 10 }}>
-                        {formatEngineBackend("cuda", cudaVersion || detectionStatus?.cudaVersion)}
-                      </span>
-                    )}
+                  <span className="det-label">{t("llama.engineType") || "引擎类型"}</span>
+                  <div style={{ height: 26, display: "flex", alignItems: "center", fontFamily: "JetBrains Mono, monospace", fontSize: 12, color: "#cbd5e1", fontWeight: 600 }}>
+                    {getEngineTypeDisplay(detectionStatus?.engineType || engineType, path).label}
                   </div>
-                  <select
-                    className="engine-select"
-                    style={{ height: 24, fontSize: 11 }}
-                    value={backend}
-                    onChange={(e) => setBackend(e.target.value)}
-                  >
-                    <option value="cuda">CUDA</option>
-                    <option value="vulkan">Vulkan</option>
-                    <option value="cpu">CPU</option>
-                  </select>
                 </div>
                 <div>
                   <span className="det-label">{t("llama.branchVersion")}</span>
@@ -359,9 +365,29 @@ export default function EngineModal({ engine, isDefault = false, onSave, onClose
                     className="engine-det-input"
                     value={version}
                     onChange={(e) => setVersion(e.target.value)}
-                    placeholder={t("llama.branchCustom")}
+                    placeholder={detectionStatus?.localVersion || t("llama.branchCustom")}
                   />
                 </div>
+              </div>
+              <div>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                  <span className="det-label">{t("llama.branchBackend")}</span>
+                  {backend === "cuda" && (cudaVersion || detectionStatus?.cudaVersion) && (
+                    <span className="engine-pill-tag backend" style={{ padding: "0 5px", fontSize: 10 }}>
+                      {formatEngineBackend("cuda", cudaVersion || detectionStatus?.cudaVersion)}
+                    </span>
+                  )}
+                </div>
+                <select
+                  className="engine-select"
+                  style={{ height: 26, fontSize: 12, width: "100%" }}
+                  value={backend}
+                  onChange={(e) => setBackend(e.target.value)}
+                >
+                  <option value="cuda">CUDA (NVIDIA)</option>
+                  <option value="vulkan">Vulkan (AMD / Intel / Multi-GPU)</option>
+                  <option value="cpu">CPU (Generic)</option>
+                </select>
               </div>
             </div>
           )}

@@ -1,9 +1,9 @@
-import { Activity, ChevronDown, ChevronUp, SquareTerminal, Zap } from "lucide-react";
+import { Activity, ChevronDown, ChevronUp, Copy, Check, SquareTerminal, Zap } from "lucide-react";
 import type React from "react";
 import { useI18n } from "../i18n";
 import { useEffect, useRef, useState } from "react";
 import type { InferenceMetrics, LlamaLogPayload, ServerStatus } from "../types";
-import { cn, formatEngineBackend, lineKind, timeLabel } from "../utils";
+import { cn, formatEngineBackend, lineKind, timeLabel, copyTextToClipboard, formatLogsPlainText } from "../utils";
 import InferenceInspector from "./InferenceInspector";
 
 interface LogDockProps {
@@ -64,6 +64,18 @@ export default function LogDock({
 }: LogDockProps) {
   const { t } = useI18n();
   const endRef = useRef<HTMLDivElement>(null);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyLogs = async () => {
+    if (!logs.length) return;
+    const text = formatLogsPlainText(logs);
+    const ok = await copyTextToClipboard(text);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    }
+  };
+
   /** 性能分析与运行日志记忆性选择：记录到 localStorage，保持上次的选择 */
   const [tab, setTabState] = useState<"logs" | "perf">(() => {
     try {
@@ -174,10 +186,24 @@ export default function LogDock({
             </button>
             {abnormal && <em className="dock-error-badge">{t("serviceAbnormal")}</em>}
           </div>
-          <div>
-            {tab === "logs"
-              ? <button onClick={onClear}>{t("clearLogs")}</button>
-              : onClearHistory && <button onClick={onClearHistory}>{t("perf.clearStats")}</button>}
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            {tab === "logs" ? (
+              <>
+                <button
+                  type="button"
+                  onClick={handleCopyLogs}
+                  disabled={!logs.length}
+                  title={copied ? t("logsCopied") : t("copyLogs")}
+                  style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+                >
+                  {copied ? <Check size={11} style={{ color: "#34d399" }} /> : <Copy size={11} />}
+                  <span>{copied ? t("logsCopied") : t("copyLogs")}</span>
+                </button>
+                <button type="button" onClick={onClear}>{t("clearLogs")}</button>
+              </>
+            ) : (
+              onClearHistory && <button type="button" onClick={onClearHistory}>{t("perf.clearStats")}</button>
+            )}
           </div>
         </div>
 

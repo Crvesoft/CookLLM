@@ -9,6 +9,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
+    "release:check": "node scripts/release.mjs check",
     "release:bump": "node scripts/release.mjs bump",
     "release": "node scripts/release.mjs publish"
   },

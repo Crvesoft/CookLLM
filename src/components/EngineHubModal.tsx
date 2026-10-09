@@ -14,7 +14,7 @@ import {
 } from "lucide-react";
 import type { LlamaEngine } from "../types";
 import { useI18n } from "../i18n";
-import { cn, formatEngineBackend } from "../utils";
+import { cn, formatEngineBackend, detectEngineType, getEngineTypeDisplay, type EngineTypeKey } from "../utils";
 import { getLlamaCppStatus, pickServerFile, revealInFolder, type LlamaCppLocalStatus } from "../tauri";
 import ConfirmModal from "./ConfirmModal";
 
@@ -80,13 +80,16 @@ export default function EngineHubModal({
   const filteredEngines = useMemo(() => {
     const q = query.trim().toLowerCase();
     if (!q) return engines;
-    return engines.filter(
-      (e) =>
+    return engines.filter((e) => {
+      const typeInfo = getEngineTypeDisplay(e.engineType, e.path);
+      return (
         e.name.toLowerCase().includes(q) ||
         e.path.toLowerCase().includes(q) ||
         (e.backend || "").toLowerCase().includes(q) ||
-        (e.version || "").toLowerCase().includes(q),
-    );
+        (e.version || "").toLowerCase().includes(q) ||
+        typeInfo.label.toLowerCase().includes(q)
+      );
+    });
   }, [engines, query]);
 
   // 选中的分支对象
@@ -113,6 +116,7 @@ export default function EngineHubModal({
                 cudaVersion: st.cudaVersion,
                 version: st.localVersion || selectedEngine.version,
                 backend: st.localBackend || selectedEngine.backend,
+                engineType: (st.engineType as any) || selectedEngine.engineType,
               });
             }
           })
@@ -132,9 +136,10 @@ export default function EngineHubModal({
         draftBackend !== (selectedEngine.backend || "cuda")),
   );
 
-  // 保存修改
+  // 保存修改（引擎架构类型自动识别填充）
   const handleSave = () => {
     if (!selectedEngine || !draftPath.trim()) return;
+    const inferredType = (probeStatus?.engineType as EngineTypeKey) || detectEngineType(draftPath.trim());
     const updated: LlamaEngine = {
       ...selectedEngine,
       name: draftName.trim() || selectedEngine.name,
@@ -142,6 +147,7 @@ export default function EngineHubModal({
       backend: draftBackend,
       cudaVersion: draftBackend === "cuda" ? (probeStatus?.cudaVersion || selectedEngine.cudaVersion) : undefined,
       version: probeStatus?.localVersion || selectedEngine.version,
+      engineType: inferredType,
     };
     onSaveEngine(updated);
     setSaveSuccess(true);
@@ -237,19 +243,19 @@ export default function EngineHubModal({
                           {item.name}
                         </span>
                       </div>
-                      <div className="engine-hub-item-right">
-                        <span
-                          className={cn(
-                            "engine-hub-tag backend",
-                            (item.backend || "cuda").toLowerCase(),
-                          )}
-                        >
-                          {formatEngineBackend(
-                            item.backend,
-                            (item.id === selectedEngine?.id && probeStatus?.cudaVersion) ? probeStatus.cudaVersion : item.cudaVersion,
-                          )}
-                        </span>
-                      </div>
+                      <span
+                        className={cn(
+                          "engine-hub-tag backend",
+                          (item.backend || "cuda").toLowerCase(),
+                        )}
+                      >
+                        {formatEngineBackend(
+                          item.backend,
+                          item.id === selectedEngine?.id && probeStatus?.cudaVersion
+                            ? probeStatus.cudaVersion
+                            : item.cudaVersion,
+                        )}
+                      </span>
                     </div>
                   );
                 })
@@ -356,26 +362,37 @@ export default function EngineHubModal({
                   />
                 </div>
 
-                {/* 字段 3：计算后端与状态检测 */}
+                {/* 字段 3：计算后端 */}
+                <div className="engine-hub-field">
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <label className="engine-hub-label">{t("llama.branchBackend")}</label>
+                    {draftBackend === "cuda" && (probeStatus?.cudaVersion || selectedEngine.cudaVersion) && (
+                      <span className="engine-pill-tag backend" style={{ padding: "1px 6px", fontSize: 10 }}>
+                        {formatEngineBackend("cuda", probeStatus?.cudaVersion || selectedEngine.cudaVersion)}
+                      </span>
+                    )}
+                  </div>
+                  <select
+                    className="engine-hub-select"
+                    value={draftBackend}
+                    onChange={(e) => setDraftBackend(e.target.value)}
+                  >
+                    <option value="cuda">CUDA (NVIDIA)</option>
+                    <option value="vulkan">Vulkan (AMD / Intel / Multi-GPU)</option>
+                    <option value="cpu">CPU (Generic)</option>
+                  </select>
+                </div>
+
+                {/* 字段 4：引擎类型与构建版本并排（自动识别展示） */}
                 <div className="engine-hub-grid-row">
                   <div className="engine-hub-field">
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                      <label className="engine-hub-label">{t("llama.branchBackend")}</label>
-                      {draftBackend === "cuda" && (probeStatus?.cudaVersion || selectedEngine.cudaVersion) && (
-                        <span className="engine-pill-tag backend" style={{ padding: "1px 6px", fontSize: 10 }}>
-                          {formatEngineBackend("cuda", probeStatus?.cudaVersion || selectedEngine.cudaVersion)}
-                        </span>
-                      )}
+                    <label className="engine-hub-label">{t("llama.engineType") || "引擎类型"}</label>
+                    <div className="engine-hub-version-box">
+                      <span className="engine-hub-version-tag" style={{ textTransform: "none", fontWeight: 600 }}>
+                        {getEngineTypeDisplay(probeStatus?.engineType || selectedEngine.engineType, draftPath || selectedEngine.path).label}
+                      </span>
+                      {probing && <Loader2 size={12} className="spin" />}
                     </div>
-                    <select
-                      className="engine-hub-select"
-                      value={draftBackend}
-                      onChange={(e) => setDraftBackend(e.target.value)}
-                    >
-                      <option value="cuda">CUDA (NVIDIA)</option>
-                      <option value="vulkan">Vulkan (AMD / Intel / Multi-GPU)</option>
-                      <option value="cpu">CPU (Generic)</option>
-                    </select>
                   </div>
 
                   <div className="engine-hub-field">

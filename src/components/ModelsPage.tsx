@@ -1,4 +1,4 @@
-import { Box, Check, ChevronDown, Cpu, Database, FileBox, Gauge, HardDrive, Layers3, LayoutGrid, List, ListChecks, MemoryStick, MoreHorizontal, PenLine, Pencil, Play, Plus, Search, SlidersHorizontal, Square, Star, Tag, Trash2 } from "lucide-react";
+import { Box, Check, ChevronDown, Cpu, Database, Gauge, HardDrive, Layers3, LayoutGrid, List, ListChecks, MemoryStick, MoreHorizontal, PenLine, Pencil, Play, Plus, Search, SlidersHorizontal, Square, Star, Tag, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { usePointerReorder, type CardHandlers } from "../hooks/usePointerReorder";
@@ -6,6 +6,7 @@ import type { AppConfig, ModelAsset, Profile, ServerStatus } from "../types";
 import { cn, fileName, formatBytes, modelTitle } from "../utils";
 import ConfirmModal from "./ConfirmModal";
 import ModelTagModal from "./ModelTagModal";
+import { ModelFormatBadge } from "./ModelFormatBadge";
 
 interface Props {
   config: AppConfig; models: ModelAsset[]; status: ServerStatus; selectedProfiles: Record<string, string>; busy: boolean; query: string; onQuery: (value: string) => void;
@@ -156,6 +157,7 @@ function ModelCard({ model, profiles, selectedProfileId, isDefaultModel, isRunni
   const selected = profiles.find((profile) => profile.id === selectedProfileId) || profiles[0];
   const commitRename = () => { onRenameModel(model.id, draftName); setRenaming(false); };
   const isUnknownQuant = model.quantization === t("model.unknownQuant");
+  const isNinfer = Boolean(model.path?.toLowerCase().endsWith(".ninfer") || model.metadataSource === "ninfer" || model.architecture?.toUpperCase() === "NINFER");
   const mmprojPath = selected?.mmprojPath?.trim();
   const hasMmproj = Boolean(mmprojPath);
   const isMmprojRam = Boolean(selected?.noMmprojOffload);
@@ -166,7 +168,7 @@ function ModelCard({ model, profiles, selectedProfileId, isDefaultModel, isRunni
     onClick={selectMode ? onToggleSelect : undefined}>
     {isDefaultModel && <span className="corner-flag"><Star size={10} fill="currentColor" /></span>}
     <span className={cn("card-select-check", isSelected && "checked")} aria-hidden="true"><Check size={13} strokeWidth={2.5} /></span>
-    <div className="model-card-top"><div className={cn("model-symbol", model.accent)}><FileBox size={26} /><span>GGUF</span></div><div className="model-title"><div>{renaming ? <input className="model-rename-input" autoFocus value={draftName} placeholder={modelTitle(model)} onChange={(e) => setDraftName(e.target.value)} onBlur={commitRename} onKeyDown={(e) => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") { setRenaming(false); } }} /> : <h3>{modelTitle(model)}</h3>}{isRunning && <span className="live-badge"><i />LIVE</span>}</div><p title={model.path}>{fileName(model.path)}</p></div><div className="model-menu-wrap" onClick={(event) => event.stopPropagation()}>{isJustImported && <span className="just-imported-badge"><Check size={10} />{t("models.justImported")}</span>}<button className="ghost-icon" onClick={onMenu}><MoreHorizontal size={18} /></button>{menuOpen && <div className="context-menu"><button onClick={() => { onSetDefaultModel(model.id); onMenu(); }}><Star size={14} />{isDefaultModel ? t("card.unsetDefault") : t("card.setDefault")}</button><button onClick={() => { setDraftName(modelTitle(model)); setRenaming(true); onMenu(); }}><PenLine size={14} />{t("card.renameModel")}</button><button onClick={() => { onMenu(); onOpenTagModal(); }}><Tag size={14} />{t("card.customTags")}</button><button onClick={() => { onMenu(); if (selected) onEditProfile(model, selected); else onAddProfile(model); }}><Pencil size={14} />{selected ? t("card.editProfile") : t("newProfile")}</button><button className="danger" onClick={() => { onMenu(); onRemove(); }}><Trash2 size={14} />{t("card.removeModel")}</button></div>}</div></div>
+    <div className="model-card-top"><ModelFormatBadge isNinfer={isNinfer} /><div className="model-title"><div>{renaming ? <input className="model-rename-input" autoFocus value={draftName} placeholder={modelTitle(model)} onChange={(e) => setDraftName(e.target.value)} onBlur={commitRename} onKeyDown={(e) => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") { setRenaming(false); } }} /> : <h3>{modelTitle(model)}</h3>}{isRunning && <span className="live-badge"><i />LIVE</span>}</div><p title={model.path}>{fileName(model.path)}</p></div><div className="model-menu-wrap" onClick={(event) => event.stopPropagation()}>{isJustImported && <span className="just-imported-badge"><Check size={10} />{t("models.justImported")}</span>}<button className="ghost-icon" onClick={onMenu}><MoreHorizontal size={18} /></button>{menuOpen && <div className="context-menu"><button onClick={() => { onSetDefaultModel(model.id); onMenu(); }}><Star size={14} />{isDefaultModel ? t("card.unsetDefault") : t("card.setDefault")}</button><button onClick={() => { setDraftName(modelTitle(model)); setRenaming(true); onMenu(); }}><PenLine size={14} />{t("card.renameModel")}</button><button onClick={() => { onMenu(); onOpenTagModal(); }}><Tag size={14} />{t("card.customTags")}</button><button onClick={() => { onMenu(); if (selected) onEditProfile(model, selected); else onAddProfile(model); }}><Pencil size={14} />{selected ? t("card.editProfile") : t("newProfile")}</button><button className="danger" onClick={() => { onMenu(); onRemove(); }}><Trash2 size={14} />{t("card.removeModel")}</button></div>}</div></div>
     <div className="model-tags">
       <span>{model.parameters}</span>
       <span
@@ -207,7 +209,7 @@ function ModelCard({ model, profiles, selectedProfileId, isDefaultModel, isRunni
       </button>
     </div>
     <div className="model-specs"><div><HardDrive size={15} /><span>{t("specFileLabel")}</span><strong>{formatBytes(model.sizeBytes)}</strong></div><div><Layers3 size={15} /><span>{t("specProfilesLabel")}</span><strong>{t("cards.profilesCount", { count: profiles.length })}</strong></div></div>
-    <div className="profile-preview"><div className="profile-preview-head"><span>{t("launchProfile")}</span>{selected ? <button className="profile-edit-btn" onClick={() => { if (menuOpen) onMenu(); onEditProfile(model, selected); }}>{t("editParams")}</button> : <button className="profile-edit-btn new" onClick={() => { if (menuOpen) onMenu(); onAddProfile(model); }}><Plus size={13} />{t("newProfile")}</button>}</div>{selected ? <div className="profile-pills"><span><MemoryStick size={13} /><strong>{selected.gpuLayers}</strong> {t("cards.pillLayers")}</span><span><Gauge size={13} /><strong>{(selected.contextSize / 1024).toFixed(0)}K</strong> {t("cards.pillContext")}</span><span><Cpu size={13} /><strong>{selected.threads}</strong> {t("cards.pillThreads")}</span></div> : <p className="no-profile">{t("noProfileBound")}</p>}</div>
+    <div className="profile-preview"><div className="profile-preview-head"><span>{t("launchProfile")}</span>{selected ? <button className="profile-edit-btn" onClick={() => { if (menuOpen) onMenu(); onEditProfile(model, selected); }}>{t("editParams")}</button> : <button className="profile-edit-btn new" onClick={() => { if (menuOpen) onMenu(); onAddProfile(model); }}><Plus size={13} />{t("newProfile")}</button>}</div>{selected ? <div className="profile-pills"><span><MemoryStick size={13} /><strong>{model.path.toLowerCase().endsWith(".ninfer") ? (selected.kvDtype?.toUpperCase() || "RK8V4") : selected.gpuLayers}</strong> {model.path.toLowerCase().endsWith(".ninfer") ? "KV" : t("cards.pillLayers")}</span><span><Gauge size={13} /><strong>{(selected.contextSize / 1024).toFixed(0)}K</strong> {t("cards.pillContext")}</span><span><Cpu size={13} /><strong>{model.path.toLowerCase().endsWith(".ninfer") ? (selected.parallel || 1) : selected.threads}</strong> {model.path.toLowerCase().endsWith(".ninfer") ? "Slots" : t("cards.pillThreads")}</span></div> : <p className="no-profile">{t("noProfileBound")}</p>}</div>
     <div className="launch-row" onClick={(event) => event.stopPropagation()}><div className="launch-split"><button className={cn("launch-button", isRunning && "active")} disabled={busy || !selected} onClick={() => (isRunning ? onStop() : onStart())}>{isRunning ? <><Square size={15} fill="currentColor" />{t("stopService")}</> : <><Play size={15} fill="currentColor" />{t("startService")}</>}</button><label className="profile-select" title={t("launchProfile")}><select value={selected?.id || ""} onChange={(event) => onSelectProfile(event.target.value)} disabled={!profiles.length}>{profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name}</option>)}</select><ChevronDown size={15} /></label></div></div>
   </article>;
 }
@@ -219,6 +221,7 @@ function ModelRow({ model, profiles, selectedProfileId, isDefaultModel, isRunnin
   const selected = profiles.find((profile) => profile.id === selectedProfileId) || profiles[0];
   const commitRename = () => { onRenameModel(model.id, draftName); setRenaming(false); };
   const isUnknownQuant = model.quantization === t("model.unknownQuant");
+  const isNinfer = Boolean(model.path?.toLowerCase().endsWith(".ninfer") || model.metadataSource === "ninfer" || model.architecture?.toUpperCase() === "NINFER");
   const mmprojPath = selected?.mmprojPath?.trim();
   const hasMmproj = Boolean(mmprojPath);
   const isMmprojRam = Boolean(selected?.noMmprojOffload);
@@ -229,11 +232,9 @@ function ModelRow({ model, profiles, selectedProfileId, isDefaultModel, isRunnin
     onClick={selectMode ? onToggleSelect : undefined}>
     <span className={cn("card-select-check", isSelected && "checked")} aria-hidden="true"><Check size={13} strokeWidth={2.5} /></span>
     <div className="model-row-identity">
-      <div className={cn("model-symbol compact", model.accent)}>
+      <ModelFormatBadge isNinfer={isNinfer} compact>
         {isDefaultModel && <span className="model-symbol-star" title={t("card.defaultBadge")}><Star size={8} fill="currentColor" /></span>}
-        <FileBox size={18} />
-        <span>GGUF</span>
-      </div>
+      </ModelFormatBadge>
       <div className="model-row-info">
         <div className="model-row-title">
           {renaming ? <input className="model-rename-input" autoFocus value={draftName} placeholder={modelTitle(model)} onChange={(e) => setDraftName(e.target.value)} onBlur={commitRename} onKeyDown={(e) => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") { setRenaming(false); } }} /> : <h3>{modelTitle(model)}</h3>}
@@ -284,7 +285,7 @@ function ModelRow({ model, profiles, selectedProfileId, isDefaultModel, isRunnin
         </button>
       </div>
       <div className="model-row-size" title={t("specFileLabel")}><HardDrive size={13} /><strong>{formatBytes(model.sizeBytes)}</strong></div>
-      {selected ? <div className="model-row-pills"><span title={t("statGpuOffload")}><MemoryStick size={12} /><strong>{selected.gpuLayers}</strong> {t("cards.pillLayers")}</span><span title={t("statContext")}><Gauge size={12} /><strong>{(selected.contextSize / 1024).toFixed(0)}K</strong></span><span title={t("statBatch")}><Cpu size={12} /><strong>{selected.threads}</strong></span></div> : <span className="no-profile-inline">{t("noProfileBound")}</span>}
+      {selected ? <div className="model-row-pills"><span title={model.path.toLowerCase().endsWith(".ninfer") ? "KV Dtype" : t("statGpuOffload")}><MemoryStick size={12} /><strong>{model.path.toLowerCase().endsWith(".ninfer") ? (selected.kvDtype?.toUpperCase() || "RK8V4") : selected.gpuLayers}</strong> {model.path.toLowerCase().endsWith(".ninfer") ? "KV" : t("cards.pillLayers")}</span><span title={t("statContext")}><Gauge size={12} /><strong>{(selected.contextSize / 1024).toFixed(0)}K</strong></span><span title={model.path.toLowerCase().endsWith(".ninfer") ? "Slots" : t("statBatch")}><Cpu size={12} /><strong>{model.path.toLowerCase().endsWith(".ninfer") ? (selected.parallel || 1) : selected.threads}</strong></span></div> : <span className="no-profile-inline">{t("noProfileBound")}</span>}
     </div>
     <div className="model-row-actions" onClick={(event) => event.stopPropagation()}>
       <div className="launch-split compact">

@@ -22,7 +22,7 @@ interface Props {
 async function walkEntry(entry: Record<string, any>, base: string): Promise<PickedFile[]> {
   if (entry.isFile) {
     const file = await new Promise<File | null>((resolve, reject) => entry.file(resolve, reject)).catch(() => null);
-    if (file && file.name.toLowerCase().endsWith(".gguf")) return [{ path: `${base}${file.name}`, sizeBytes: file.size }];
+    if (file && (file.name.toLowerCase().endsWith(".gguf") || file.name.toLowerCase().endsWith(".ninfer"))) return [{ path: `${base}${file.name}`, sizeBytes: file.size }];
     return [];
   }
   if (!entry.isDirectory) return [];
@@ -94,7 +94,7 @@ export default function ImportModelModal({ existingPaths, onImport, onClose }: P
     setBusy(true);
     setError(null);
     try {
-      const items = await pickFiles(["gguf"]);
+      const items = await pickFiles(["gguf", "ninfer"]);
       if (!items.length) return;
       merge(items);
     } catch (err) {
@@ -178,7 +178,7 @@ export default function ImportModelModal({ existingPaths, onImport, onClose }: P
       const files = transfers.files;
       for (let i = 0; i < files.length; i += 1) {
         const file = files[i];
-        if (file.name.toLowerCase().endsWith(".gguf")) items.push({ path: file.name, sizeBytes: file.size });
+        if (file.name.toLowerCase().endsWith(".gguf") || file.name.toLowerCase().endsWith(".ninfer")) items.push({ path: file.name, sizeBytes: file.size });
       }
     } else {
       for (const entry of entries) items.push(...(await walkEntry(entry, "")));
@@ -293,11 +293,11 @@ export default function ImportModelModal({ existingPaths, onImport, onClose }: P
         hidden
         type="file"
         multiple
-        accept=".gguf"
+        accept=".gguf,.ninfer"
         onChange={(event) => {
           const files = Array.from(event.target.files ?? [])
             .map((file) => ({ path: file.name, sizeBytes: file.size }))
-            .filter((item) => item.path.toLowerCase().endsWith(".gguf"));
+            .filter((item) => item.path.toLowerCase().endsWith(".gguf") || item.path.toLowerCase().endsWith(".ninfer"));
           if (files.length) merge(files);
           event.target.value = "";
         }}
@@ -311,7 +311,7 @@ export default function ImportModelModal({ existingPaths, onImport, onClose }: P
         onChange={(event) => {
           const files = Array.from(event.target.files ?? [])
             .map((file) => ({ path: (file as any).webkitRelativePath || file.name, sizeBytes: file.size }))
-            .filter((item) => item.path.toLowerCase().endsWith(".gguf"));
+            .filter((item) => item.path.toLowerCase().endsWith(".gguf") || item.path.toLowerCase().endsWith(".ninfer"));
           if (files.length) merge(files);
           event.target.value = "";
         }}

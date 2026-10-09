@@ -30,7 +30,7 @@ import {
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ConfirmModal from "./ConfirmModal";
 import { useI18n } from "../i18n";
-import { hfAvatar, hfListFiles, hfSearch, hfTrending, openExternal } from "../tauri";
+import { hfAvatar, hfListFiles, hfSearch, hfTrending, openExternal, type FormatFilter } from "../tauri";
 import type { AppConfig, DiskUsage, HfFile, HfModel, ModelDownloadProgress } from "../types";
 import { cn, formatBytes, fileName, humanSpeed } from "../utils";
 
@@ -223,10 +223,18 @@ function FileRow({ file, progress, disabled, queued, preferred, onDownload, onCa
   const quant = quantBadge(file.name);
   const speed = active ? humanSpeed(progress.speedBps) : "";
 
+  const isNinfer = file.name.toLowerCase().endsWith(".ninfer");
+
   return (
     <div className={cn("hf-file-row", preferred && "hf-file-row-preferred", active && "downloading")}>
       <div className="hf-file-main">
         {preferred && <Star size={12} className="hf-file-star" fill="currentColor" />}
+        <span
+          className={cn("hf-file-format-badge", isNinfer ? "ninfer" : "gguf")}
+          title={isNinfer ? t("models.formatNinferTitle") : t("models.formatGgufTitle")}
+        >
+          {isNinfer ? "NINFER" : "GGUF"}
+        </span>
         {quant && <span className={cn("hf-quant-badge", preferred && "preferred")}>{quant}</span>}
         <span className="hf-file-quant" title={file.name}>{fileName(file.name)}</span>
       </div>
@@ -338,10 +346,23 @@ const ModelRow = memo(function ModelRow({ model, preferredQuant, rank, onViewFil
   const quantSpecs = quantSpecsOf(model);
   const updated = model.updatedAt ? model.updatedAt.slice(0, 10) : "";
   const fileCount = model.ggufCount >= 0 ? model.ggufCount : null;
+  const isNinfer = Boolean(
+    model.id.toLowerCase().includes("ninfer") ||
+    model.name?.toLowerCase().includes("ninfer") ||
+    model.tags?.some((tag) => tag.toLowerCase().includes("ninfer"))
+  );
+  const isGguf = Boolean(
+    model.id.toLowerCase().includes("gguf") ||
+    model.name?.toLowerCase().includes("gguf") ||
+    model.tags?.some((tag) => tag.toLowerCase().includes("gguf")) ||
+    (!isNinfer)
+  );
+  const formatLabel = isNinfer && isGguf ? "GGUF · NINFER" : isNinfer ? "NINFER" : "GGUF";
+
   const metaBits = [
     updated ? t("explore.metaUpdated", { date: updated }) : "",
     fileCount != null ? t("explore.metaFiles", { count: fileCount }) : "",
-    "GGUF",
+    formatLabel,
   ].filter(Boolean);
   if (quantSpecs.length > 1) metaBits.push(t("explore.quantSpecs", { quants: quantSpecs.join("/") }));
   return (
@@ -357,6 +378,8 @@ const ModelRow = memo(function ModelRow({ model, preferredQuant, rank, onViewFil
           <div className="hf-model-title-row">
             <ModelAvatar author={model.author} />
             <strong title={model.id}>{model.id}</strong>
+            {isGguf && <span className="hf-format-pill gguf" title={t("models.formatGgufTitle")}>GGUF</span>}
+            {isNinfer && <span className="hf-format-pill ninfer" title={t("models.formatNinferTitle")}>NINFER</span>}
             {preferredQuant && <span className="hf-quant-badge preferred" title={t("explore.quantPreferred", { quant: quant || "" })}><Star size={10} fill="currentColor" />{quant}</span>}
             {parameter && <span className="hf-param-badge" title={t("explore.facetParams")}>{parameter}</span>}
             {quant && !preferredQuant && <span className="hf-quant-badge" title={t("explore.facetQuant")}>{quant}</span>}
@@ -560,7 +583,20 @@ export default function ExplorePage(props: Props) {
   const showToast = props.onToast;
   const [view, setView] = useState<"discover" | "tasks">("discover");
   const [query, setQuery] = useState("");
-  const [ggufOnly, setGgufOnly] = useState(true);
+  const [formatFilter, setFormatFilter] = useState<FormatFilter>(() => {
+    try {
+      const saved = localStorage.getItem("cookllm_explore_format_filter");
+      if (saved === "all" || saved === "gguf" || saved === "ninfer") return saved;
+    } catch {}
+    return "all";
+  });
+  const handleFormatFilterChange = (nextFilter: FormatFilter) => {
+    setFormatFilter(nextFilter);
+    try {
+      localStorage.setItem("cookllm_explore_format_filter", nextFilter);
+    } catch {}
+    void refreshTrending(nextFilter);
+  };
   const [sortKey, setSortKey] = useState<SortKey>("hot");
   const [models, setModels] = useState<HfModel[]>([]);
   const [trending, setTrending] = useState<HfModel[]>([]);
@@ -656,10 +692,11 @@ export default function ExplorePage(props: Props) {
     return () => mq.removeEventListener("change", onChangeMq);
   }, []);
 
-  const refreshTrending = async () => {
+  const refreshTrending = async (overrideFilter?: FormatFilter) => {
     setTrendingLoading(true);
+    const activeFilter = overrideFilter ?? formatFilter;
     try {
-      const result = await hfTrending(10, ggufOnly);
+      const result = await hfTrending(10, activeFilter === "gguf", undefined, undefined, undefined, activeFilter);
       setTrending(result);
       return true;
     } catch (err) {
@@ -676,9 +713,11 @@ export default function ExplorePage(props: Props) {
     let ok = false;
     let failMessage = "";
     try {
-      const useGguf = ggufOnly && !keyword.toLowerCase().includes(".gguf");
+      const useGguf = formatFilter === "gguf" && !keyword.toLowerCase().includes(".gguf");
       const quants = quantBits.length > 0 ? quantBits : undefined;
-      const result = keyword ? await hfSearch(keyword, 30, useGguf, undefined, HF_SORT[sortKey], quants) : await hfTrending(30, useGguf, undefined, HF_SORT[sortKey], quants);
+      const result = keyword
+        ? await hfSearch(keyword, 30, useGguf, undefined, HF_SORT[sortKey], quants, formatFilter)
+        : await hfTrending(30, useGguf, undefined, HF_SORT[sortKey], quants, formatFilter);
       if (seq !== searchSeq.current) return false; // 已发起更新的请求，丢弃过期结果
       setModels(result);
       setHasMore(result.length === 30);
@@ -706,11 +745,11 @@ export default function ExplorePage(props: Props) {
     if (notify) showToast(listOk && trendingOk ? t("explore.refreshed") : t("explore.refreshFailed"));
   };
 
-  // 搜索防抖 300ms：文本 / 刻面 / 量化偏好 / 参数档位变化时向服务端重查并重置列表；
+  // 搜索防抖 300ms：文本 / 刻面 / 量化偏好 / 参数档位 / 格式筛选变化时向服务端重查并重置列表；
   // 仅本页可见时发起（含首次切入），避免应用启动即产生网络请求。
   // 切页返回时若搜索条件未变且已有数据 → 直接复用已加载列表，不再白屏转圈重查。
   const searchKeyRef = useRef<string | null>(null);
-  const searchSignature = `${effectiveKeyword}|${ggufOnly}|${sortKey}|${quantBits.join(",")}`;
+  const searchSignature = `${effectiveKeyword}|${formatFilter}|${sortKey}|${quantBits.join(",")}`;
   useEffect(() => {
     if (!props.visible) return;
     if (searchKeyRef.current === searchSignature && models.length > 0) return;
@@ -730,9 +769,11 @@ export default function ExplorePage(props: Props) {
     const skip = models.length;
     setLoadingMore(true);
     try {
-      const useGguf = ggufOnly && !keyword.toLowerCase().includes(".gguf");
+      const useGguf = formatFilter === "gguf" && !keyword.toLowerCase().includes(".gguf");
       const quants = quantBits.length > 0 ? quantBits : undefined;
-      const next = keyword ? await hfSearch(keyword, limit, useGguf, skip, HF_SORT[sortKey], quants) : await hfTrending(limit, useGguf, skip, HF_SORT[sortKey], quants);
+      const next = keyword
+        ? await hfSearch(keyword, limit, useGguf, skip, HF_SORT[sortKey], quants, formatFilter)
+        : await hfTrending(limit, useGguf, skip, HF_SORT[sortKey], quants, formatFilter);
       const seen = new Set(models.map((item) => item.id));
       const added = next.filter((item) => !seen.has(item.id));
       if (seq !== searchSeq.current) {
@@ -770,7 +811,7 @@ export default function ExplorePage(props: Props) {
     observer.observe(node);
     return () => observer.disconnect();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [models.length, hasMore, loadingMore, effectiveKeyword, ggufOnly]);
+  }, [models.length, hasMore, loadingMore, effectiveKeyword, formatFilter]);
 
   /** 打开通用文件弹窗：热门卡 / 列表项共用，页面不滚动、卡片不内嵌展开。
    *  经 ref 转发保持引用稳定（内部逻辑每次渲染取最新），使 memo 的 ModelRow 在进度刷新时得以跳过重渲染 */
@@ -1081,10 +1122,18 @@ export default function ExplorePage(props: Props) {
               <button type="button" className="explore-refresh-btn" onClick={() => void refreshAll(true)} disabled={refreshing} title={t("explore.refreshList")} aria-label={t("explore.refreshList")}>
                 <RefreshCw size={14} className={cn("facet-refresh-icon", refreshing && "spin")} />
               </button>
-              <label className="explore-gguf-toggle">
-                <input type="checkbox" checked={ggufOnly} onChange={(e) => setGgufOnly(e.target.checked)} />
-                <span>{t("explore.ggufOnly")}</span>
-              </label>
+              <div className="explore-format-picker" title={t("explore.formatFilterTitle")}>
+                <select
+                  className={cn("explore-format-select", formatFilter)}
+                  value={formatFilter}
+                  onChange={(e) => handleFormatFilterChange(e.target.value as FormatFilter)}
+                  aria-label={t("explore.formatFilterTitle")}
+                >
+                  <option value="all">{t("explore.formatAll")}</option>
+                  <option value="gguf">{t("explore.formatGguf")}</option>
+                  <option value="ninfer">{t("explore.formatNinfer")}</option>
+                </select>
+              </div>
             </div>
           </div>
 

@@ -303,6 +303,7 @@ export interface LlamaCppLocalStatus {
   cudaVersion?: string | null;
   serverAvailable: boolean;
   serverPath?: string | null;
+  engineType?: "llamacpp" | "ninfer" | "ninfer_kvmem" | string | null;
 }
 
 export interface DownloadProgress {
@@ -371,21 +372,38 @@ export async function pickModelsDir(): Promise<string> {
   return invoke<string>("pick_models_dir");
 }
 
-/** 本周 HuggingFace 热门模型（可选仅 GGUF） */
-export async function hfTrending(limit?: number, ggufOnly?: boolean, skip?: number, sort?: string, quants?: number[]): Promise<HfModel[]> {
+export type FormatFilter = "all" | "gguf" | "ninfer";
+
+/** 本周 HuggingFace 热门模型（支持格式筛选） */
+export async function hfTrending(limit?: number, ggufOnly?: boolean, skip?: number, sort?: string, quants?: number[], formatFilter?: FormatFilter): Promise<HfModel[]> {
   if (!isTauri()) return [];
-  const payload = { ...(limit ? { limit } : {}), ...(ggufOnly ? { ggufOnly } : {}), ...(skip ? { skip } : {}), ...(sort ? { sort } : {}), ...(quants && quants.length ? { quants } : {}) };
+  const payload = {
+    ...(limit ? { limit } : {}),
+    ...(ggufOnly !== undefined ? { ggufOnly } : {}),
+    ...(formatFilter ? { formatFilter } : {}),
+    ...(skip ? { skip } : {}),
+    ...(sort ? { sort } : {}),
+    ...(quants && quants.length ? { quants } : {})
+  };
   return invoke<HfModel[]>("hf_trending", payload);
 }
 
-/** 搜索 HuggingFace 模型（可选仅 GGUF） */
-export async function hfSearch(query: string, limit?: number, ggufOnly?: boolean, skip?: number, sort?: string, quants?: number[]): Promise<HfModel[]> {
+/** 搜索 HuggingFace 模型（支持格式筛选） */
+export async function hfSearch(query: string, limit?: number, ggufOnly?: boolean, skip?: number, sort?: string, quants?: number[], formatFilter?: FormatFilter): Promise<HfModel[]> {
   if (!isTauri()) return [];
-  const payload = { query, ...(limit ? { limit } : {}), ...(ggufOnly ? { ggufOnly } : {}), ...(skip ? { skip } : {}), ...(sort ? { sort } : {}), ...(quants && quants.length ? { quants } : {}) };
+  const payload = {
+    query,
+    ...(limit ? { limit } : {}),
+    ...(ggufOnly !== undefined ? { ggufOnly } : {}),
+    ...(formatFilter ? { formatFilter } : {}),
+    ...(skip ? { skip } : {}),
+    ...(sort ? { sort } : {}),
+    ...(quants && quants.length ? { quants } : {})
+  };
   return invoke<HfModel[]>("hf_search", payload);
 }
 
-/** 列出仓库 main 分支的 .gguf 文件 */
+/** 列出仓库 main 分支的 .gguf 与 .ninfer 模型文件 */
 export async function hfListFiles(repo: string): Promise<HfFile[]> {
   if (!isTauri()) return [];
   return invoke<HfFile[]>("hf_list_files", { repo });

@@ -1,5 +1,6 @@
 import type { InferenceMetrics, LlamaLogPayload, ModelAsset } from "./types";
 import { formatMessage, getLocale } from "./i18n";
+import { writeClipboard } from "./tauri";
 
 export const ACCENTS = ["violet", "cyan", "amber", "rose"] as const;
 export const EMPTY_STATUS = { running: false } as const;
@@ -31,9 +32,41 @@ export function fileName(path: string) {
   return path.split(/[\\/]/).pop() || path;
 }
 
-/** 从文件名或路径中智能提取量化级别（支持 Q4_K_M、IQ4_XS、3.7bpw、F16 等） */
+export type EngineTypeKey = "llamacpp" | "ninfer" | "ninfer_kvmem";
+
+/** 智能推断可执行程序的引擎类型 */
+export function detectEngineType(path?: string): EngineTypeKey {
+  if (!path) return "llamacpp";
+  const lower = path.toLowerCase();
+  const file = lower.split(/[\/\\]/).pop() || lower;
+  if (file.includes("ninfer") && (file.includes("kvmem") || lower.includes("kvmem"))) {
+    return "ninfer_kvmem";
+  }
+  if (file.startsWith("ninfer") || file.includes("ninfer")) {
+    return "ninfer";
+  }
+  return "llamacpp";
+}
+
+/** 获取引擎架构类型元数据（key 与规范显示名称：llama.cpp | ninfer | kvmem-ninfer） */
+export function getEngineTypeDisplay(
+  engineType?: string | null,
+  path?: string | null,
+): { key: EngineTypeKey; label: "llama.cpp" | "ninfer" | "kvmem-ninfer" } {
+  let key: EngineTypeKey = "llamacpp";
+  if (engineType === "ninfer_kvmem" || engineType === "ninfer" || engineType === "llamacpp") {
+    key = engineType;
+  } else if (path) {
+    key = detectEngineType(path);
+  }
+  const label =
+    key === "ninfer_kvmem" ? "kvmem-ninfer" : key === "ninfer" ? "ninfer" : "llama.cpp";
+  return { key, label };
+}
+
+/** 从文件名或路径中智能提取量化级别（支持 Q4_K_M、IQ4_XS、RK8V4、INT8、3.7bpw、F16 等） */
 export function parseQuantization(path: string, fallback: string): string {
-  const match = path.match(/(?:I?Q\d(?:_[A-Z0-9]+)+|\d+(?:\.\d+)?bpw|(?:FP|BF|F)16|(?:FP|F)32)/i)?.[0];
+  const match = path.match(/(?:I?Q\d(?:_[A-Z0-9]+)+|\d+(?:\.\d+)?bpw|(?:FP|BF|F)16|(?:FP|F)32|RK8V4|K8V4|NVFP4|INT8|INT4|GSQ)/i)?.[0];
   if (!match) return fallback;
   return match.toLowerCase().endsWith("bpw") ? match : match.toUpperCase();
 }
@@ -67,7 +100,7 @@ export function humanSpeed(speedBps: number): string {
   return Math.round(speedBps / 1024) + " KB/s";
 }
 
-/** llama.cpp 日志行着色：按流与 llama.cpp 日志级别（I/W/E）分类 */
+/** llama.cpp / ninfer 日志行着色：按流与日志级别（I/W/E 或 INFO/WARNING/ERROR 单词）分类 */
 export const lineKind = (stream: LlamaLogPayload["stream"], line: string): "system" | "err" | "warn" | "msg" => {
   if (stream === "system") return "system";
   if (stream === "stderr") {
@@ -75,6 +108,10 @@ export const lineKind = (stream: LlamaLogPayload["stream"], line: string): "syst
     const tag = line.match(/^\S+\s+([IWE])\s/)?.at(1)?.toUpperCase();
     if (tag === "E") return "err";
     if (tag === "W") return "warn";
+    // ninfer 日志格式：日期 + 时间 + 级别单词，如 "2026-10-08 11:13:18.505  INFO  req#1 done | ..."
+    const word = line.match(/^\S+\s+\S+\s+(INFO|WARN(?:ING)?|ERROR|CRITICAL|FATAL)\b/i)?.at(1)?.toUpperCase();
+    if (word === "ERROR" || word === "CRITICAL" || word === "FATAL") return "err";
+    if (word === "WARN" || word === "WARNING") return "warn";
   }
   return "msg";
 };
@@ -98,11 +135,116 @@ export interface LogTimingFragment {
 export function parseInferenceLogFragments(line: string): LogTimingFragment[] {
   const fragments: LogTimingFragment[] = [];
 
-  // 提取 task ID (例如 "task 3930" 或 "task: 3930" 或 "task 0")
+  // 剥离 ANSI 转义序列（终端彩色输出模式下避免污染正则匹配）
+  line = line.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+
+  // 提取 llama.cpp 任务 ID (例如 "task 3930" 或 "task: 3930" 或 "task 0")
   const taskMatch = line.match(/\btask(?:_id)?[:\s]+(\d+)\b/i);
   const taskId = taskMatch ? taskMatch[1] : undefined;
 
-  // 0. 任务分配/启动感知（例如 "slot launch_slot_: id 0 | task 0 | processing task"）
+  // 0.1 Ninfer 原生请求启动感知（实测自 ninfer-serve.exe 控制台，stderr，" | " 分段）：
+  // "req#12 started | openai-chat non-stream | 1 message | max output 256 | thinking low | preserve thinking"
+  const ninferStartMatch = line.match(/\breq#(\d+)\s+started\b/i);
+  if (ninferStartMatch) {
+    fragments.push({
+      type: "task_start",
+      taskId: ninferStartMatch[1],
+    });
+    return fragments;
+  }
+
+  // 0.2 Ninfer 原生请求完成/终止感知（实测格式）：
+  // "req#12 done | openai-chat | output limit | prompt 60 | output 256 | cache 0 (0.0%) | TTFT 65.5 ms | total 2.1s | prefill 937.3 tok/s | decode 123.2 tok/s | mtp accepted 176/287 (61.3%)"
+  // 变体: total 可为 "620 ms"；cache 段为 "cache N (P%)"；cancelled / failed / rejected 终止行仅作 task_end 兜底
+  const ninferDoneMatch = line.match(/\breq#(\d+)\s+done\b/i);
+  const ninferEndMatch = ninferDoneMatch || line.match(/\breq#(\d+)\s+(?:cancelled|failed|rejected)\b/i);
+  if (ninferEndMatch) {
+    const reqId = ninferEndMatch[1];
+    if (ninferDoneMatch) {
+      const promptMatch = line.match(/\bprompt\s+(\d+)\b/i);
+      const outputMatch = line.match(/\boutput\s+(\d+)\b/i);
+      const cacheMatch = line.match(/\bcache\s+(\d+)\s*\(([^)]*)\)/i);
+      const ttftMatch = line.match(/\bTTFT\s+([0-9.]+)\s*ms/i);
+      const totalMatch = line.match(/\btotal\s+([0-9.]+)\s*(ms|s)\b/i);
+      const prefillMatch = line.match(/\bprefill\s+([0-9.]+)\s*tok\/s/i);
+      const decodeMatch = line.match(/\bdecode\s+([0-9.]+)\s*tok\/s/i);
+
+      const promptTokens = promptMatch ? parseInt(promptMatch[1], 10) : undefined;
+      const decodeTokens = outputMatch ? parseInt(outputMatch[1], 10) : undefined;
+      const cachedTokens = cacheMatch ? parseInt(cacheMatch[1], 10) : 0;
+      const cachePct = cacheMatch ? cacheMatch[2].match(/([0-9.]+)\s*%/) : null;
+      const ttftMs = ttftMatch ? parseFloat(ttftMatch[1]) : undefined;
+      const prefillTps = prefillMatch ? parseFloat(prefillMatch[1]) : undefined;
+      const decodeTps = decodeMatch ? parseFloat(decodeMatch[1]) : undefined;
+      let totalTimeMs: number | undefined;
+      if (totalMatch) {
+        const v = parseFloat(totalMatch[1]);
+        totalTimeMs = totalMatch[2].toLowerCase() === "s" ? Math.round(v * 1000) : Math.round(v);
+      }
+
+      const cacheHitRatio = cachePct
+        ? parseFloat(cachePct[1])
+        : promptTokens && promptTokens > 0 ? (cachedTokens / promptTokens) * 100 : 0;
+      const computedPrefill = promptTokens != null ? Math.max(0, promptTokens - cachedTokens) : undefined;
+      const decodeTimeMs = totalTimeMs != null && ttftMs != null && totalTimeMs >= ttftMs
+        ? Math.max(0, totalTimeMs - ttftMs)
+        : decodeTokens && decodeTps && decodeTps > 0
+        ? Math.round((decodeTokens / decodeTps) * 1000)
+        : undefined;
+
+      fragments.push({
+        type: "cache",
+        taskId: reqId,
+        totalPromptTokens: promptTokens,
+        cachedTokens,
+        cacheHitRatio,
+      });
+
+      if (prefillTps != null || ttftMs != null || computedPrefill != null) {
+        fragments.push({
+          type: "prefill",
+          taskId: reqId,
+          tokens: computedPrefill,
+          timeMs: ttftMs,
+          speed: prefillTps,
+        });
+      }
+
+      if (decodeTps != null || decodeTokens != null || decodeTimeMs != null) {
+        fragments.push({
+          type: "decode",
+          taskId: reqId,
+          tokens: decodeTokens,
+          speed: decodeTps,
+          timeMs: decodeTimeMs,
+        });
+      }
+
+      if (totalTimeMs != null) {
+        fragments.push({
+          type: "total",
+          taskId: reqId,
+          timeMs: totalTimeMs,
+          tokens: decodeTokens,
+        });
+      }
+    }
+
+    fragments.push({
+      type: "task_end",
+      taskId: reqId,
+    });
+    return fragments;
+  }
+
+  // 0.25 Ninfer 周期吞吐面板行（--log-stats-interval-ms，会话级 5s 窗口聚合，非单请求粒度）：
+  // "throughput | 5.0s | prefill 12.0 tok/s (60 tok) | decode 50.9 tok/s (255 tok) | running 0 | batch 1.00 | host 1.1% (55.7 ms)"
+  // 显式忽略：防止落入下方 generic_speed 兜底，把聚合速率误写入当前轮次
+  if (/\bthroughput\s*\|/.test(line)) {
+    return fragments;
+  }
+
+  // 0.3 任务分配/启动感知（例如 "slot launch_slot_: id 0 | task 0 | processing task"）
   if (/slot\s+launch_slot_.*?processing\s+task|launch_slot_:.*?task\s+\d+/i.test(line)) {
     fragments.push({
       type: "task_start",
@@ -325,14 +467,16 @@ export function parseInferenceLogLine(line: string): LogTimingFragment | null {
 /** 从 llama.cpp 日志行提取生成吞吐（如 "43.2 tokens/sec" 或 "66.42 t/s"），未匹配返回 null */
 export function parseTokPerSec(line: string): number | null {
   const frags = parseInferenceLogFragments(line);
+  let prefillSpeed: number | null = null;
   for (const frag of frags) {
     if (frag.type === "decode" || frag.type === "decode_progress" || frag.type === "generic_speed") {
       if (frag.speed != null) return frag.speed;
     }
-    if (frag.type === "prefill" && frag.speed) {
-      return frag.speed;
+    if (frag.type === "prefill" && frag.speed != null && prefillSpeed == null) {
+      prefillSpeed = frag.speed;
     }
   }
+  if (prefillSpeed != null) return prefillSpeed;
   const match = line.match(/([0-9]+(?:\.[0-9]+)?)\s*(?:tokens?|toks?|runs?|t)(?:\/|\s+per\s+)(?:seconds?|secs?|s)\b/i)
     || line.match(/([0-9]+(?:\.[0-9]+)?)\s*t\/s\b/i);
   return match ? Number(match[1]) : null;
@@ -347,6 +491,8 @@ export class InferenceTracker {
   private history: InferenceMetrics[] = [];
   private maxHistory: number = 100;
   private lastCommittedTaskId: string | null = null;
+  /** Ninfer /stats counters 差分基线：每次轮询刷新，用于把累计计数器换算为窗口内瞬时增量 */
+  private ninferCounterBase: { at: number; decode: number | null; prefill: number | null; reused: number | null } | null = null;
 
   public hasActiveTurn(): boolean {
     return Boolean(this.current.id);
@@ -362,16 +508,22 @@ export class InferenceTracker {
     for (const frag of frags) {
       // 任务启动或 taskId 发生更迭：提交上一轮，开启新一轮
       if (frag.type === "task_start" || (frag.taskId && this.current.taskId && frag.taskId !== this.current.taskId)) {
-        if (this.current.decodeTokens || this.current.prefillTokens || this.current.decodeTps || this.current.prefillTps) {
-          this.commitCurrent();
+        if (frag.type === "task_start" && frag.taskId && this.current.taskId === frag.taskId) {
+          // 同一请求重复的 task_start（如 /stats 轮询先建轮、随后 req#N started 日志才到达）：
+          // 仅刷新心跳并沿用当前轮，避免把一次请求拆成两轮
+          this.current.lastUpdateAt = now;
+        } else {
+          if (this.current.decodeTokens || this.current.prefillTokens || this.current.decodeTps || this.current.prefillTps) {
+            this.commitCurrent();
+          }
+          this.current = {
+            id: `inf-${now}-${Math.random().toString(36).slice(2, 6)}`,
+            timestamp: now,
+            taskId: frag.taskId,
+            lastUpdateAt: now,
+            taskStartTime: now,
+          };
         }
-        this.current = {
-          id: `inf-${now}-${Math.random().toString(36).slice(2, 6)}`,
-          timestamp: now,
-          taskId: frag.taskId,
-          lastUpdateAt: now,
-          taskStartTime: now,
-        };
       }
 
       if (!this.current.id) {
@@ -571,6 +723,95 @@ export class InferenceTracker {
   }
 
   /**
+   * 从 Ninfer 原生 /stats 与 /slots 端点同步实时指标
+   * 注意（实测结论）：/stats 的 throughput_tokens_per_second 是自引擎启动以来的累计平均值，
+   * 并非当前瞬时速率，直接写入轮次会把"历史平均"误当"本轮速率"造成数据失真；
+   * 这里改用 counters（committed_decode_tokens / computed_prefill_tokens / reused_prompt_tokens）
+   * 的轮询差分计算窗口内真实速率与增量，单请求的最终精确值仍以 done 日志行为准。
+   */
+  public updateFromNinfer(data: {
+    stats?: any;
+    slots?: any;
+  }): { updated: boolean; latest: InferenceMetrics | null; isTurnFinished?: boolean } {
+    const stats = data.stats;
+    const slots = data.slots;
+    const now = Date.now();
+
+    const isSlotProcessing = Array.isArray(slots) && slots.some((s: any) => s.is_processing);
+    const reqs = stats?.requests;
+    const isProcessing = Boolean(isSlotProcessing || (reqs && (reqs.running > 0 || reqs.prefilling > 0 || reqs.decode_ready > 0)));
+
+    // 计数器差分基线：无论忙闲每次轮询都刷新，保证差分窗口不跨越请求边界混入上一请求数据
+    const counters = stats?.counters;
+    const cDecode = typeof counters?.committed_decode_tokens === "number" ? counters.committed_decode_tokens : null;
+    const cPrefill = typeof counters?.computed_prefill_tokens === "number" ? counters.computed_prefill_tokens : null;
+    const cReused = typeof counters?.reused_prompt_tokens === "number" ? counters.reused_prompt_tokens : null;
+    const prevBase = this.ninferCounterBase;
+    this.ninferCounterBase = { at: now, decode: cDecode, prefill: cPrefill, reused: cReused };
+
+    if (!isProcessing) {
+      if (!this.current.id) {
+        return { updated: false, latest: this.getLatest() };
+      }
+      if (this.current.decodeTokens || this.current.promptTokens || this.current.prefillTokens || this.current.cachedTokens || this.current.decodeTps || this.current.prefillTps) {
+        const taskStart = this.current.taskStartTime || this.current.timestamp || now;
+        const elapsed = Math.max(1, now - taskStart);
+        if (this.current.totalTimeMs == null) {
+          this.current.totalTimeMs = elapsed;
+        }
+        const finished = this.commitCurrent();
+        return { updated: true, latest: finished || this.getLatest(), isTurnFinished: true };
+      }
+      // 空轮清理：done 日志行已归档、轮询又短暂探到处理态落回时遗留的无数据轮，直接清空避免幻影活跃轮
+      this.current = {};
+      return { updated: false, latest: this.getLatest() };
+    }
+
+    if (!this.current.id) {
+      // 兜底开轮：日志路径错过 req#N started 行时（如日志级别关闭）由轮询建轮；
+      // 不设 taskId，随后到达的 req#N started 会以更迭语义自然接管空轮
+      this.current.id = `inf-${now}-${Math.random().toString(36).slice(2, 6)}`;
+      this.current.timestamp = now;
+      this.current.taskStartTime = now;
+    }
+
+    // 处理期间持续刷新心跳：即使计数器短暂无增量（长 prefill、排队等），
+    // 也不会被 App 层的 checkIdleTimeout 当作停更而把一次生成误切成多轮
+    this.current.lastUpdateAt = now;
+
+    let changed = false;
+    if (prevBase) {
+      const dtSec = Math.max(0.05, (now - prevBase.at) / 1000);
+      const dDecode = cDecode != null && prevBase.decode != null ? cDecode - prevBase.decode : 0;
+      const dPrefill = cPrefill != null && prevBase.prefill != null ? cPrefill - prevBase.prefill : 0;
+      const dReused = cReused != null && prevBase.reused != null ? cReused - prevBase.reused : 0;
+      if (dDecode > 0) {
+        this.current.decodeTokens = (this.current.decodeTokens || 0) + dDecode;
+        const tps = dDecode / dtSec;
+        if (tps > 0 && tps <= 5000) {
+          this.current.decodeTps = parseFloat(tps.toFixed(1));
+        }
+        changed = true;
+      }
+      if (dPrefill > 0) {
+        this.current.prefillTokens = (this.current.prefillTokens || 0) + dPrefill;
+        changed = true;
+      }
+      if (dReused > 0) {
+        this.current.cachedTokens = (this.current.cachedTokens || 0) + dReused;
+        changed = true;
+      }
+    }
+
+    if (!changed) {
+      return { updated: false, latest: this.getLatest() };
+    }
+
+    const snapshot = this.buildMetricsSnapshot();
+    return { updated: true, latest: snapshot, isTurnFinished: false };
+  }
+
+  /**
    * 空闲超时保底检查：若超过指定毫秒数（默认 3 秒）未收到任何 Token 增量，自动归档结算当前未完成轮次
    */
   public checkIdleTimeout(maxIdleMs: number = 3000): { updated: boolean; latest: InferenceMetrics | null } {
@@ -659,7 +900,7 @@ export class InferenceTracker {
   }
 
   public getLatest(): InferenceMetrics | null {
-    if (this.current.decodeTps || this.current.decodeTokens || this.current.prefillTps || this.current.cacheHitRatio != null || this.current.cachedTokens) {
+    if (this.current.decodeTps || this.current.decodeTokens || this.current.prefillTps || this.current.prefillTokens || this.current.promptTokens || this.current.cacheHitRatio != null || this.current.cachedTokens) {
       return this.buildMetricsSnapshot();
     }
     return this.history[0] || null;
@@ -673,6 +914,7 @@ export class InferenceTracker {
     this.current = {};
     this.history = [];
     this.lastCommittedTaskId = null;
+    this.ninferCounterBase = null;
   }
 }
 
@@ -912,25 +1154,62 @@ export function isNewerVersion(release: string, current: string): boolean {
   return !releasePre && currentPre;
 }
 
-/** 统一格式化引擎后端与 CUDA 版本标识：如 "CUDA 12.4"、"CUDA 12"、"Vulkan"、"CPU" */
+/** 统一格式化引擎后端与 CUDA 版本标识：如 "CUDA 12.4"、"CUDA 12"、"Vulkan"、"CPU" 及 ninfer 分支标签 */
 export function formatEngineBackend(
   backend?: string | null,
   cudaVersion?: string | null,
+  engineType?: "llamacpp" | "ninfer" | "ninfer_kvmem" | string | null,
 ): string {
   const b = (backend || "cuda").toLowerCase();
+  let base = "CUDA";
   if (b.includes("cuda")) {
     if (cudaVersion && cudaVersion.trim()) {
       const v = cudaVersion.trim().replace(/^cuda[-_]?/i, "").replace(/^cu/i, "");
-      return `CUDA ${v}`;
+      base = `CUDA ${v}`;
+    } else {
+      const match = b.match(/(?:cuda[-_]?|cu)(\d+(?:\.\d+)?)/i);
+      base = match && match[1] ? `CUDA ${match[1]}` : "CUDA";
     }
-    const match = b.match(/(?:cuda[-_]?|cu)(\d+(?:\.\d+)?)/i);
-    if (match && match[1]) {
-      return `CUDA ${match[1]}`;
-    }
-    return "CUDA";
+  } else if (b === "vulkan") {
+    base = "Vulkan";
+  } else if (b === "cpu") {
+    base = "CPU";
+  } else {
+    base = backend?.toUpperCase() || "CUDA";
   }
-  if (b === "vulkan") return "Vulkan";
-  if (b === "cpu") return "CPU";
-  return backend?.toUpperCase() || "CUDA";
+
+  if (engineType === "ninfer_kvmem") {
+    return base.toLowerCase().includes("kvmem") ? base : `${base} · KVMem`;
+  }
+  if (engineType === "ninfer") {
+    return base.toLowerCase().includes("ninfer") ? base : `${base} · NInfer`;
+  }
+  return base;
+}
+
+/** 统一写入系统剪贴板（优先 navigator.clipboard，异常或不支持时回退 writeClipboard） */
+export async function copyTextToClipboard(text: string): Promise<boolean> {
+  try {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return true;
+    }
+  } catch {}
+  try {
+    await writeClipboard(text);
+    return true;
+  } catch {}
+  return false;
+}
+
+/** 格式化日志列表为纯文本字符串（每行格式为：[HH:mm:ss] [SYS/OUT/ERR/WRN] log line） */
+export function formatLogsPlainText(logs: LlamaLogPayload[]): string {
+  return logs
+    .map((log) => {
+      const kind = lineKind(log.stream, log.line);
+      const tag = kind === "err" ? "ERR" : kind === "warn" ? "WRN" : kind === "system" ? "SYS" : "OUT";
+      return `${timeLabel(log.timestamp)} [${tag}] ${log.line}`;
+    })
+    .join("\n");
 }
 

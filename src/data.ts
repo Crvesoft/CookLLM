@@ -62,10 +62,68 @@ export const DEFAULT_PROFILES: Profile[] = [
   { id: "low-memory", name: "低显存", description: "保守卸载与小批次，降低资源占用", host: "0.0.0.0", port: 9931, gpuLayers: 12, contextSize: 4096, threads: 6, parallel: 1, batchSize: 128, ubatchSize: 128, flashAttention: true, ncmoeLayers: 0, mtp: false, mtpDraftPath: undefined, specDraftNMax: 3, cacheTypeK: "f16", cacheTypeV: "f16", jinja: false, reasoning: "auto", reasoningEffort: "auto", reasoningBudget: -1, noMmprojOffload: false, loadMode: "mmap", temperature: 0.75, topP: 0.9, minP: 0.05, repeatPenalty: 1.12, extraArgs: "" },
 ];
 
+/** ninfer 模型导入时的默认预设：对齐 NInfer 官方 s-128k 推荐配置，仅此一个 */
+export const DEFAULT_NINFER_PROFILES: Profile[] = [
+  {
+    id: "s-128k",
+    name: "NInfer · 128K",
+    description: "对齐 NInfer 官方推荐：xhigh 深度思考 · 输出不设限 · rk8v4 KV",
+    host: "127.0.0.1",
+    port: 18081,
+    gpuLayers: 99,
+    contextSize: 131072,
+    threads: 8,
+    parallel: 1,
+    batchSize: 512,
+    ubatchSize: 256,
+    flashAttention: true,
+    ncmoeLayers: 0,
+    mtp: true,
+    specDraftNMax: 4,
+    cacheTypeK: "rk8v4",
+    cacheTypeV: "rk8v4",
+    jinja: true,
+    reasoning: "on",
+    reasoningEffort: "xhigh",
+    reasoningBudget: -1,
+    noMmprojOffload: false,
+    loadMode: "mmap",
+    temperature: 1.0,
+    topP: 0.95,
+    minP: 0.0,
+    repeatPenalty: 1.0,
+    extraArgs: "",
+    kvDtype: "rk8v4",
+    prefillChunk: 256,
+    fastPrefillKernel: true,
+    cudaMemoryPolicy: "strict",
+    deviceIndex: 0,
+    deviceProfile: "off",
+    specMtp: true,
+    draftTokens: 4,
+    adaptiveMtp: true,
+    ngramDraftTokens: 31,
+    hostCacheMib: 6144,
+    kvCapacity: 131072,
+    defaultMaxTokens: 0,
+    topK: 20,
+    seed: 42,
+    cudaGraphAllowanceMib: 72,
+  },
+];
+
 /** 挑取若干默认预设作为某模型的专属副本（浅拷贝即可，Profile 全部为原始字段） */
-function defaultsFor(ids: string[]): Profile[] {
+export function defaultsFor(ids: string[]): Profile[] {
   const owned = ids.map((id) => DEFAULT_PROFILES.find((p) => p.id === id)).filter((p): p is Profile => Boolean(p));
   return (owned.length ? owned : [DEFAULT_PROFILES[0]]).map((p) => ({ ...p, id: uid("profile") }));
+}
+
+/** 根据模型文件类型（.gguf / .ninfer）智能匹配生成全套初始预设副本 */
+export function defaultProfilesForModel(path: string): Profile[] {
+  if (path.toLowerCase().endsWith(".ninfer")) {
+    return DEFAULT_NINFER_PROFILES.map((p) => ({ ...p, id: uid("profile") }));
+  }
+  return defaultsFor(["balanced", "deep-thought", "low-memory"]);
 }
 
 export const DEMO_MODELS: ModelAsset[] = [

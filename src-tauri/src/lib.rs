@@ -96,9 +96,76 @@ struct Profile {
     /// 是否禁止将视觉模型卸载到显存，强制纯系统内存运行（--no-mmproj-offload）
     #[serde(default)]
     no_mmproj_offload: bool,
-    /// 该预设关联的 llama.cpp 引擎分支 ID；未指定或为空则跟随全局默认主引擎。
+    /// 该预设关联的 llama.cpp / ninfer 引擎分支 ID；未指定或为空则跟随全局默认主引擎。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     engine_id: Option<String>,
+    /// ninfer / ninfer-kvmem 专属：KV 缓存量化类型（如 rk8v4 / int8 / bf16 / nvfp4）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kv_dtype: Option<String>,
+    /// ninfer 专属：预填充分块 Token 数（128 的倍数，如 256 / 512）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prefill_chunk: Option<u32>,
+    /// ninfer 专属：快速预热内核开关（--fast-prefill-kernel）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fast_prefill_kernel: Option<bool>,
+    /// ninfer 专属：显存分配策略（strict / mixed / default）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cuda_memory_policy: Option<String>,
+    /// ninfer 专属：CUDA 显卡序号（--device N）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device_index: Option<u32>,
+    /// ninfer 专属：硬件调优 Profile（off / auto / calibrate）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device_profile: Option<String>,
+    /// ninfer 专属：自定义 Jinja 对话模板路径（--chat-template FILE）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    chat_template_path: Option<String>,
+    /// ninfer 专属：硬件路线 profile 配置文件路径（--device-profile-path FILE）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device_profile_path: Option<String>,
+    /// ninfer 专属：自适应 MTP 投机采样开关
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    spec_mtp: Option<bool>,
+    /// ninfer 专属：MTP 草稿 Token 步数（--draft-tokens N）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    draft_tokens: Option<u32>,
+    /// ninfer 专属：自适应草稿衰减（--adaptive-mtp）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    adaptive_mtp: Option<bool>,
+    /// ninfer 专属：N-gram 匹配步数（--ngram-draft-tokens N）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ngram_draft_tokens: Option<u32>,
+    /// 单 ninfer 专属：系统内存借用大小（--host-cache-mib MiB）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    host_cache_mib: Option<u32>,
+    /// 单 ninfer 专属：KV 缓存总上限（--kv-capacity tokens）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kv_capacity: Option<u32>,
+    /// ninfer-kvmem 专属：GPU 历史 KV 预算（--kvmem-budget tokens）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kvmem_budget: Option<u32>,
+    /// ninfer-kvmem 专属：GPU 生成预留显存（--kvmem-gen-reserve tokens）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kvmem_gen_reserve: Option<u32>,
+    /// ninfer-kvmem 专属：主机内存预算配额（--kvmem-host-mib MiB）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kvmem_host_mib: Option<u32>,
+    /// ninfer-kvmem 专属：历史会话保持数量（--kvmem-sessions 1..16）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    kvmem_sessions: Option<u32>,
+    /// ninfer 专属：默认输出 Token 上限（--default-max-tokens；0 = 不限制生成到上下文耗尽。
+    /// 思考 token 计入输出上限，服务端默认 8192 会截断 xhigh 长思考；NInfer 官方模板即为 0）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_max_tokens: Option<u32>,
+    /// ninfer 专属：top-k 采样（--top-k N，0..20；NInfer 官方模板为 20）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    top_k: Option<u32>,
+    /// ninfer 专属：采样随机种子（--seed N；NInfer 官方模板为 42，保证测试可复现）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    seed: Option<i64>,
+    /// ninfer 专属：CUDA Graph 驱动状态预留显存（--cuda-graph-allowance-mib MiB；NInfer 官方模板为 72）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cuda_graph_allowance_mib: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -115,6 +182,9 @@ struct LlamaEngine {
     version: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     created_at: Option<u64>,
+    /// 引擎架构类型：llamacpp（默认） | ninfer | ninfer_kvmem
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    engine_type: Option<String>,
 }
 
 fn default_host() -> String { "0.0.0.0".into() }
@@ -248,6 +318,28 @@ impl Default for AppConfig {
                 mmproj_path: None,
                 no_mmproj_offload: false,
                 engine_id: None,
+                kv_dtype: None,
+                prefill_chunk: None,
+                fast_prefill_kernel: None,
+                cuda_memory_policy: None,
+                device_index: None,
+                device_profile: None,
+                chat_template_path: None,
+                device_profile_path: None,
+                spec_mtp: None,
+                draft_tokens: None,
+                adaptive_mtp: None,
+                ngram_draft_tokens: None,
+                host_cache_mib: None,
+                kv_capacity: None,
+                kvmem_budget: None,
+                kvmem_gen_reserve: None,
+                kvmem_host_mib: None,
+                kvmem_sessions: None,
+                default_max_tokens: None,
+                top_k: None,
+                seed: None,
+                cuda_graph_allowance_mib: None,
             }],
             theme: None,
             custom_tags: Vec::new(),
@@ -284,6 +376,8 @@ struct ServerStatus {
     engine_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     engine_backend: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    engine_type: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -729,6 +823,16 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
         .or_else(|| config.profiles.iter().find(|item| item.id == profile_id))
         .cloned().ok_or("未找到运行预设")?;
 
+    // 对外模型名：重命名（displayName）优先，无重命名时回退默认名；
+    // API 请求（--alias / --model-id）、托盘与状态栏均以此为准
+    let model_display_name = model
+        .display_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(model.name.as_str())
+        .to_string();
+
     let (chosen_path, engine_display_name, engine_display_backend) = if let Some(ref eid) = profile.engine_id.filter(|s| !s.trim().is_empty()) {
         let engine = config.engines.iter().find(|e| &e.id == eid)
             .ok_or_else(|| format!("未找到预设关联的引擎分支（ID: {}），请在预设中重新选择引擎或在设置中恢复该分支", eid))?;
@@ -776,85 +880,301 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
         extra_tokens.iter().any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
     };
 
+    let engine_type = detect_engine_type(&chosen_path);
     let mut command = Command::new(&chosen_path);
-    command
-        .arg("-m").arg(&model.path);
-    if let Some(mmproj) = mmproj_path {
-        command.arg("--mmproj").arg(mmproj);
-        if profile.no_mmproj_offload && !has_extra_arg("--no-mmproj-offload") {
-            command.arg("--no-mmproj-offload");
-        }
-    }
-    if let Some(draft) = mtp_draft_path {
-        command.arg("-md").arg(draft);
-    }
-    command
-        .arg("--host").arg(&profile.host)
-        .arg("--port").arg(profile.port.to_string())
-        .arg("-ngl").arg(profile.gpu_layers.to_string())
-        .arg("-c").arg(profile.context_size.to_string())
-        .arg("-t").arg(profile.threads.to_string())
-        .arg("-np").arg(profile.parallel.to_string())
-        .arg("-b").arg(profile.batch_size.to_string())
-        .arg("-ub").arg(profile.ubatch_size.to_string())
-        .arg("--cache-type-k").arg(&profile.cache_type_k)
-        .arg("--cache-type-v").arg(&profile.cache_type_v)
-        .arg("--load-mode").arg(&profile.load_mode)
-        .arg("--temp").arg(profile.temperature.to_string())
-        .arg("--top-p").arg(profile.top_p.to_string())
-        .arg("--min-p").arg(profile.min_p.to_string())
-        .arg("--repeat-penalty").arg(profile.repeat_penalty.to_string());
 
-    // 推理模式与思考参数处理：
-    // - off / none：用户关闭或为兼容不含 --reasoning 参数的第三方分支（如 llama-kvmem-server），完全不传递 --reasoning
-    // - auto：官方默认自动探测 (--reasoning auto)
-    // - on：强制开启推理输出 (--reasoning on)
-    // - force-off：针对官方 llama.cpp 强制覆盖模板抑制思考 (--reasoning off)
-    if !has_extra_arg("--reasoning") {
-        match profile.reasoning.trim().to_lowercase().as_str() {
-            "on" => {
-                command.arg("--reasoning").arg("on");
-            }
-            "auto" => {
-                command.arg("--reasoning").arg("auto");
-            }
-            "force-off" => {
-                command.arg("--reasoning").arg("off");
-            }
-            _ => {}
-        }
-    }
+    if engine_type == "ninfer" || engine_type == "ninfer_kvmem" {
+        // 1. 模型路径：必须作为首个位置参数，绝对不能加 -m
+        command.arg(&model.path);
 
-    // 仅当推理模式非关闭状态时，传递推理参数（若用户在自定义参数中显式指定，则优先使用自定义参数不重复追加）
-    let reasoning_mode = profile.reasoning.trim().to_lowercase();
-    if reasoning_mode != "off" && reasoning_mode != "none" && reasoning_mode != "force-off" {
-        let effort = profile.reasoning_effort.trim().to_lowercase();
-        if !effort.is_empty() && effort != "auto" && effort != "none" && !has_extra_arg("--reasoning-effort") {
-            command.arg("--reasoning-effort").arg(&profile.reasoning_effort);
+        // 1.5 对外 API 模型名：重命名优先；用户 extra_args 显式传 --model-id 时不覆盖
+        if !has_extra_arg("--model-id") {
+            command.arg("--model-id").arg(&model_display_name);
         }
-        if let Some(budget) = profile.reasoning_budget {
-            if budget >= 0 && !has_extra_arg("--reasoning-budget") {
-                command.arg("--reasoning-budget").arg(budget.to_string());
+
+        // 2. 基础网络监听
+        command
+            .arg("--host").arg(&profile.host)
+            .arg("--port").arg(profile.port.to_string())
+            .arg("--cors");
+
+        // 3. 上下文与槽位
+        command
+            .arg("--max-context").arg(profile.context_size.to_string())
+            .arg("--max-concurrency").arg(profile.parallel.clamp(1, 8).to_string());
+
+        // 3.5 默认输出上限：仅当显式设置 > 0 时才传递；若为 0 或未设置则缺省不传，
+        // 此时 NInfer 会按官方规则自动采用最大可用限额，避免报 “--default-max-tokens must be positive”
+        if !has_extra_arg("--default-max-tokens") {
+            if let Some(tokens) = profile.default_max_tokens {
+                if tokens > 0 {
+                    command.arg("--default-max-tokens").arg(tokens.to_string());
+                }
             }
         }
-    }
-    if profile.flash_attention {
-        command.arg("--flash-attn").arg("on");
-    }
-    if profile.ncmoe_layers > 0 {
-        command.arg("-ncmoe").arg(profile.ncmoe_layers.to_string());
-    }
-    if profile.mtp && mtp_draft_path.is_none() {
-        command.arg("--spec-type").arg("draft-mtp");
-    }
-    if profile.mtp || mtp_draft_path.is_some() {
-        command.arg("--spec-draft-n-max").arg(profile.spec_draft_n_max.to_string());
-    }
-    if profile.jinja {
-        command.arg("--jinja");
-    }
-    if !extra_tokens.is_empty() {
-        command.args(&extra_tokens);
+
+        // 4. 预填充分块
+        let prefill_chunk = profile.prefill_chunk.unwrap_or_else(|| {
+            let b = profile.batch_size;
+            if b > 0 && b % 128 == 0 { b } else { 256 }
+        });
+        command.arg("--prefill-chunk").arg(prefill_chunk.to_string());
+
+        // 5. 快速预填充核函数
+        let kv_dtype = profile.kv_dtype.as_deref().unwrap_or("rk8v4");
+        let force_fast_prefill = engine_type == "ninfer_kvmem"
+            && matches!(kv_dtype, "int8" | "rk8v4" | "rk4v4" | "rk4v4-e8" | "rk2v4-e8");
+        if (force_fast_prefill || profile.fast_prefill_kernel.unwrap_or(true)) && !has_extra_arg("--fast-prefill-kernel") {
+            command.arg("--fast-prefill-kernel");
+        }
+
+        // 6. KV 数据类型量化
+        command.arg("--kv-dtype").arg(kv_dtype);
+
+        // 7. GPU 设备索引与硬件调优
+        let device = profile.device_index.unwrap_or(0);
+        command.arg("--device").arg(device.to_string());
+
+        let device_profile = profile.device_profile.as_deref().unwrap_or("off");
+        if !has_extra_arg("--device-profile") {
+            command.arg("--device-profile").arg(device_profile);
+        }
+
+        // 7.2 设备 profile 文件路径 (--device-profile-path FILE)
+        // 防踩踏隔离策略：若用户未显式传 --device-profile-path，且选择了 auto/calibrate 硬件标定，
+        // 则按当前引擎执行程序的绝对路径计算隔离存储文件。
+        // 彻底解决多个不同构建版本 NInfer（例如 schema v1 与 v2）互相踩踏全局配置导致每次启动都被迫跑 45 秒标定的问题。
+        if let Some(ref path) = profile.device_profile_path {
+            let p = path.trim();
+            if !p.is_empty() && !has_extra_arg("--device-profile-path") {
+                command.arg("--device-profile-path").arg(p);
+            }
+        } else if device_profile != "off" && !has_extra_arg("--device-profile-path") {
+            if let Ok(app_dir) = app.path().app_data_dir() {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                chosen_path.to_lowercase().hash(&mut hasher);
+                let hash_hex = format!("{:016x}", hasher.finish());
+                let profiles_dir = app_dir.join("device_profiles");
+                let _ = std::fs::create_dir_all(&profiles_dir);
+                let isolated_path = profiles_dir.join(format!("profile_{}.json", hash_hex));
+                command.arg("--device-profile-path").arg(isolated_path);
+            }
+        }
+
+        // 7.3 对话模板路径 (--chat-template FILE)
+        if let Some(ref path) = profile.chat_template_path {
+            let p = path.trim();
+            if !p.is_empty() && !has_extra_arg("--chat-template") {
+                command.arg("--chat-template").arg(p);
+            }
+        }
+
+        // 7.5 CUDA Graph 驱动状态预留显存（NInfer 官方模板 72 MiB；与 device-profile auto 配套）
+        if let Some(allowance) = profile.cuda_graph_allowance_mib {
+            if !has_extra_arg("--cuda-graph-allowance-mib") {
+                command.arg("--cuda-graph-allowance-mib").arg(allowance.to_string());
+            }
+        }
+
+        // 8. 显存策略
+        // 注意：KVMem 引擎具有自身严格的显存分层与历史缓存接管（exclusive ownership of history caching），
+        // 传递 --cuda-memory-policy 会破坏 KVMem 历史独占权并导致 ninfer-kvmem-server 启动报错拒绝服务。
+        // 因此 --cuda-memory-policy 仅在标准 ninfer 引擎下生效。
+        if engine_type == "ninfer" {
+            if let Some(ref policy) = profile.cuda_memory_policy {
+                if !policy.is_empty() && !has_extra_arg("--cuda-memory-policy") {
+                    command.arg("--cuda-memory-policy").arg(policy);
+                }
+            }
+        }
+
+        // 9. 投机采样 (MTP / Draft)
+        // 注意：ninfer-kvmem-server 引擎强制要求 MTP (1..15) 与 Ngram (1..63) 投机采样。
+        let need_spec = if engine_type == "ninfer_kvmem" {
+            true // KVMem 核心必须开启 MTP
+        } else {
+            profile.spec_mtp.unwrap_or(profile.mtp)
+        };
+
+        if need_spec && !has_extra_arg("--spec") {
+            command.arg("--spec").arg("mtp");
+            let draft_tokens = profile.draft_tokens.unwrap_or_else(|| {
+                if profile.spec_draft_n_max > 0 { profile.spec_draft_n_max } else { 4 }
+            }).clamp(1, 15);
+            command.arg("--draft-tokens").arg(draft_tokens.to_string());
+
+            let need_adaptive = if engine_type == "ninfer_kvmem" {
+                true
+            } else {
+                profile.adaptive_mtp.unwrap_or(true)
+            };
+            if need_adaptive && !has_extra_arg("--adaptive-mtp") {
+                command.arg("--adaptive-mtp");
+            }
+
+            let mut ngram = profile.ngram_draft_tokens.unwrap_or(31);
+            if profile.parallel > 1 && ngram > 15 {
+                ngram = 15;
+            }
+            command.arg("--ngram-draft-tokens").arg(ngram.clamp(1, 63).to_string());
+            if !has_extra_arg("--ngram-min-match") {
+                command.arg("--ngram-min-match").arg("12");
+            }
+        }
+
+        // 10. 深度思考
+        let reasoning_mode = profile.reasoning.trim().to_lowercase();
+        if reasoning_mode == "off" || reasoning_mode == "force-off" || reasoning_mode == "none" {
+            if !has_extra_arg("--no-thinking") {
+                command.arg("--no-thinking");
+            }
+        } else {
+            if !has_extra_arg("--preserve-thinking") {
+                command.arg("--preserve-thinking");
+            }
+            let effort = profile.reasoning_effort.trim().to_lowercase();
+            let valid_effort = match effort.as_str() {
+                "xhigh" | "high" | "medium" | "low" | "minimal" | "none" => effort.as_str(),
+                _ => "xhigh",
+            };
+            if !has_extra_arg("--default-reasoning-effort") {
+                command.arg("--default-reasoning-effort").arg(valid_effort);
+            }
+        }
+
+        // 11. 采样超参（温度 / Top-P / Min-P 来自预设；Top-K 与种子对齐 NInfer 官方模板）
+        command
+            .arg("--temperature").arg(profile.temperature.to_string())
+            .arg("--top-p").arg(profile.top_p.to_string())
+            .arg("--min-p").arg(profile.min_p.to_string());
+        if let Some(topk) = profile.top_k {
+            if topk > 0 && !has_extra_arg("--top-k") {
+                command.arg("--top-k").arg(topk.to_string());
+            }
+        }
+        if let Some(seed) = profile.seed {
+            if seed >= 0 && !has_extra_arg("--seed") {
+                command.arg("--seed").arg(seed.to_string());
+            }
+        }
+
+        // 12. 引擎特有显存/KVMem 分层管理
+        if engine_type == "ninfer_kvmem" {
+            let budget = profile.kvmem_budget.unwrap_or(32768);
+            let budget_aligned = (budget / 64) * 64;
+            let gen_reserve = profile.kvmem_gen_reserve.unwrap_or(16384);
+            let gen_reserve_aligned = (gen_reserve / 64) * 64;
+            let host_mib = profile.kvmem_host_mib.unwrap_or(12288);
+            let sessions = profile.kvmem_sessions.unwrap_or(1).clamp(1, 16);
+            command
+                .arg("--kvmem-budget").arg(budget_aligned.to_string())
+                .arg("--kvmem-gen-reserve").arg(gen_reserve_aligned.to_string())
+                .arg("--kvmem-host-mib").arg(host_mib.to_string())
+                .arg("--kvmem-sessions").arg(sessions.to_string());
+
+            // sink_tokens 与 recent_tokens 必须对齐 64，且 sink + recent <= budget
+            let half_budget = (budget_aligned / 128) * 64;
+            let default_keep = half_budget.min(5120).max(64);
+            if !has_extra_arg("--kvmem-sink-tokens") {
+                command.arg("--kvmem-sink-tokens").arg(default_keep.to_string());
+            }
+            if !has_extra_arg("--kvmem-recent-tokens") {
+                command.arg("--kvmem-recent-tokens").arg(default_keep.to_string());
+            }
+        } else {
+            let host_mib = profile.host_cache_mib.unwrap_or(6144);
+            command.arg("--host-cache-mib").arg(host_mib.to_string());
+            if let Some(cap) = profile.kv_capacity {
+                if cap > 0 {
+                    command.arg("--kv-capacity").arg(cap.to_string());
+                }
+            }
+        }
+
+        // 13. 用户自定义参数
+        if !extra_tokens.is_empty() {
+            command.args(&extra_tokens);
+        }
+    } else {
+        // llama.cpp 分支参数拼接（100% 保持原有逻辑）
+        command
+            .arg("-m").arg(&model.path);
+        // 对外 API 模型名（--alias）：重命名优先；用户 extra_args 显式传 -a/--alias 时不覆盖
+        if !has_extra_arg("--alias") && !has_extra_arg("-a") {
+            command.arg("--alias").arg(&model_display_name);
+        }
+        if let Some(mmproj) = mmproj_path {
+            command.arg("--mmproj").arg(mmproj);
+            if profile.no_mmproj_offload && !has_extra_arg("--no-mmproj-offload") {
+                command.arg("--no-mmproj-offload");
+            }
+        }
+        if let Some(draft) = mtp_draft_path {
+            command.arg("-md").arg(draft);
+        }
+        command
+            .arg("--host").arg(&profile.host)
+            .arg("--port").arg(profile.port.to_string())
+            .arg("-ngl").arg(profile.gpu_layers.to_string())
+            .arg("-c").arg(profile.context_size.to_string())
+            .arg("-t").arg(profile.threads.to_string())
+            .arg("-np").arg(profile.parallel.to_string())
+            .arg("-b").arg(profile.batch_size.to_string())
+            .arg("-ub").arg(profile.ubatch_size.to_string())
+            .arg("--cache-type-k").arg(&profile.cache_type_k)
+            .arg("--cache-type-v").arg(&profile.cache_type_v)
+            .arg("--load-mode").arg(&profile.load_mode)
+            .arg("--temp").arg(profile.temperature.to_string())
+            .arg("--top-p").arg(profile.top_p.to_string())
+            .arg("--min-p").arg(profile.min_p.to_string())
+            .arg("--repeat-penalty").arg(profile.repeat_penalty.to_string());
+
+        if !has_extra_arg("--reasoning") {
+            match profile.reasoning.trim().to_lowercase().as_str() {
+                "on" => {
+                    command.arg("--reasoning").arg("on");
+                }
+                "auto" => {
+                    command.arg("--reasoning").arg("auto");
+                }
+                "force-off" => {
+                    command.arg("--reasoning").arg("off");
+                }
+                _ => {}
+            }
+        }
+
+        let reasoning_mode = profile.reasoning.trim().to_lowercase();
+        if reasoning_mode != "off" && reasoning_mode != "none" && reasoning_mode != "force-off" {
+            let effort = profile.reasoning_effort.trim().to_lowercase();
+            if !effort.is_empty() && effort != "auto" && effort != "none" && !has_extra_arg("--reasoning-effort") {
+                command.arg("--reasoning-effort").arg(&profile.reasoning_effort);
+            }
+            if let Some(budget) = profile.reasoning_budget {
+                if budget >= 0 && !has_extra_arg("--reasoning-budget") {
+                    command.arg("--reasoning-budget").arg(budget.to_string());
+                }
+            }
+        }
+        if profile.flash_attention {
+            command.arg("--flash-attn").arg("on");
+        }
+        if profile.ncmoe_layers > 0 {
+            command.arg("-ncmoe").arg(profile.ncmoe_layers.to_string());
+        }
+        if profile.mtp && mtp_draft_path.is_none() {
+            command.arg("--spec-type").arg("draft-mtp");
+        }
+        if profile.mtp || mtp_draft_path.is_some() {
+            command.arg("--spec-draft-n-max").arg(profile.spec_draft_n_max.to_string());
+        }
+        if profile.jinja {
+            command.arg("--jinja");
+        }
+        if !extra_tokens.is_empty() {
+            command.args(&extra_tokens);
+        }
     }
     command.stdout(Stdio::piped()).stderr(Stdio::piped()).stdin(Stdio::null());
     #[cfg(windows)]
@@ -863,7 +1183,7 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
         command.creation_flags(0x08000000);
     }
 
-    emit_log(&app, "system", format!("launch: {} · {} [engine: {}]", model.name, profile.name, engine_display_name));
+    emit_log(&app, "system", format!("launch: {} · {} [engine: {}]", model_display_name, profile.name, engine_display_name));
     let mut child = command.spawn().map_err(|error| format!("启动失败：{error}"))?;
     let pid = child.id();
     if let Some(stdout) = child.stdout.take() {
@@ -877,20 +1197,20 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
         pid: Some(pid),
         port: Some(profile.port),
         model_id: Some(model.id),
-        model_name: Some(model.name.clone()),
+        model_name: Some(model_display_name.clone()),
         profile_id: Some(profile.id),
         profile_name: Some(profile.name),
         started_at: Some(now_ms()),
         engine_name: Some(engine_display_name),
         engine_backend: engine_display_backend,
+        engine_type: Some(engine_type.to_string()),
     };
-    let model_name_display = model.name;
     {
         let mut guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
         *guard = Some(ManagedProcess { child, status: status.clone() });
     }
     drop(lifecycle);
-    update_tray_status(&app, Some(&model_name_display));
+    update_tray_status(&app, Some(&model_display_name));
     Ok(status)
 }
 
@@ -1365,14 +1685,183 @@ fn paths_exist(paths: Vec<String>) -> Vec<String> {
     paths.into_iter().filter(|path| !path.trim().is_empty() && Path::new(path).exists()).collect()
 }
 
+/// 智能识别引擎架构类型：llamacpp | ninfer | ninfer_kvmem
+fn detect_engine_type(path: &str) -> &'static str {
+    let lower = path.to_lowercase();
+    let name = Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_lowercase())
+        .unwrap_or_else(|| lower.clone());
+    if name.contains("ninfer") && (name.contains("kvmem") || lower.contains("kvmem")) {
+        "ninfer_kvmem"
+    } else if name.starts_with("ninfer") || name.contains("ninfer") {
+        "ninfer"
+    } else {
+        "llamacpp"
+    }
+}
+
+fn extract_parameters_from_name(name: &str) -> String {
+    let bytes = name.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i < len {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            while i < len && (bytes[i].is_ascii_digit() || bytes[i] == b'.') {
+                i += 1;
+            }
+            if i < len && (bytes[i] == b'b' || bytes[i] == b'B') {
+                let end = i + 1;
+                if end == len || !bytes[end].is_ascii_alphabetic() {
+                    return format!("{}B", &name[start..i]);
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    String::new()
+}
+
+fn extract_quant_from_name(name: &str) -> String {
+    let lower = name.to_lowercase();
+    const QUANTS: &[&str] = &[
+        "iq1_s", "iq1_m", "iq2_xxs", "iq2_xs", "iq2_s", "iq2_m",
+        "iq3_xxs", "iq3_xs", "iq3_s", "iq3_m",
+        "iq4_nl", "iq4_xs",
+        "q2_k", "q3_k_s", "q3_k_m", "q3_k_l", "q3_k",
+        "q4_k_s", "q4_k_m", "q4_k", "q4_0", "q4_1",
+        "q5_k_s", "q5_k_m", "q5_k", "q5_0", "q5_1",
+        "q6_k", "q8_0", "q8_k",
+        "fp16", "f16", "bf16", "fp32", "f32",
+        "rk8v4", "k8v4", "nvfp4", "int8", "int4", "gsq"
+    ];
+    for &q in QUANTS {
+        if let Some(pos) = lower.find(q) {
+            let slice = &name[pos..pos + q.len()];
+            return slice.to_uppercase();
+        }
+    }
+    String::new()
+}
+
+/// 读取 .ninfer 单容器头部元数据：
+/// 偏移 0..7 为魔数 NINFER\0\x03，偏移 8..15 为 64 位 JSON 长度，偏移 32 起为 UTF-8 JSON 架构定义。
+fn read_ninfer_meta(path: &str) -> GgufMeta {
+    let empty = GgufMeta { architecture: String::new(), parameters: String::new(), quantization: String::new() };
+    let mut file = match fs::File::open(path) {
+        Ok(file) => file,
+        Err(_) => return empty,
+    };
+    use std::io::{Read, Seek, SeekFrom};
+    let mut header = [0u8; 16];
+    if file.read_exact(&mut header).is_err() {
+        return empty;
+    }
+    if &header[0..6] != b"NINFER" {
+        return empty;
+    }
+    let json_len = u64::from_le_bytes(header[8..16].try_into().unwrap_or([0; 8]));
+    if json_len == 0 || json_len > 16 * 1024 * 1024 {
+        return empty;
+    }
+    if file.seek(SeekFrom::Start(32)).is_err() {
+        return empty;
+    }
+    let mut json_buf = vec![0u8; json_len as usize];
+    if file.read_exact(&mut json_buf).is_err() {
+        return empty;
+    }
+    let Ok(json_str) = std::str::from_utf8(&json_buf) else {
+        return empty;
+    };
+    let Ok(value): Result<serde_json::Value, _> = serde_json::from_str(json_str) else {
+        return empty;
+    };
+
+    let raw_arch = value
+        .pointer("/components/text/config/architectures/0")
+        .and_then(|v| v.as_str())
+        .or_else(|| value.pointer("/components/text/config/model_type").and_then(|v| v.as_str()))
+        .unwrap_or("NInfer");
+
+    let architecture = if raw_arch.contains("Qwen3_5") || raw_arch.contains("qwen3_5") {
+        "Qwen3.5".to_string()
+    } else if raw_arch.contains("Qwen2") || raw_arch.contains("qwen2") {
+        "Qwen2".to_string()
+    } else {
+        raw_arch.replace("ForCausalLM", "").replace("_text", "")
+    };
+
+    let model_name = value
+        .pointer("/metadata/name")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let path_obj = Path::new(path);
+    let fallback_name = path_obj.file_stem().map(|s| s.to_string_lossy()).unwrap_or_default();
+    let name_for_parse = if !model_name.is_empty() { model_name } else { &fallback_name };
+
+    let parameters = extract_parameters_from_name(name_for_parse);
+    let quantization = extract_quant_from_name(name_for_parse);
+
+    GgufMeta {
+        architecture,
+        parameters,
+        quantization,
+    }
+}
+
 #[tauri::command]
 fn inspect_gguf(path: String) -> GgufMeta {
-    read_gguf_meta(&path)
+    let lower = path.to_lowercase();
+    if lower.ends_with(".ninfer") {
+        let meta = read_ninfer_meta(&path);
+        if !meta.architecture.is_empty() || !meta.parameters.is_empty() || !meta.quantization.is_empty() {
+            return meta;
+        }
+    }
+    let meta = read_gguf_meta(&path);
+    if meta.architecture.is_empty() && meta.quantization.is_empty() && meta.parameters.is_empty() {
+        read_ninfer_meta(&path)
+    } else {
+        meta
+    }
 }
 
 #[cfg(test)]
 mod gguf_meta_tests {
-    use super::read_gguf_meta;
+    use super::{detect_engine_type, read_gguf_meta, read_ninfer_meta};
+
+    #[test]
+    fn detect_engine_type_identifies_engines() {
+        assert_eq!(detect_engine_type("ninfer-kvmem-server.exe"), "ninfer_kvmem");
+        assert_eq!(detect_engine_type("D:\\AI\\workers\\ninfer\\ninfer-kvmem-server.exe"), "ninfer_kvmem");
+        assert_eq!(detect_engine_type("ninfer-serve.exe"), "ninfer");
+        assert_eq!(detect_engine_type("D:\\AI\\ninfer-serve.exe"), "ninfer");
+        assert_eq!(detect_engine_type("llama-server.exe"), "llamacpp");
+        assert_eq!(detect_engine_type("llama-kvmem-server.exe"), "llamacpp");
+    }
+
+    #[test]
+    fn read_ninfer_meta_parses_json_header() {
+        let path = std::env::temp_dir().join("test-model-mock.ninfer");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"NINFER\0\x03");
+        let json = r#"{"metadata":{"name":"Swift-1.5-Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp"},"components":{"text":{"config":{"architectures":["Qwen3_5ForCausalLM"]}}}}"#;
+        let json_bytes = json.as_bytes();
+        buf.extend_from_slice(&(json_bytes.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&[0u8; 16]); // 16 bytes reserved/hash to reach offset 32
+        buf.extend_from_slice(json_bytes);
+        std::fs::write(&path, buf).unwrap();
+
+        let meta = read_ninfer_meta(&path.to_string_lossy());
+        assert_eq!(meta.architecture, "Qwen3.5");
+        assert_eq!(meta.parameters, "27B");
+        assert_eq!(meta.quantization, "IQ3_S");
+        let _ = std::fs::remove_file(path);
+    }
 
     #[test]
     fn read_gguf_meta_rejects_truncated_header() {
@@ -1490,7 +1979,12 @@ fn pick_files(app: AppHandle, filters: Vec<String>) -> Vec<PickedFile> {
     out
 }
 
-/// 递归收集目录下的 .gguf 文件（含子目录）。
+fn is_model_file(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.ends_with(".gguf") || lower.ends_with(".ninfer")
+}
+
+/// 递归收集目录下的 .gguf 与 .ninfer 模型文件（含子目录）。
 fn collect_gguf(dir: &Path, out: &mut Vec<PickedFile>) {
     let entries = match fs::read_dir(dir) {
         Ok(entries) => entries,
@@ -1509,7 +2003,7 @@ fn collect_gguf(dir: &Path, out: &mut Vec<PickedFile>) {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_lowercase())
                 .unwrap_or_default();
-            if name.ends_with(".gguf") {
+            if is_model_file(&name) {
                 let size_bytes = fs::metadata(&path).map(|meta| meta.len()).unwrap_or(0);
                 out.push(PickedFile {
                     path: path.to_string_lossy().to_string(),
@@ -1736,10 +2230,10 @@ fn find_server_fuzzy(dir: &Path, depth: usize) -> Option<PathBuf> {
                 if name.contains("rpc") || name.contains("test") || name.contains("bench") || name.contains("quantize") || name.contains("cli") {
                     continue;
                 }
-                if name.starts_with("llama") && name.contains("server") {
+                if (name.starts_with("llama") && name.contains("server")) || name.starts_with("ninfer") {
                     candidate_llama_server = Some(path);
                     break;
-                } else if name.contains("server") && candidate_any_server.is_none() {
+                } else if (name.contains("server") || name.contains("serve")) && candidate_any_server.is_none() {
                     candidate_any_server = Some(path);
                 }
             }
@@ -1808,7 +2302,10 @@ fn collect_server_candidates(root: &Path, dir: &Path, depth: usize, out: &mut Ve
                     || name_lower == "llama-server"
                     || (name_lower.starts_with("llama") && name_lower.contains("server"))
                     || (name_lower.contains("llama") && name_lower.contains("server"))
-                    || (name_lower.ends_with("-server.exe") || name_lower.ends_with("_server.exe"));
+                    || (name_lower.ends_with("-server.exe") || name_lower.ends_with("_server.exe"))
+                    || name_lower == "ninfer-serve.exe"
+                    || name_lower == "ninfer-serve"
+                    || (name_lower.starts_with("ninfer") && (name_lower.contains("serve") || name_lower.contains("server")));
                 if is_server {
                     let rel_path = path.strip_prefix(root)
                         .map(|p| p.to_string_lossy().to_string())
@@ -1926,7 +2423,7 @@ fn pick_server_file(app: AppHandle) -> Result<String, String> {
     Ok(path.to_string_lossy().to_string())
 }
 
-/// 把前端拖入/选中的路径展开为 GGUF 文件列表：目录递归收集，文件按 .gguf 后缀过滤，最后按路径去重。
+/// 把前端拖入/选中的路径展开为模型文件列表（支持 .gguf 与 .ninfer）：目录递归收集，文件按后缀过滤，最后按路径去重。
 /// 供“拖拽上传区”使用——拖入的文件/文件夹路径直接来自 Tauri 的 drag-drop 事件。
 #[tauri::command]
 fn expand_paths(paths: Vec<String>) -> Vec<PickedFile> {
@@ -1940,7 +2437,7 @@ fn expand_paths(paths: Vec<String>) -> Vec<PickedFile> {
                 .file_name()
                 .map(|n| n.to_string_lossy().to_lowercase())
                 .unwrap_or_default();
-            if name.ends_with(".gguf") {
+            if is_model_file(&name) {
                 let size_bytes = fs::metadata(&p).map(|meta| meta.len()).unwrap_or(0);
                 raw.push(PickedFile { path, size_bytes });
             }
@@ -2526,7 +3023,7 @@ fn fetch_hf_json(client: &reqwest::blocking::Client, url: &str) -> Result<serde_
 
 /// 拉取候选模型并按量化位过滤（服务端二次过滤：HF filter 不支持按 bit 查询）。
 /// 有量化过滤时放大 limit，循环翻页直到凑满目标数量或 API 返回空，保证分页语义正确。
-fn fetch_models_filtered(client: &reqwest::blocking::Client, base: &str, gguf_only: bool, limit: usize, skip: Option<usize>, quants: Option<Vec<i32>>) -> Result<Vec<HuggingFaceModel>, String> {
+fn fetch_models_filtered(client: &reqwest::blocking::Client, base: &str, format_filter: Option<&str>, limit: usize, skip: Option<usize>, quants: Option<Vec<i32>>) -> Result<Vec<HuggingFaceModel>, String> {
     let wanted = limit;
     if let Some(bits) = quants {
         if !bits.is_empty() {
@@ -2537,8 +3034,10 @@ fn fetch_models_filtered(client: &reqwest::blocking::Client, base: &str, gguf_on
             // 最多 20 页，避免极端情况死循环
             for _ in 0..20 {
                 let mut url = format!("{}&limit={}&skip={}", base, page, cursor);
-                if gguf_only {
-                    url.push_str("&filter=gguf");
+                match format_filter {
+                    Some("gguf") => url.push_str("&filter=gguf"),
+                    Some("ninfer") => url.push_str("&filter=ninfer"),
+                    _ => {}
                 }
                 let value = fetch_hf_json(client, &url)?;
                 let items = value.as_array().ok_or("HuggingFace API 返回格式异常")?;
@@ -2569,8 +3068,10 @@ fn fetch_models_filtered(client: &reqwest::blocking::Client, base: &str, gguf_on
     if let Some(page_skip) = skip {
         url.push_str(&format!("&skip={}", page_skip));
     }
-    if gguf_only {
-        url.push_str("&filter=gguf");
+    match format_filter {
+        Some("gguf") => url.push_str("&filter=gguf"),
+        Some("ninfer") => url.push_str("&filter=ninfer"),
+        _ => {}
     }
     let value = fetch_hf_json(client, &url)?;
     let items = value.as_array().ok_or("HuggingFace API 返回格式异常")?;
@@ -2604,10 +3105,10 @@ fn hf_model_from_value(value: &serde_json::Value) -> Option<HuggingFaceModel> {
         .unwrap_or(false);
     let sample_quant = tags
         .iter()
-        .find(|tag| tag.to_lowercase().contains(".gguf"))
+        .find(|tag| tag.to_lowercase().contains(".gguf") || tag.to_lowercase().contains(".ninfer"))
         .cloned()
         .or_else(|| {
-            ["Q4_K_M", "Q5_K_M", "Q8_0", "Q6_K", "Q4_0"]
+            ["Q4_K_M", "Q5_K_M", "Q8_0", "Q6_K", "Q4_0", "NVFP4", "RK8V4", "INT8", "BF16"]
                 .iter()
                 .find(|candidate| tags.iter().any(|tag| tag.to_uppercase().contains(**candidate)))
                 .map(|value| value.to_string())
@@ -2706,13 +3207,12 @@ fn regex_like_parameter(text: &str) -> Option<f64> {
     None
 }
 
-/// 本周 HuggingFace 热门模型（sort=trending）；可选仅 GGUF（filter=gguf）。
+/// 本周 HuggingFace 热门模型（sort=trending）；支持格式筛选（全部 / 仅 GGUF / 仅 NINFER）。
 #[tauri::command]
-async fn hf_trending(app: AppHandle, limit: Option<usize>, gguf_only: Option<bool>, skip: Option<usize>, sort: Option<String>, quants: Option<Vec<i32>>) -> Result<Vec<HuggingFaceModel>, String> {
+async fn hf_trending(app: AppHandle, limit: Option<usize>, gguf_only: Option<bool>, format_filter: Option<String>, skip: Option<usize>, sort: Option<String>, quants: Option<Vec<i32>>) -> Result<Vec<HuggingFaceModel>, String> {
     let config = read_config(&app)?;
     let network = config.network.clone().unwrap_or_default();
     tauri::async_runtime::spawn_blocking(move || {
-        // reqwest blocking 客户端只能在 spawn_blocking 线程上构建：debug 构建下在 async 线程构建会触发 tokio panic
         let client = build_net_client(&network)?;
         let base = format!("{}/models?sort=trendingScore&direction=-1&expand[]=lastModified&expand[]=downloads&expand[]=likes", HF_API_BASE);
         let base = if let Some(sort_by) = sort {
@@ -2720,35 +3220,49 @@ async fn hf_trending(app: AppHandle, limit: Option<usize>, gguf_only: Option<boo
         } else {
             base
         };
-        fetch_models_filtered(&client, &base, gguf_only.unwrap_or(false), limit.unwrap_or(12), skip, quants)
+        let effective_filter = format_filter.as_deref().or_else(|| {
+            if gguf_only.unwrap_or(false) { Some("gguf") } else { None }
+        });
+        fetch_models_filtered(&client, &base, effective_filter, limit.unwrap_or(12), skip, quants)
     })
     .await
     .map_err(|error| format!("获取热门榜单任务中断：{}", error))?
 }
 
-/// 搜索 HuggingFace 模型（关键词 / 组织名）；可选仅 GGUF。
+/// 搜索 HuggingFace 模型（关键词 / 组织名）；支持格式筛选。
 #[tauri::command]
-async fn hf_search(app: AppHandle, query: String, limit: Option<usize>, gguf_only: Option<bool>, skip: Option<usize>, sort: Option<String>, quants: Option<Vec<i32>>) -> Result<Vec<HuggingFaceModel>, String> {
+async fn hf_search(app: AppHandle, query: String, limit: Option<usize>, gguf_only: Option<bool>, format_filter: Option<String>, skip: Option<usize>, sort: Option<String>, quants: Option<Vec<i32>>) -> Result<Vec<HuggingFaceModel>, String> {
     let config = read_config(&app)?;
     let network = config.network.clone().unwrap_or_default();
     tauri::async_runtime::spawn_blocking(move || {
         let client = build_net_client(&network)?;
+        let effective_filter = format_filter.as_deref().or_else(|| {
+            if gguf_only.unwrap_or(false) { Some("gguf") } else { None }
+        });
         let mut url = reqwest::Url::parse(&format!("{}/models", HF_API_BASE)).map_err(|error| format!("构建请求 URL 失败：{}", error))?;
+        let search_text = query.trim();
+        let effective_search = if search_text.is_empty() && effective_filter == Some("ninfer") {
+            "ninfer"
+        } else {
+            search_text
+        };
+        if !effective_search.is_empty() {
+            url.query_pairs_mut().append_pair("search", effective_search);
+        }
         url.query_pairs_mut()
-            .append_pair("search", query.trim())
             .append_pair("sort", sort.as_deref().unwrap_or("trendingScore"))
             .append_pair("expand[]", "lastModified")
             .append_pair("expand[]", "downloads")
             .append_pair("expand[]", "likes")
             .append_pair("direction", "-1");
         let base = url.as_str().to_string();
-        fetch_models_filtered(&client, &base, gguf_only.unwrap_or(false), limit.unwrap_or(30), skip, quants)
+        fetch_models_filtered(&client, &base, effective_filter, limit.unwrap_or(30), skip, quants)
     })
     .await
     .map_err(|error| format!("搜索任务中断：{}", error))?
 }
 
-/// 列出仓库 main 分支的 .gguf 文件（递归，按文件名排序）。
+/// 列出仓库 main 分支的 .gguf 与 .ninfer 模型文件（递归，按文件名排序）。
 #[tauri::command]
 async fn hf_list_files(app: AppHandle, repo: String) -> Result<Vec<HuggingFaceFile>, String> {
     let config = read_config(&app)?;
@@ -2767,7 +3281,8 @@ async fn hf_list_files(app: AppHandle, repo: String) -> Result<Vec<HuggingFaceFi
                     return None;
                 }
                 let name = item.get("path").and_then(|value| value.as_str())?;
-                if !name.to_lowercase().ends_with(".gguf") {
+                let lower = name.to_lowercase();
+                if !lower.ends_with(".gguf") && !lower.ends_with(".ninfer") {
                     return None;
                 }
                 let size = item.get("size").and_then(|value| value.as_u64()).unwrap_or(0);
@@ -3681,6 +4196,8 @@ struct LlamaCppLocalStatus {
     cuda_version: Option<String>,
     server_available: bool,
     server_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    engine_type: Option<String>,
 }
 
 /// llama.cpp 官方仓库（2024 起迁移到 ggml-org，旧 ggerganov 已 301 重定向）。
@@ -3778,7 +4295,50 @@ fn get_llamacpp_status(app: AppHandle, custom_path: Option<String>) -> Result<Ll
     let mut local_backend = "cpu".into();
     let mut local_version = None;
     if let Some(exe) = server_path.as_ref() {
+        let exe_str = exe.to_string_lossy().to_string();
+        let engine_type = detect_engine_type(&exe_str);
         let bin_dir = exe.parent().unwrap_or(&install_dir).to_path_buf();
+
+        if engine_type == "ninfer" || engine_type == "ninfer_kvmem" {
+            local_backend = "cuda".into();
+            let mut local_cuda_version = None;
+            let build_info_candidates = [
+                bin_dir.join("BUILD-INFO.json"),
+                bin_dir.parent().map(|p| p.join("BUILD-INFO.json")).unwrap_or_default(),
+                bin_dir.parent().and_then(|p| p.parent()).map(|p| p.join("BUILD-INFO.json")).unwrap_or_default(),
+            ];
+            for cand in &build_info_candidates {
+                if cand.is_file() {
+                    if let Ok(content) = fs::read_to_string(cand) {
+                        if let Ok(info) = serde_json::from_str::<serde_json::Value>(&content) {
+                            if let Some(rel) = info.get("release").and_then(|v| v.as_str()) {
+                                local_version = Some(rel.to_string());
+                            }
+                            if let Some(cuda) = info.pointer("/build/cuda_version").and_then(|v| v.as_str()) {
+                                local_cuda_version = Some(cuda.to_string());
+                            }
+                            break;
+                        }
+                    }
+                }
+            }
+            if local_cuda_version.is_none() {
+                local_cuda_version = get_installed_cuda_version(&bin_dir);
+            }
+            if local_version.is_none() {
+                local_version = Some(if engine_type == "ninfer_kvmem" { "KVMem-sm120a".into() } else { "NInfer".into() });
+            }
+            return Ok(LlamaCppLocalStatus {
+                install_dir: install_dir.to_string_lossy().to_string(),
+                local_version,
+                local_backend,
+                cuda_version: local_cuda_version,
+                server_available: true,
+                server_path: Some(exe_str),
+                engine_type: Some(engine_type.to_string()),
+            });
+        }
+
         local_version = local_llamacpp_version(&bin_dir);
         // 优先读安装时写入的 backend.txt，回退按路径名与 DLL 推断
         if let Ok(text) = fs::read_to_string(bin_dir.join("backend.txt")) {
@@ -3803,6 +4363,7 @@ fn get_llamacpp_status(app: AppHandle, custom_path: Option<String>) -> Result<Ll
             cuda_version: local_cuda_version,
             server_available: server_path.as_ref().map(|p| p.is_file()).unwrap_or(false),
             server_path: server_path.map(|path| path.to_string_lossy().to_string()),
+            engine_type: Some("llamacpp".into()),
         });
     }
     Ok(LlamaCppLocalStatus {
@@ -3812,6 +4373,7 @@ fn get_llamacpp_status(app: AppHandle, custom_path: Option<String>) -> Result<Ll
         cuda_version: None,
         server_available: false,
         server_path: None,
+        engine_type: None,
     })
 }
 

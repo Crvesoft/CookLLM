@@ -1,11 +1,11 @@
-import { Activity, Check, MessageSquareText, PanelLeftClose, PanelLeftOpen, Play, Settings, SlidersHorizontal, Square, SquareTerminal, Boxes, Globe, Loader2, Minimize, type LucideIcon } from "lucide-react";
+import { Activity, Check, Copy, MessageSquareText, PanelLeftClose, PanelLeftOpen, Play, Settings, SlidersHorizontal, Square, SquareTerminal, Boxes, Globe, Loader2, Minimize, type LucideIcon } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type React from "react";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { isTauri } from "../tauri";
 import type { GpuStats, InferenceMetrics, LlamaLogPayload, ModelAsset, Page, ServerStatus } from "../types";
-import { cn, lineKind, modelTitle, timeLabel } from "../utils";
+import { cn, lineKind, modelTitle, timeLabel, copyTextToClipboard, formatLogsPlainText } from "../utils";
 import { LlamaMark } from "./LlamaMark";
 import MiniStatusBar from "./MiniStatusBar";
 import InferenceInspector from "./InferenceInspector";
@@ -162,6 +162,18 @@ export function LogsPage({
 }) {
   const { t } = useI18n();
   const endRef = useRef<HTMLDivElement>(null);
+  const [copied, setCopied] = useState(false);
+
+  const handleCopyLogs = async () => {
+    if (!logs.length) return;
+    const text = formatLogsPlainText(logs);
+    const ok = await copyTextToClipboard(text);
+    if (ok) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    }
+  };
+
   /** 性能分析与运行日志记忆性选择：记录到 localStorage，切页回来时保持上次的选择 */
   const [tab, setTabState] = useState<"logs" | "perf">(() => {
     try {
@@ -212,10 +224,24 @@ export function LogsPage({
             <span className="logs-idle">{t("statusStopped")}</span>
           )}
         </div>
-        <div>
-          {tab === "logs"
-            ? <button onClick={onClear}>{t("clearLogs")}</button>
-            : onClearHistory && <button onClick={onClearHistory}>{t("perf.clearStats")}</button>}
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {tab === "logs" ? (
+            <>
+              <button
+                type="button"
+                onClick={handleCopyLogs}
+                disabled={!logs.length}
+                title={copied ? t("logsCopied") : t("copyLogs")}
+                style={{ display: "inline-flex", alignItems: "center", gap: 4 }}
+              >
+                {copied ? <Check size={11} style={{ color: "#34d399" }} /> : <Copy size={11} />}
+                <span>{copied ? t("logsCopied") : t("copyLogs")}</span>
+              </button>
+              <button type="button" onClick={onClear}>{t("clearLogs")}</button>
+            </>
+          ) : (
+            onClearHistory && <button type="button" onClick={onClearHistory}>{t("perf.clearStats")}</button>
+          )}
         </div>
       </div>
 
