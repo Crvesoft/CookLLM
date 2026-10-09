@@ -263,17 +263,21 @@ function cmdPublish(skipCheck) {
 
   console.log(`\n✅ 基础校验通过: v${v}（6 处版本一致，更新日志就位）`);
 
-  // 发版前本地构建与语法检查
+  // 发版前本地构建、语法检查与正式安装包编译
   if (!skipCheck) {
-    console.log("\n🛠️  [1/2] 正在执行前端构建与类型校验 (npm run build)...");
+    console.log("\n🛠️  [1/3] 正在执行前端构建与类型校验 (npm run build)...");
     execSync("npm run build", { cwd: root, stdio: "inherit" });
     console.log("✅ 前端校验通过");
 
-    console.log("\n🦀 [2/2] 正在执行 Rust 后端校验 (cargo check)...");
+    console.log("\n🦀 [2/3] 正在执行 Rust 后端校验 (cargo check)...");
     execSync("cargo check --manifest-path src-tauri/Cargo.toml", { cwd: root, stdio: "inherit" });
     console.log("✅ Rust 后端校验通过");
+
+    console.log("\n📦 [3/3] 正在编译安装包产物 (npm run tauri build)...");
+    execSync("npm run tauri build", { cwd: root, stdio: "inherit" });
+    console.log("✅ 安装包编译完成 (MSI & EXE 已生成于 src-tauri/target/release/bundle/)");
   } else {
-    console.log("\n⚠️  已跳过本地编译检查 (--skip-check)");
+    console.log("\n⚠️  已跳过本地编译检查与安装包编译 (--skip-check)");
   }
 
   // 精准暂存发布文件
