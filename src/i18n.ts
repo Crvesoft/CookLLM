@@ -126,6 +126,10 @@ const zh = {
   "perf.statPrefill": "平均 Prefill",
   "perf.statCache": "平均 Cache",
   "perf.statTokens": "累计产出",
+  "perf.statPromptTokens": "累计输入",
+  "perf.queue": "排队",
+  "perf.ttftWithQueue": "含排队 {queue}",
+  "perf.thinkingTokens": "思考 {n}",
   "perf.trends": "多轮性能趋势",
   "perf.historyTable": "全量轮次明细",
   "perf.chartTps": "吞吐走势 (TPS)",
@@ -541,6 +545,10 @@ const zh = {
   "explore.noTasksDesc": "在「模型发现」中挑选模型并加入下载队列。",
   "explore.fileCount": "包含 {count} 个文件",
   "explore.openOnHf": "在 HuggingFace 打开",
+  "explore.openOnMs": "在 ModelScope 打开",
+  "explore.sourceHf": "Hugging Face",
+  "explore.sourceMs": "ModelScope",
+  "explore.netErrorHintMs": "无法连接 ModelScope。请检查网络后重试。",
 
   // ---- 刻面筛选侧边栏 / 硬件感知 ----
   "explore.facetSidebar": "筛选",
@@ -894,6 +902,10 @@ const en: typeof zh = {
   "explore.noTasksDesc": "Pick a model in Discover and add it to the queue.",
   "explore.fileCount": "{count} files",
   "explore.openOnHf": "Open on HuggingFace",
+  "explore.openOnMs": "Open on ModelScope",
+  "explore.sourceHf": "Hugging Face",
+  "explore.sourceMs": "ModelScope",
+  "explore.netErrorHintMs": "Cannot reach ModelScope. Check your network and try again.",
 
   // ---- Facet sidebar / hardware-aware ----
   "explore.facetSidebar": "Filters",
@@ -1040,6 +1052,10 @@ const en: typeof zh = {
   "perf.statPrefill": "Avg Prefill",
   "perf.statCache": "Avg Cache",
   "perf.statTokens": "Generated",
+  "perf.statPromptTokens": "Prompt",
+  "perf.queue": "Queue",
+  "perf.ttftWithQueue": "incl. queue {queue}",
+  "perf.thinkingTokens": "thinking {n}",
   "perf.trends": "Performance Trends",
   "perf.historyTable": "All Request Details",
   "perf.chartTps": "Throughput Trends (TPS)",

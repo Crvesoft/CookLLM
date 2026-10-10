@@ -2,12 +2,12 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { DEMO_CONFIG, DEFAULT_PROFILES, DEFAULT_NINFER_PROFILES, defaultProfilesForModel, INITIAL_LOGS, mergeImportedConfig, migrateConfig, uid } from "./data";
 import { setLocale, useI18n } from "./i18n";
-import { checkForUpdate, checkOrphanServer, exportConfigBackup, getGpuStats, getModelsDir, getServerStatus, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, inspectGguf, isTauri, killOrphanServer, loadConfig, onLlamaLog, openExternal, pathsExist, pickConfigBackup, pickModelsDir, removeLocalFile, revealInFolder, saveConfig, setWindowTheme, startServer, stopServer, type OrphanProcessItem, type UpdateCheckResult } from "./tauri";
+import { checkForUpdate, checkOrphanServer, exportConfigBackup, getGpuStats, getModelsDir, getServerStatus, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, msDownload, inspectGguf, isTauri, killOrphanServer, loadConfig, onLlamaLog, openExternal, pathsExist, pickConfigBackup, pickModelsDir, readNinferRequestLog, removeLocalFile, revealInFolder, saveConfig, setWindowTheme, startServer, stopServer, type OrphanProcessItem, type UpdateCheckResult } from "./tauri";
 import type { ActiveDownload } from "./components/ExplorePage";
 import type { PickedFile } from "./tauri";
 import { onModelDownloadProgress } from "./tauri";
 import type { DiskUsage, ModelDownloadProgress } from "./types";
-import { PAGE_LOG_MODE, type AppConfig, type GpuStats, type InferenceMetrics, type LlamaLogPayload, type ModelAsset, type Page, type Profile, type ServerStatus, type TokSample } from "./types";
+import { PAGE_LOG_MODE, type AppConfig, type CommunitySource, type GpuStats, type InferenceMetrics, type LlamaLogPayload, type ModelAsset, type Page, type Profile, type ServerStatus, type TokSample } from "./types";
 import { ACCENTS, EMPTY_STATUS, cn, fileName, modelTitle, newLog, parseQuantization, parseTokPerSec, shallowEqualFields, InferenceTracker } from "./utils";
 import LogDock from "./components/LogDock";
 import { LogsPage, Sidebar, Toast, Topbar } from "./components/Layout";
@@ -316,8 +316,18 @@ export default function App() {
               fetch(`http://127.0.0.1:${st.port}/slots`, { signal: AbortSignal.timeout(1000) })
                 .then((r) => (r.ok ? r.json() : null))
                 .catch(() => null),
-            ]).then(([statsData, slotsData]) => {
+              readNinferRequestLog().catch(() => [] as unknown[]),
+            ]).then(([statsData, slotsData, jsonlRecords]) => {
               if (!active) return;
+              // 结构化 JSONL 权威值优先合并（全精度 timings / tokens / queue_wait），
+              // 再由 /stats + /slots 计数器差分补充进行中的轮次
+              if (Array.isArray(jsonlRecords) && jsonlRecords.length) {
+                const jr = inferenceTrackerRef.current.applyNinferRequestLog(jsonlRecords);
+                if (jr.updated) {
+                  if (jr.latest) setLatestInference({ ...jr.latest });
+                  setInferenceHistory(inferenceTrackerRef.current.getHistory());
+                }
+              }
               const res = inferenceTrackerRef.current.updateFromNinfer({
                 stats: statsData,
                 slots: slotsData,
@@ -538,7 +548,11 @@ export default function App() {
       // 必须先等摘除旧控制器完成、再发起下载：两个 invoke 若乱序，hf_clear_download 会把
       // 刚注册的新控制器摘掉，此后暂停 / 取消永远找不到控制器（孤儿循环停不下来）
       try { await hfClearDownload(entry.taskId); } catch { /* 旧控制器不存在时忽略 */ }
-      const run = entry.url ? hfDownloadUrl(entry.url, entry.taskId) : hfDownload(entry.repo, entry.file, entry.taskId);
+      const run = entry.url
+        ? hfDownloadUrl(entry.url, entry.taskId)
+        : entry.source === "ms"
+        ? msDownload(entry.repo, entry.file, entry.taskId)
+        : hfDownload(entry.repo, entry.file, entry.taskId);
       void run.then((result) => {
         appendLog(t("explore.downloaded") + ": " + result.path, "system");
         void importDownloadedModel(entry, result.path, result.sizeBytes);
@@ -756,8 +770,8 @@ export default function App() {
   };
 
   /** 社区探索：点击下载 → 登记任务（task 池，附唯一 taskId）+ 提示，进度由后端事件推送 */
-  const handleModelDownload = (repo: string, file: string, sizeBytes: number) => {
-    const entry: ActiveDownload = { taskId: uid("download"), repo, file, sizeBytes, startedAt: Date.now(), status: "active", percent: 0, downloaded: 0, total: sizeBytes, speedBps: 0 };
+  const handleModelDownload = (repo: string, file: string, sizeBytes: number, source?: CommunitySource) => {
+    const entry: ActiveDownload = { taskId: uid("download"), repo, file, sizeBytes, startedAt: Date.now(), status: "active", source: source ?? (repo.includes("modelscope") ? "ms" : "hf"), percent: 0, downloaded: 0, total: sizeBytes, speedBps: 0 };
     mutateDownloads((previous) => [...previous.filter((item) => !(item.repo === repo && item.file === file)), entry]);
     launchDownload(entry);
     setToast(t("toast.downloadStarted"));

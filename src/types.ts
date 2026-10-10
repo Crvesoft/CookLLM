@@ -226,8 +226,16 @@ export interface InferenceMetrics {
   promptTokens?: number | null;
   /** 缓存命中率 (0 ~ 100) */
   cacheHitRatio?: number | null;
-  /** 首字延迟估算 (TTFT, ms) */
+  /** 首字延迟估算 (TTFT, ms) —— NInfer 口径：含排队等待 */
   ttftMs?: number | null;
+  /** 排队等待耗时 (ms)，来自 NInfer done 行 queue 段或 JSONL engine_timing.queue_wait_seconds */
+  queueMs?: number | null;
+  /** 模型思考 tokens（NInfer JSONL result.model_thinking_tokens，含在产出内） */
+  thinkingTokens?: number | null;
+  /** 引擎实例 id（NInfer JSONL server_instance_id，用于引擎重启后的轮次隔离） */
+  instanceId?: string | null;
+  /** 请求任务 id（NInfer req#N / llama.cpp task id） */
+  taskId?: string;
   /** 总耗时 (ms) */
   totalTimeMs?: number | null;
 }
@@ -246,6 +254,8 @@ export interface DiskUsage {
   freeBytes: number;
 }
 
+export type CommunitySource = "hf" | "ms";
+
 export interface HfModel {
   id: string;
   author: string;
@@ -261,6 +271,8 @@ export interface HfModel {
   parametersB?: number | null;
   /** 从量化标签解析出的比特位（如 Q4_K_M → 4、IQ3_M → 3）；无法识别时为 null */
   quantBits?: number | null;
+  /** 模型所属社区源（hf: HuggingFace，ms: ModelScope） */
+  source?: CommunitySource;
 }
 
 export interface HfFile {

@@ -30,8 +30,8 @@ import {
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ConfirmModal from "./ConfirmModal";
 import { useI18n } from "../i18n";
-import { hfAvatar, hfListFiles, hfSearch, hfTrending, openExternal, type FormatFilter } from "../tauri";
-import type { AppConfig, DiskUsage, HfFile, HfModel, ModelDownloadProgress } from "../types";
+import { hfAvatar, hfListFiles, hfSearch, hfTrending, msAvatar, msListFiles, msSearch, msTrending, openExternal, type FormatFilter } from "../tauri";
+import type { AppConfig, CommunitySource, DiskUsage, HfFile, HfModel, ModelDownloadProgress } from "../types";
 import { cn, formatBytes, fileName, humanSpeed } from "../utils";
 
 /** 模型仓库的 HF 许可协议签署页（gated 模型无访问权限时引导用户前往同意）。 */
@@ -63,6 +63,8 @@ export interface ActiveDownload {
   finishedAt?: number;
   /** 直链任务保留原始 URL（恢复 / 重试时重新发起） */
   url?: string;
+  /** 任务所属社区源（hf: HuggingFace，ms: ModelScope） */
+  source?: CommunitySource;
 }
 
 interface Props {
@@ -73,7 +75,7 @@ interface Props {
   onLog: (line: string, stream?: "stdout" | "stderr" | "system") => void;
   diskUsage: DiskUsage | null;
   onPickModelsDir: () => Promise<void>;
-  onDownload: (repo: string, file: string, sizeBytes: number) => void;
+  onDownload: (repo: string, file: string, sizeBytes: number, source?: CommunitySource) => void;
   activeDownloads: ActiveDownload[];
   progressMap: Record<string, ModelDownloadProgress>;
   /** 单任务暂停：仅中止该 taskId 的下载 */
@@ -132,11 +134,21 @@ const QUANTS: Array<{ key: QuantKey; label: string; bits: number[]; cls: string 
 const PARAM_SLIDER_LABELS = ["<1B", "3B", "7B", "14B", "32B", ">70B"];
 const PARAM_LAST_INDEX = PARAM_SLIDER_LABELS.length - 1;
 
-/** 模型量化比特位：优先 Rust 解析字段，其次从推荐量化文件名提取 */
+/** 模型量化比特位：优先 Rust 解析字段，其次从推荐量化/标签/文件名提取 */
 function modelQuantBits(model: HfModel): number | null {
   if (model.quantBits != null && model.quantBits > 0) return model.quantBits;
-  if (model.sampleQuant) {
-    const match = model.sampleQuant.toUpperCase().match(/IQ?(\d)/);
+  const sources = [model.sampleQuant, model.id, ...model.tags].filter(Boolean) as string[];
+  for (const src of sources) {
+    const upper = src.toUpperCase();
+    if (/TERNARY|1\.58-?BIT|PTQ1|BONSAI|1-?BIT/.test(upper)) return 1;
+    if (/PQ2|2-?BIT|IQ2/.test(upper)) return 2;
+    if (/IQ3|GSQ|3-?BIT/.test(upper)) return 3;
+    if (/NVFP4|NF4|W4A4|FP4|INT4|4-?BIT/.test(upper)) return 4;
+    if (/5-?BIT/.test(upper)) return 5;
+    if (/6-?BIT/.test(upper)) return 6;
+    if (/FP8|INT8|W8A8/.test(upper) || (!upper.includes("1.58") && /8-?BIT/.test(upper))) return 8;
+    if (/BF16|FP16|16-?BIT/.test(upper)) return 16;
+    const match = upper.match(/IQ?(\d)/);
     if (match) return Number(match[1]);
   }
   return null;
@@ -151,8 +163,21 @@ function paramLabel(model: HfModel): string {
   return value.toFixed(1).replace(/\.0$/, "") + "B";
 }
 
-/** 模型量化展示文案（如 Q4 / IQ3 / Q8），优先短标签 */
+/** 模型量化展示文案（如 Q4 / IQ3 / NVFP4 / PQ2 / 1.58b 等），优先短标签 */
 function quantLabel(model: HfModel): string {
+  const sqUpper = (model.sampleQuant || "").toUpperCase();
+  if (sqUpper.includes("NVFP4")) return "NVFP4";
+  if (sqUpper.includes("W4A4")) return "W4A4";
+  if (sqUpper.includes("NF4")) return "NF4";
+  if (sqUpper.includes("PQ2")) return "PQ2";
+  if (sqUpper.includes("GSQ")) return "GSQ";
+  if (sqUpper.includes("TERNARY") || sqUpper.includes("1.58BIT") || sqUpper.includes("1.58-BIT") || sqUpper.includes("BONSAI")) return "1.58b";
+  if (sqUpper.includes("BF16")) return "BF16";
+  if (sqUpper.includes("FP16")) return "FP16";
+  if (sqUpper.includes("FP8")) return "FP8";
+  if (sqUpper.includes("INT8")) return "INT8";
+  if (sqUpper.includes("INT4")) return "INT4";
+
   if (model.quantBits != null && model.quantBits > 0) return "Q" + model.quantBits;
   if (model.sampleQuant) {
     const match = model.sampleQuant.toUpperCase().match(/IQ?\d+/);
@@ -161,11 +186,21 @@ function quantLabel(model: HfModel): string {
   return "";
 }
 
-/** 从模型标签 / 推荐量化中收集仓库包含的量化规格（如 ["Q2","Q4","Q8"]） */
+/** 从模型标签 / 推荐量化中收集仓库包含的量化规格（如 ["Q2","Q4","Q8"] / ["NVFP4", "FP8"]） */
 function quantSpecsOf(model: HfModel): string[] {
   const seen = new Set<string>();
   const add = (text: string) => {
-    for (const tok of text.toUpperCase().match(/IQ?\d+/g) ?? []) {
+    const upper = text.toUpperCase();
+    if (upper.includes("NVFP4")) seen.add("NVFP4");
+    if (upper.includes("NF4")) seen.add("NF4");
+    if (upper.includes("W4A4")) seen.add("W4A4");
+    if (upper.includes("PQ2")) seen.add("PQ2");
+    if (upper.includes("GSQ")) seen.add("GSQ");
+    if (upper.includes("TERNARY") || upper.includes("1.58BIT") || upper.includes("1.58-BIT") || upper.includes("BONSAI")) seen.add("1.58b");
+    if (upper.includes("BF16")) seen.add("BF16");
+    if (upper.includes("FP8")) seen.add("FP8");
+    if (upper.includes("INT8")) seen.add("INT8");
+    for (const tok of upper.match(/IQ?\d+/g) ?? []) {
       const digits = tok.match(/(\d+)/)?.[1];
       if (digits) seen.add("Q" + digits);
     }
@@ -175,10 +210,15 @@ function quantSpecsOf(model: HfModel): string[] {
   return [...seen].slice(0, 3);
 }
 
-/** 从 GGUF 文件名提取量化比特位（Q4_K_M → 4、IQ3_M → 3、FP16/BF16 → 16） */
+/** 从 GGUF / NINFER 文件名提取量化比特位（Q4_K_M → 4、IQ3_M → 3、NVFP4 → 4、PQ2 → 2、Ternary → 1、FP16/BF16 → 16） */
 function quantBitsOfFile(name: string): number | null {
   const upper = name.toUpperCase();
   if (/F(?:P)?16|BF16|FP32|F32/.test(upper)) return 16;
+  if (/NVFP4|NF4|W4A4|INT4|FP4/.test(upper)) return 4;
+  if (/PQ2|2-?BIT/.test(upper)) return 2;
+  if (/GSQ|IQ3/.test(upper)) return 3;
+  if (/TERNARY|1\.58-?BIT|PTQ1|BONSAI/.test(upper)) return 1;
+  if (/FP8|INT8|W8A8/.test(upper) || (!upper.includes("1.58") && /8-?BIT/.test(upper))) return 8;
   const match = upper.match(/IQ?(\d)/);
   return match ? Number(match[1]) : null;
 }
@@ -190,10 +230,25 @@ const HF_SORT: Record<SortKey, string> = {
   updated: "lastModified",
   hot: "trendingScore",
 };
+const MS_SORT: Record<SortKey, string> = {
+  downloads: "downloads",
+  likes: "likes",
+  updated: "last_modified",
+  hot: "default",
+};
 type SortKey = (typeof SORT_KEYS)[number];
 
-/** 从文件名提取量化标签（如 Q4_K_M / IQ3_M / Q8_0） */
+/** 从文件名提取量化标签（如 Q4_K_M / IQ3_M / NVFP4 / PQ2） */
 function quantBadge(name: string): string {
+  const upper = name.toUpperCase();
+  if (upper.includes("NVFP4")) return "NVFP4";
+  if (upper.includes("W4A4")) return "W4A4";
+  if (upper.includes("NF4")) return "NF4";
+  if (upper.includes("PQ2_0") || upper.includes("PQ2")) return "PQ2";
+  if (upper.includes("GSQ")) return "GSQ";
+  if (upper.includes("TERNARY")) return "Ternary";
+  if (upper.includes("BONSAI")) return "Bonsai";
+  if (upper.includes("BF16")) return "BF16";
   const match = name.match(/[IQ]?\d(?:_[A-Z0-9]+)+/i);
   return match ? match[0].toUpperCase() : "";
 }
@@ -290,45 +345,81 @@ function FileRow({ file, progress, disabled, queued, preferred, onDownload, onCa
 
 /* ---------------- HF 作者头像（组织 / 用户 logo） ---------------- */
 
-/** 已解析的作者头像：author -> data URI；null 表示无头像，渲染时回退 "HF" 文字徽章 */
+/** 魔搭（ModelScope）官方矢量 Logo（湖蓝 #36CED0 + 品牌紫 #624AFF 几何括弧） */
+export function ModelScopeLogo({ size = 16, className }: { size?: number; className?: string }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      xmlns="http://www.w3.org/2000/svg"
+      className={className}
+      style={{ display: "block", flexShrink: 0 }}
+      aria-hidden="true"
+    >
+      <path d="M0 7.967h2.667v2.667H0zM8 10.633h2.667V13.3H8z" fill="#36CED0" />
+      <path d="M0 10.633h2.667V13.3H0zM2.667 13.3h2.666v2.667H8v2.666H2.667V13.3zM2.667 5.3H8v2.667H5.333v2.666H2.667V5.3zM10.667 13.3h2.667v2.667h-2.667z" fill="#624AFF" />
+      <path d="M24 7.967h-2.667v2.667H24zM16 10.633h-2.667V13.3H16z" fill="#36CED0" />
+      <path d="M24 10.633h-2.667V13.3H24zM21.333 13.3h-2.666v2.667H16v2.666h5.333V13.3zM21.333 5.3H16v2.667h2.667v2.666h2.666V5.3z" fill="#624AFF" />
+    </svg>
+  );
+}
+
+/** 已解析的作者头像：key(source:author) -> data URI；null 表示无头像，渲染时回退社区源 Logo/徽章 */
 const avatarCache = new Map<string, string | null>();
 /** 同一作者的并发请求去重：避免列表里同组织多行时重复拉取 */
 const avatarPending = new Map<string, Promise<string | null>>();
 
-function loadAvatar(author: string): Promise<string | null> {
-  if (avatarCache.has(author)) return Promise.resolve(avatarCache.get(author)!);
-  let pending = avatarPending.get(author);
+function loadAvatar(author: string, source: CommunitySource = "hf"): Promise<string | null> {
+  const key = `${source}:${author}`;
+  if (avatarCache.has(key)) return Promise.resolve(avatarCache.get(key)!);
+  let pending = avatarPending.get(key);
   if (!pending) {
-    pending = hfAvatar(author)
+    const fetcher = source === "ms" ? msAvatar(author) : hfAvatar(author);
+    pending = fetcher
       .then((uri) => {
-        avatarCache.set(author, uri);
+        avatarCache.set(key, uri);
         return uri;
       })
       .catch(() => {
-        avatarCache.set(author, null);
+        avatarCache.set(key, null);
         return null;
       })
-      .finally(() => avatarPending.delete(author));
-    avatarPending.set(author, pending);
+      .finally(() => avatarPending.delete(key));
+    avatarPending.set(key, pending);
   }
   return pending;
 }
 
-/** 模型行 / 趋势卡左侧图标：优先展示作者头像，拉取失败或无头像时回退 "HF" 徽章 */
-function ModelAvatar({ author }: { author: string }) {
-  const [uri, setUri] = useState<string | null>(avatarCache.get(author) ?? null);
+/** 模型行 / 趋势卡左侧图标：优先展示作者头像，拉取失败或无头像时回退社区源 Logo / 徽章 */
+function ModelAvatar({ author, source = "hf" }: { author: string; source?: CommunitySource }) {
+  const key = `${source}:${author}`;
+  const [uri, setUri] = useState<string | null>(avatarCache.get(key) ?? null);
+
   useEffect(() => {
     let alive = true;
-    loadAvatar(author).then((resolved) => {
+    loadAvatar(author, source).then((resolved) => {
       if (alive) setUri(resolved);
     });
     return () => {
       alive = false;
     };
-  }, [author]);
-  return uri
-    ? <img className="hf-model-icon hf-model-avatar" src={uri} alt="" loading="lazy" draggable={false} />
-    : <span className="hf-model-icon">HF</span>;
+  }, [author, source]);
+
+  if (uri) {
+    return <img className="hf-model-icon hf-model-avatar" src={uri} alt="" loading="lazy" draggable={false} />;
+  }
+
+  if (source === "ms") {
+    return (
+      <span className="hf-model-icon ms" title="ModelScope">
+        <ModelScopeLogo size={20} />
+      </span>
+    );
+  }
+
+  return <span className="hf-model-icon">HF</span>;
 }
 
 interface ModelRowProps {
@@ -376,14 +467,24 @@ const ModelRow = memo(function ModelRow({ model, preferredQuant, rank, onViewFil
         )}
         <div className="hf-model-main-col">
           <div className="hf-model-title-row">
-            <ModelAvatar author={model.author} />
+            <ModelAvatar author={model.author} source={model.source} />
             <strong title={model.id}>{model.id}</strong>
             {isGguf && <span className="hf-format-pill gguf" title={t("models.formatGgufTitle")}>GGUF</span>}
             {isNinfer && <span className="hf-format-pill ninfer" title={t("models.formatNinferTitle")}>NINFER</span>}
             {preferredQuant && <span className="hf-quant-badge preferred" title={t("explore.quantPreferred", { quant: quant || "" })}><Star size={10} fill="currentColor" />{quant}</span>}
             {parameter && <span className="hf-param-badge" title={t("explore.facetParams")}>{parameter}</span>}
             {quant && !preferredQuant && <span className="hf-quant-badge" title={t("explore.facetQuant")}>{quant}</span>}
-            <button className="hf-model-link" type="button" title={t("explore.openOnHf")} aria-label={t("explore.openOnHf")} onClick={(event) => { event.stopPropagation(); openHf(model.id); }}>
+            <button
+              className="hf-model-link"
+              type="button"
+              title={model.source === "ms" ? t("explore.openOnMs") : t("explore.openOnHf")}
+              aria-label={model.source === "ms" ? t("explore.openOnMs") : t("explore.openOnHf")}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (model.source === "ms") openMs(model.id);
+                else openHf(model.id);
+              }}
+            >
               <ExternalLink size={14} />
             </button>
           </div>
@@ -443,7 +544,21 @@ function FileModal({ model, files, filesLoading, filesError, preferredBits, disk
       <section className="file-modal">
         <header>
           <div className="file-modal-head">
-            <strong>{model.id}</strong>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <strong>{model.id}</strong>
+              <button
+                className="hf-model-link"
+                type="button"
+                title={model.source === "ms" ? t("explore.openOnMs") : t("explore.openOnHf")}
+                aria-label={model.source === "ms" ? t("explore.openOnMs") : t("explore.openOnHf")}
+                onClick={() => {
+                  if (model.source === "ms") openMs(model.id);
+                  else openHf(model.id);
+                }}
+              >
+                <ExternalLink size={14} />
+              </button>
+            </div>
             <span>⭐ {model.likes.toLocaleString()} · ⬇ {model.downloads.toLocaleString()} · {t("explore.fileCount", { count: files !== null ? files.length : (model.ggufCount >= 0 ? model.ggufCount : "—") })}</span>
           </div>
           <button className="ghost-icon" title={t("ariaClose")} onClick={onClose}><X size={18} /></button>
@@ -582,6 +697,15 @@ export default function ExplorePage(props: Props) {
   const { t } = useI18n();
   const showToast = props.onToast;
   const [view, setView] = useState<"discover" | "tasks">("discover");
+  const [communitySource, setCommunitySource] = useState<CommunitySource>(() => {
+    try {
+      const saved = localStorage.getItem("cookllm_community_source");
+      if (saved === "ms" || saved === "hf") return saved;
+    } catch {}
+    return "hf";
+  });
+  const [sourceMenuOpen, setSourceMenuOpen] = useState(false);
+  const sourceMenuRef = useRef<HTMLDivElement>(null);
   const [query, setQuery] = useState("");
   const [formatFilter, setFormatFilter] = useState<FormatFilter>(() => {
     try {
@@ -632,8 +756,6 @@ export default function ExplorePage(props: Props) {
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(() => props.config.exploreSidebarCollapsed ?? false);
   const [isNarrow, setIsNarrow] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width:1180px)").matches);
   const searchSeq = useRef(0);
-  /** 趋势榜单是否已首次加载（切入本页时才请求，只加载一次） */
-  const trendingLoadedRef = useRef(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
 
@@ -662,6 +784,34 @@ export default function ExplorePage(props: Props) {
     return [...new Set(parts)].join(" ");
   }, [query, family, tasks, quantBits, paramMin, paramMax]);
 
+  // 点击外部关闭源切换下拉
+  useEffect(() => {
+    if (!sourceMenuOpen) return;
+    const onMouseDown = (e: MouseEvent) => {
+      if (sourceMenuRef.current && !sourceMenuRef.current.contains(e.target as Node)) {
+        setSourceMenuOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", onMouseDown);
+    return () => window.removeEventListener("mousedown", onMouseDown);
+  }, [sourceMenuOpen]);
+
+  const handleCommunitySourceChange = (src: CommunitySource) => {
+    if (src === communitySource) {
+      setSourceMenuOpen(false);
+      return;
+    }
+    setCommunitySource(src);
+    try {
+      localStorage.setItem("cookllm_community_source", src);
+    } catch {}
+    setSourceMenuOpen(false);
+    setModels([]);
+    setTrending([]);
+    setFilesMap({});
+    searchKeyRef.current = null;
+  };
+
   // Ctrl+K 聚焦搜索（仅本页可见时监听，避免与模型页搜索框的快捷键重复抢占焦点）
   useEffect(() => {
     if (!props.visible) return;
@@ -676,13 +826,12 @@ export default function ExplorePage(props: Props) {
     return () => window.removeEventListener("keydown", onKey);
   }, [props.visible]);
 
-  // 初始化：加载趋势榜单 + 探测本机硬件（首次切入本页时才请求，避免启动即发起网络请求）
+  // 初始化及切换社区源：加载趋势榜单
   useEffect(() => {
-    if (props.visible && !trendingLoadedRef.current) {
-      trendingLoadedRef.current = true;
+    if (props.visible) {
       void refreshTrending();
     }
-  }, [props.visible]);
+  }, [props.visible, communitySource]);
 
   // Narrow screens (<=1180px) switch the facet sidebar into a drawer
   useEffect(() => {
@@ -696,7 +845,10 @@ export default function ExplorePage(props: Props) {
     setTrendingLoading(true);
     const activeFilter = overrideFilter ?? formatFilter;
     try {
-      const result = await hfTrending(10, activeFilter === "gguf", undefined, undefined, undefined, activeFilter);
+      const isMs = communitySource === "ms";
+      const result = isMs
+        ? await msTrending(10, activeFilter === "gguf", undefined, undefined, undefined, activeFilter)
+        : await hfTrending(10, activeFilter === "gguf", undefined, undefined, undefined, activeFilter);
       setTrending(result);
       return true;
     } catch (err) {
@@ -713,11 +865,17 @@ export default function ExplorePage(props: Props) {
     let ok = false;
     let failMessage = "";
     try {
+      const isMs = communitySource === "ms";
       const useGguf = formatFilter === "gguf" && !keyword.toLowerCase().includes(".gguf");
       const quants = quantBits.length > 0 ? quantBits : undefined;
+      const sortParam = isMs ? MS_SORT[sortKey] : HF_SORT[sortKey];
       const result = keyword
-        ? await hfSearch(keyword, 30, useGguf, undefined, HF_SORT[sortKey], quants, formatFilter)
-        : await hfTrending(30, useGguf, undefined, HF_SORT[sortKey], quants, formatFilter);
+        ? (isMs
+            ? await msSearch(keyword, 30, useGguf, undefined, sortParam, quants, formatFilter)
+            : await hfSearch(keyword, 30, useGguf, undefined, sortParam, quants, formatFilter))
+        : (isMs
+            ? await msTrending(30, useGguf, undefined, sortParam, quants, formatFilter)
+            : await hfTrending(30, useGguf, undefined, sortParam, quants, formatFilter));
       if (seq !== searchSeq.current) return false; // 已发起更新的请求，丢弃过期结果
       setModels(result);
       setHasMore(result.length === 30);
@@ -745,11 +903,11 @@ export default function ExplorePage(props: Props) {
     if (notify) showToast(listOk && trendingOk ? t("explore.refreshed") : t("explore.refreshFailed"));
   };
 
-  // 搜索防抖 300ms：文本 / 刻面 / 量化偏好 / 参数档位 / 格式筛选变化时向服务端重查并重置列表；
+  // 搜索防抖 300ms：文本 / 刻面 / 量化偏好 / 参数档位 / 格式筛选 / 社区源变化时向服务端重查并重置列表；
   // 仅本页可见时发起（含首次切入），避免应用启动即产生网络请求。
   // 切页返回时若搜索条件未变且已有数据 → 直接复用已加载列表，不再白屏转圈重查。
   const searchKeyRef = useRef<string | null>(null);
-  const searchSignature = `${effectiveKeyword}|${formatFilter}|${sortKey}|${quantBits.join(",")}`;
+  const searchSignature = `${communitySource}|${effectiveKeyword}|${formatFilter}|${sortKey}|${quantBits.join(",")}`;
   useEffect(() => {
     if (!props.visible) return;
     if (searchKeyRef.current === searchSignature && models.length > 0) return;
@@ -769,11 +927,17 @@ export default function ExplorePage(props: Props) {
     const skip = models.length;
     setLoadingMore(true);
     try {
+      const isMs = communitySource === "ms";
       const useGguf = formatFilter === "gguf" && !keyword.toLowerCase().includes(".gguf");
       const quants = quantBits.length > 0 ? quantBits : undefined;
+      const sortParam = isMs ? MS_SORT[sortKey] : HF_SORT[sortKey];
       const next = keyword
-        ? await hfSearch(keyword, limit, useGguf, skip, HF_SORT[sortKey], quants, formatFilter)
-        : await hfTrending(limit, useGguf, skip, HF_SORT[sortKey], quants, formatFilter);
+        ? (isMs
+            ? await msSearch(keyword, limit, useGguf, skip, sortParam, quants, formatFilter)
+            : await hfSearch(keyword, limit, useGguf, skip, sortParam, quants, formatFilter))
+        : (isMs
+            ? await msTrending(limit, useGguf, skip, sortParam, quants, formatFilter)
+            : await hfTrending(limit, useGguf, skip, sortParam, quants, formatFilter));
       const seen = new Set(models.map((item) => item.id));
       const added = next.filter((item) => !seen.has(item.id));
       if (seq !== searchSeq.current) {
@@ -818,10 +982,12 @@ export default function ExplorePage(props: Props) {
   const openFilesRef = useRef((_model: HfModel) => {});
   openFilesRef.current = (model: HfModel) => {
     setModalModel(model);
+    const isMs = model.source === "ms";
     if (filesMap[model.id] === undefined && !filesLoading[model.id]) {
       setFilesLoading((previous) => ({ ...previous, [model.id]: true }));
       setFilesError((previous) => ({ ...previous, [model.id]: null }));
-      void hfListFiles(model.id).then((result) => {
+      const fetchPromise = isMs ? msListFiles(model.id) : hfListFiles(model.id);
+      void fetchPromise.then((result) => {
         setFilesMap((previous) => ({ ...previous, [model.id]: result }));
       }).catch((err) => {
         setFilesError((previous) => ({ ...previous, [model.id]: err instanceof Error ? err.message : String(err) }));
@@ -841,7 +1007,8 @@ export default function ExplorePage(props: Props) {
 
   const downloadFile = (model: HfModel, file: HfFile) => {
     if (!diskGuard(file.sizeBytes)) return;
-    props.onDownload(model.id, file.name, file.sizeBytes);
+    const isMs = model.source === "ms";
+    props.onDownload(model.id, file.name, file.sizeBytes, isMs ? "ms" : "hf");
     const key = model.id + "::" + file.name;
     setQueued((previous) => new Set(previous).add(key));
     window.setTimeout(() => {
@@ -1095,8 +1262,49 @@ export default function ExplorePage(props: Props) {
                 <ChevronRight size={14} />{t("explore.facetToggle")}{facetCount > 0 && <em>{facetCount}</em>}
               </button>
             )}
-            <label className="search-box explore-search" title="Ctrl+K 快速聚焦">
-              <span className="explore-source"><span>🤗</span> HuggingFace<ChevronDown size={12} /></span>
+            <div className="search-box explore-search" title="Ctrl+K 快速聚焦">
+              <div className="explore-source-wrapper" ref={sourceMenuRef}>
+                <button
+                  type="button"
+                  className={cn("explore-source-btn", communitySource === "ms" && "source-ms")}
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setSourceMenuOpen((v) => !v);
+                  }}
+                  title={communitySource === "ms" ? "ModelScope" : t("explore.sourceHf")}
+                >
+                  <span className="explore-source-icon">
+                    {communitySource === "ms" ? <ModelScopeLogo size={15} /> : "🤗"}
+                  </span>
+                  <span className="explore-source-name">{communitySource === "ms" ? "ModelScope" : t("explore.sourceHf")}</span>
+                  <ChevronDown size={12} className={cn("explore-source-arrow", sourceMenuOpen && "open")} />
+                </button>
+                {sourceMenuOpen && (
+                  <div className="explore-source-dropdown" onClick={(e) => e.stopPropagation()}>
+                    <button
+                      type="button"
+                      className={cn("explore-source-item", communitySource === "hf" && "active")}
+                      onClick={() => handleCommunitySourceChange("hf")}
+                    >
+                      <span className="source-item-icon">🤗</span>
+                      <span className="source-item-label">{t("explore.sourceHf")}</span>
+                      {communitySource === "hf" && <Check size={14} className="source-item-check" />}
+                    </button>
+                    <button
+                      type="button"
+                      className={cn("explore-source-item", communitySource === "ms" && "active")}
+                      onClick={() => handleCommunitySourceChange("ms")}
+                    >
+                      <span className="source-item-icon">
+                        <ModelScopeLogo size={16} />
+                      </span>
+                      <span className="source-item-label">{t("explore.sourceMs")}</span>
+                      {communitySource === "ms" && <Check size={14} className="source-item-check" />}
+                    </button>
+                  </div>
+                )}
+              </div>
               <Search size={14} />
               <input
                 ref={searchRef}
@@ -1111,7 +1319,7 @@ export default function ExplorePage(props: Props) {
                 placeholder={t("explore.searchPlaceholder")}
               />
               <kbd>Ctrl+K</kbd>
-            </label>
+            </div>
             <div className="explore-search-tools">
               <select className="explore-sort-select" value={sortKey} onChange={(e) => setSortKey(e.target.value as SortKey)}>
                 <option value="downloads">{t("explore.sortDownloads")}</option>
@@ -1238,7 +1446,12 @@ export default function ExplorePage(props: Props) {
                   ))}
                 </div>
               ) : null}
-              {error && !loading && <div className="hf-empty err"><p>{error}</p><span className="hf-net-hint">{t("explore.netErrorHint")}</span></div>}
+              {error && !loading && (
+                <div className="hf-empty err">
+                  <p>{error}</p>
+                  <span className="hf-net-hint">{communitySource === "ms" ? t("explore.netErrorHintMs") : t("explore.netErrorHint")}</span>
+                </div>
+              )}
               {!loading && !error && sorted.length === 0 && <div className="hf-empty"><h3>{t("explore.noResults")}</h3><p>{t("explore.noResultsDesc")}</p></div>}
               {sorted.map((model) => (
                 <ModelRow
@@ -1417,7 +1630,17 @@ export default function ExplorePage(props: Props) {
                     <Database size={16} />
                   </span>
                   <div className="task-file-info">
-                    <strong className="task-active-filename" title={item.file}>{item.file}</strong>
+                    <div className="task-file-title-row">
+                      <strong className="task-active-filename" title={item.file}>{item.file}</strong>
+                      {item.source === "ms" ? (
+                        <span className="task-source-pill ms" title="ModelScope">
+                          <ModelScopeLogo size={11} />
+                          <span>MS</span>
+                        </span>
+                      ) : item.repo !== "direct-url" ? (
+                        <span className="task-source-pill hf" title="HuggingFace">HF</span>
+                      ) : null}
+                    </div>
                     <div className="task-active-meta">
                       <span className="task-active-size">
                         <FileText size={12} className="task-meta-icon" />
@@ -1474,10 +1697,12 @@ export default function ExplorePage(props: Props) {
                     <button
                       type="button"
                       className="task-circle-btn"
-                      title={t("explore.openOnHf")}
-                      aria-label={t("explore.openOnHf")}
+                      title={item.source === "ms" ? t("explore.openOnMs") : t("explore.openOnHf")}
+                      aria-label={item.source === "ms" ? t("explore.openOnMs") : t("explore.openOnHf")}
                       onClick={() => {
-                        if (item.repo !== "direct-url") {
+                        if (item.source === "ms" && item.repo !== "direct-url") {
+                          openMs(item.repo);
+                        } else if (item.repo !== "direct-url") {
                           openHf(item.repo);
                         } else if (item.url) {
                           void openExternal(item.url);
@@ -1528,7 +1753,17 @@ export default function ExplorePage(props: Props) {
               )}
               <span className="task-file-icon ok"><Check size={16} /></span>
               <div className="task-file-info">
-                <strong>{item.file}</strong>
+                <div className="task-file-title-row">
+                  <strong>{item.file}</strong>
+                  {item.source === "ms" ? (
+                    <span className="task-source-pill ms" title="ModelScope">
+                      <ModelScopeLogo size={11} />
+                      <span>MS</span>
+                    </span>
+                  ) : item.repo !== "direct-url" ? (
+                    <span className="task-source-pill hf" title="HuggingFace">HF</span>
+                  ) : null}
+                </div>
                 <span>{t("explore.syncedToLibrary")}</span>
               </div>
               <div className="task-card-actions task-active-actions">
@@ -1548,10 +1783,12 @@ export default function ExplorePage(props: Props) {
                   <button
                     type="button"
                     className="task-circle-btn"
-                    title={t("explore.openOnHf")}
-                    aria-label={t("explore.openOnHf")}
+                    title={item.source === "ms" ? t("explore.openOnMs") : t("explore.openOnHf")}
+                    aria-label={item.source === "ms" ? t("explore.openOnMs") : t("explore.openOnHf")}
                     onClick={() => {
-                      if (item.repo !== "direct-url") {
+                      if (item.source === "ms" && item.repo !== "direct-url") {
+                        openMs(item.repo);
+                      } else if (item.repo !== "direct-url") {
                         openHf(item.repo);
                       } else if (item.url) {
                         void openExternal(item.url);
@@ -1601,7 +1838,17 @@ export default function ExplorePage(props: Props) {
               )}
               <span className="task-file-icon err"><AlertCircle size={16} /></span>
               <div className="task-file-info">
-                <strong>{item.file}</strong>
+                <div className="task-file-title-row">
+                  <strong>{item.file}</strong>
+                  {item.source === "ms" ? (
+                    <span className="task-source-pill ms" title="ModelScope">
+                      <ModelScopeLogo size={11} />
+                      <span>MS</span>
+                    </span>
+                  ) : item.repo !== "direct-url" ? (
+                    <span className="task-source-pill hf" title="HuggingFace">HF</span>
+                  ) : null}
+                </div>
                 <span className="task-status-text">
                   {item.errorKind === "needs-token" ? t("explore.statusUnauthorized")
                     : item.errorKind === "no-permission" ? t("explore.statusNoPermission")
@@ -1633,11 +1880,13 @@ export default function ExplorePage(props: Props) {
                   <button
                     type="button"
                     className="task-circle-btn"
-                    title={item.errorKind === "no-permission" ? t("st.hfGatedNoPermission") : t("explore.openOnHf")}
-                    aria-label={item.errorKind === "no-permission" ? t("st.hfGatedNoPermission") : t("explore.openOnHf")}
+                    title={item.errorKind === "no-permission" ? t("st.hfGatedNoPermission") : (item.source === "ms" ? t("explore.openOnMs") : t("explore.openOnHf"))}
+                    aria-label={item.errorKind === "no-permission" ? t("st.hfGatedNoPermission") : (item.source === "ms" ? t("explore.openOnMs") : t("explore.openOnHf"))}
                     onClick={() => {
                       if (item.errorKind === "no-permission" && item.repo) {
                         void openExternal(hfLicenseUrl(item.repo));
+                      } else if (item.source === "ms" && item.repo !== "direct-url") {
+                        openMs(item.repo);
                       } else if (item.repo !== "direct-url") {
                         openHf(item.repo);
                       } else if (item.url) {
@@ -1784,6 +2033,10 @@ export default function ExplorePage(props: Props) {
 
 function openHf(id: string) {
   void openExternal("https://huggingface.co/" + id);
+}
+
+function openMs(id: string) {
+  void openExternal("https://modelscope.cn/models/" + id);
 }
 
 function formatCount(value: number) {

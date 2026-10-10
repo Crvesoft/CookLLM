@@ -390,6 +390,14 @@ struct LogPayload {
 struct ManagedProcess {
     child: Child,
     status: ServerStatus,
+    /// NInfer --request-log-jsonl 增量 tail 读取游标（None = 未开启结构化请求日志）
+    request_log: Option<RequestLogTail>,
+}
+
+/// NInfer 结构化请求日志的增量读取游标：offset 指向下一次读取起点
+struct RequestLogTail {
+    path: PathBuf,
+    offset: u64,
 }
 
 /// 本进程托管的 llama-server；None 表示未运行。
@@ -882,6 +890,8 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
 
     let engine_type = detect_engine_type(&chosen_path);
     let mut command = Command::new(&chosen_path);
+    // NInfer 结构化请求日志 tail 游标（第 14 节填充；llama.cpp 引擎保持 None）
+    let mut ninfer_request_log_tail: Option<RequestLogTail> = None;
 
     if engine_type == "ninfer" || engine_type == "ninfer_kvmem" {
         // 1. 模型路径：必须作为首个位置参数，绝对不能加 -m
@@ -1096,6 +1106,31 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
         if !extra_tokens.is_empty() {
             command.args(&extra_tokens);
         }
+
+        // 14. 结构化请求日志（--request-log-jsonl）：NInfer 官方监测平台同款数据源，
+        // 全精度 timings / tokens / queue_wait 记录，与终端 stderr 文本日志相互独立。
+        // 文件按引擎可执行路径哈希隔离，追加模式 + 64MiB 轮转（保留 4 份）。
+        if !has_extra_arg("--request-log-jsonl") {
+            if let Ok(app_dir) = app.path().app_data_dir() {
+                use std::hash::{Hash, Hasher};
+                let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                chosen_path.to_lowercase().hash(&mut hasher);
+                let logs_dir = app_dir.join("engine_logs");
+                if std::fs::create_dir_all(&logs_dir).is_ok() {
+                    let log_path = logs_dir.join(format!("requests_{:016x}.jsonl", hasher.finish()));
+                    command.arg("--request-log-jsonl").arg(&log_path);
+                    if !has_extra_arg("--request-log-max-mib") {
+                        command.arg("--request-log-max-mib").arg("64");
+                    }
+                    if !has_extra_arg("--request-log-keep") {
+                        command.arg("--request-log-keep").arg("4");
+                    }
+                    // 追加模式：游标锚定到现有文件末尾，只增量读取本次引擎运行新写入的记录
+                    let offset = std::fs::metadata(&log_path).map(|meta| meta.len()).unwrap_or(0);
+                    ninfer_request_log_tail = Some(RequestLogTail { path: log_path, offset });
+                }
+            }
+        }
     } else {
         // llama.cpp 分支参数拼接（100% 保持原有逻辑）
         command
@@ -1207,7 +1242,7 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
     };
     {
         let mut guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
-        *guard = Some(ManagedProcess { child, status: status.clone() });
+        *guard = Some(ManagedProcess { child, status: status.clone(), request_log: ninfer_request_log_tail });
     }
     drop(lifecycle);
     update_tray_status(&app, Some(&model_display_name));
@@ -1241,6 +1276,60 @@ fn get_server_status(state: State<ProcessState>) -> Result<ServerStatus, String>
     } else {
         Ok(ServerStatus::default())
     }
+}
+
+/// 增量读取 NInfer --request-log-jsonl 新写入的记录（server_start / request_start / request_done）。
+/// 前端 2s 轮询调用：只返回自上次调用以来追加的完整行；轮转（文件变小）时游标归零重读，
+/// 由前端按 server_instance_id + request_id 去重合并。llama.cpp / 未开启日志时返回空数组。
+#[tauri::command]
+fn read_ninfer_request_log(state: State<ProcessState>) -> Result<Vec<serde_json::Value>, String> {
+    let mut guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
+    let Some(tail) = guard.as_mut().and_then(|m| m.request_log.as_mut()) else {
+        return Ok(Vec::new());
+    };
+    let size = match fs::metadata(&tail.path) {
+        Ok(meta) => meta.len(),
+        Err(_) => return Ok(Vec::new()),
+    };
+    if size < tail.offset {
+        // 日志轮转：活动文件被截断重写，游标归零
+        tail.offset = 0;
+    }
+    if size <= tail.offset {
+        return Ok(Vec::new());
+    }
+    let want = ((size - tail.offset) as usize).min(4 * 1024 * 1024);
+    let buf = {
+        use std::io::{Read, Seek, SeekFrom};
+        let mut file = fs::File::open(&tail.path).map_err(|error| error.to_string())?;
+        file.seek(SeekFrom::Start(tail.offset)).map_err(|error| error.to_string())?;
+        let mut buf = vec![0u8; want];
+        file.read_exact(&mut buf).map_err(|error| error.to_string())?;
+        buf
+    };
+    // 只消费到最后一个完整换行为止：半行残片留给下次调用拼接
+    let consumed = match buf.iter().rposition(|&b| b == b'\n') {
+        Some(pos) => tail.offset + (pos as u64) + 1,
+        None => return Ok(Vec::new()),
+    };
+    let text = String::from_utf8_lossy(&buf[..(consumed - tail.offset) as usize]).to_string();
+    tail.offset = consumed;
+    let mut records = Vec::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(line) {
+            // 高频吞吐聚合记录（5s 周期）不透传：前端从 /stats 实时拿，避免噪声
+            let event = value.get("event").and_then(|v| v.as_str()).unwrap_or("");
+            if event == "throughput" {
+                continue;
+            }
+            records.push(value);
+        }
+    }
+    Ok(records)
 }
 
 /// GPU 实时指标（nvidia-smi）：显存 MiB / 核心负载 % / 功耗 W；驱动不支持的字段为 None。
@@ -1478,6 +1567,9 @@ struct HuggingFaceModel {
     parameters_b: Option<f64>,
     /// 从量化标签解析出的比特位（如 Q4_K_M → 4、IQ3_M → 3；无法识别为 None）
     quant_bits: Option<i32>,
+    /// 模型所属社区（"hf" 或 "ms"）
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2861,10 +2953,13 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
 }
 
 
-/* ==================== 阶段四：社区探索（HuggingFace 热门 / 搜索 / 下载） ==================== */
+/* ==================== 阶段四：社区探索（HuggingFace & 魔塔社区 热门 / 搜索 / 下载） ==================== */
 
 const HF_API_BASE: &str = "https://huggingface.co/api";
 const HF_DL_BASE: &str = "https://huggingface.co";
+const MS_OPENAPI_BASE: &str = "https://modelscope.cn/openapi/v1";
+const MS_API_BASE: &str = "https://www.modelscope.cn/api/v1";
+const MS_DL_BASE: &str = "https://www.modelscope.cn";
 
 fn hf_repo_id(repo: &str) -> String {
     repo.trim().trim_end_matches('/').to_string()
@@ -3021,6 +3116,176 @@ fn fetch_hf_json(client: &reqwest::blocking::Client, url: &str) -> Result<serde_
     .map_err(|errors| format!("HuggingFace 连接失败（{}）。请在「设置 → 网络与代理」选择手动代理（Clash 端口 7897 / V2rayN 10809）后重试", errors.join("；")))
 }
 
+/// 魔塔社区多通道兜底：直连（国内最快） → 配置网络 → 本机探测代理端口
+fn with_ms_net_fallback<T>(
+    config_client: &reqwest::blocking::Client,
+    url: &str,
+    mut attempt: impl FnMut(&reqwest::blocking::Client, &str) -> Result<T, String>,
+) -> Result<T, Vec<String>> {
+    let mut errors: Vec<String> = Vec::new();
+    match attempt(direct_client(), url) {
+        Ok(value) => return Ok(value),
+        Err(error) => errors.push(format!("直连：{}", error)),
+    }
+    match attempt(config_client, url) {
+        Ok(value) => return Ok(value),
+        Err(error) => errors.push(format!("配置网络通道：{}", error)),
+    }
+    if let Some(proxy_url) = probe_local_proxy() {
+        match proxied_client(&proxy_url) {
+            Ok(proxied) => match attempt(&proxied, url) {
+                Ok(value) => return Ok(value),
+                Err(error) => errors.push(format!("本地代理 {}：{}", proxy_url, error)),
+            },
+            Err(error) => errors.push(format!("初始化本地代理 {} 失败：{}", proxy_url, error)),
+        }
+    }
+    Err(errors)
+}
+
+/// 处理 ModelScope 响应：状态码检查 + JSON 解析与错误提示提取
+fn ms_response_json(response: reqwest::blocking::Response) -> Result<serde_json::Value, String> {
+    let status = response.status();
+    if !status.is_success() {
+        let code = status.as_u16();
+        let body_text = response.text().unwrap_or_default();
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(&body_text) {
+            if let Some(msg) = val.get("message").or_else(|| val.get("Message")).and_then(|v| v.as_str()) {
+                return Err(format!("ModelScope 提示（HTTP {}）：{}", code, msg));
+            }
+        }
+        let message = match code {
+            429 => "ModelScope API 触发限流（HTTP 429），请稍后重试".to_string(),
+            403 => "ModelScope API 拒绝访问（HTTP 403）".to_string(),
+            _ => format!("ModelScope API 返回 HTTP {}", code),
+        };
+        return Err(message);
+    }
+    response.json().map_err(|error| format!("解析 ModelScope API 响应失败：{}", error))
+}
+
+/// 查询 ModelScope API：多通道自动兜底（直连 → 配置网络 → 本机代理端口）
+fn fetch_ms_json(client: &reqwest::blocking::Client, url: &str) -> Result<serde_json::Value, String> {
+    with_ms_net_fallback(client, url, |client, url| {
+        ms_response_json(hf_send(client, url).map_err(|error| error.to_string())?)
+    })
+    .map_err(|errors| format!("ModelScope 连接失败（{}）", errors.join("；")))
+}
+
+/// 从文本集合中提取所有量化比特位集合（支持 GGUF 与 NInfer 多样化量化格式）
+fn extract_quant_bits_set(sources: &[String]) -> std::collections::HashSet<i32> {
+    let mut bits = std::collections::HashSet::new();
+    for text in sources {
+        let upper = text.to_uppercase();
+        // 1-bit: ternary / 1.58bit / ptq1 / bonsai / 1-bit
+        if upper.contains("TERNARY")
+            || upper.contains("1.58BIT")
+            || upper.contains("1.58-BIT")
+            || upper.contains("1.58B")
+            || upper.contains("PTQ1")
+            || upper.contains("BONSAI")
+            || upper.contains("1-BIT")
+            || upper.contains("1BIT")
+        {
+            bits.insert(1);
+        }
+
+        // 2-bit: pq2 / 2-bit / iq2
+        if upper.contains("PQ2")
+            || upper.contains("2-BIT")
+            || upper.contains("2BIT")
+            || upper.contains("IQ2")
+        {
+            bits.insert(2);
+        }
+
+        // 3-bit: iq3 / gsq / 3-bit
+        if upper.contains("IQ3")
+            || upper.contains("GSQ")
+            || upper.contains("3-BIT")
+            || upper.contains("3BIT")
+        {
+            bits.insert(3);
+        }
+
+        // 4-bit: nvfp4 / nf4 / w4a4 / fp4 / int4 / 4-bit
+        if upper.contains("NVFP4")
+            || upper.contains("NF4")
+            || upper.contains("W4A4")
+            || upper.contains("FP4")
+            || upper.contains("INT4")
+            || upper.contains("4-BIT")
+            || upper.contains("4BIT")
+        {
+            bits.insert(4);
+        }
+
+        // 5-bit: 5-bit
+        if upper.contains("5-BIT") || upper.contains("5BIT") {
+            bits.insert(5);
+        }
+
+        // 6-bit: 6-bit
+        if upper.contains("6-BIT") || upper.contains("6BIT") {
+            bits.insert(6);
+        }
+
+        // 8-bit: fp8 / int8 / w8a8 / 8-bit (排除 1.58bit 误命中)
+        if upper.contains("FP8")
+            || upper.contains("INT8")
+            || upper.contains("W8A8")
+            || (!upper.contains("1.58") && (upper.contains("8-BIT") || upper.contains("8BIT")))
+        {
+            bits.insert(8);
+        }
+
+        // 16-bit: bf16 / fp16 / f16 / fp32 / f32 / 16-bit
+        if upper.contains("BF16")
+            || upper.contains("FP16")
+            || upper.contains("16-BIT")
+            || upper.contains("16BIT")
+        {
+            bits.insert(16);
+        }
+
+        // 细粒度 Q / IQ token 解析（如 Q4_K_M, IQ3_S, Q8_0 等）
+        for token in upper.split(|c: char| !c.is_ascii_alphanumeric()) {
+            if token.starts_with('Q') && token.len() > 1 {
+                if let Ok(digits) = token[1..].chars().take(2).collect::<String>().parse::<i32>() {
+                    if (1..=8).contains(&digits) {
+                        bits.insert(digits);
+                    }
+                }
+            }
+            if let Some(rest) = token.strip_prefix("IQ") {
+                if let Ok(digits) = rest.chars().take(1).collect::<String>().parse::<i32>() {
+                    if (1..=8).contains(&digits) {
+                        bits.insert(digits);
+                    }
+                }
+            }
+            if matches!(token, "F16" | "BF16" | "FP16" | "FP32" | "F32") {
+                bits.insert(16);
+            }
+        }
+    }
+    bits
+}
+
+/// 提取代表性量化比特位（优先常见主力量化位）
+fn extract_primary_quant_bits(sources: &[String]) -> Option<i32> {
+    let all = extract_quant_bits_set(sources);
+    if all.is_empty() {
+        return None;
+    }
+    for &preferred in &[4, 3, 2, 1, 5, 6, 8, 16] {
+        if all.contains(&preferred) {
+            return Some(preferred);
+        }
+    }
+    all.into_iter().next()
+}
+
 /// 拉取候选模型并按量化位过滤（服务端二次过滤：HF filter 不支持按 bit 查询）。
 /// 有量化过滤时放大 limit，循环翻页直到凑满目标数量或 API 返回空，保证分页语义正确。
 fn fetch_models_filtered(client: &reqwest::blocking::Client, base: &str, format_filter: Option<&str>, limit: usize, skip: Option<usize>, quants: Option<Vec<i32>>) -> Result<Vec<HuggingFaceModel>, String> {
@@ -3043,14 +3308,21 @@ fn fetch_models_filtered(client: &reqwest::blocking::Client, base: &str, format_
                 let items = value.as_array().ok_or("HuggingFace API 返回格式异常")?;
                 let mut any = false;
                 for value in items {
-                    if let Some(model) = hf_model_from_value(value) {
+                    if let Some(mut model) = hf_model_from_value(value) {
                         any = true;
-                        if let Some(bits_b) = model.quant_bits {
-                            if bits.contains(&bits_b) && seen.insert(model.id.clone()) {
-                                collected.push(model);
-                                if collected.len() >= wanted {
-                                    return Ok(collected);
-                                }
+                        let sources = std::iter::once(model.id.clone())
+                            .chain(model.tags.iter().cloned())
+                            .chain(std::iter::once(model.sample_quant.clone().unwrap_or_default()))
+                            .collect::<Vec<_>>();
+                        let all_bits = extract_quant_bits_set(&sources);
+                        let matches_quant = bits.iter().any(|b| all_bits.contains(b));
+                        if matches_quant && seen.insert(model.id.clone()) {
+                            if let Some(&first_matched) = bits.iter().find(|b| all_bits.contains(b)) {
+                                model.quant_bits = Some(first_matched);
+                            }
+                            collected.push(model);
+                            if collected.len() >= wanted {
+                                return Ok(collected);
                             }
                         }
                     }
@@ -3108,10 +3380,15 @@ fn hf_model_from_value(value: &serde_json::Value) -> Option<HuggingFaceModel> {
         .find(|tag| tag.to_lowercase().contains(".gguf") || tag.to_lowercase().contains(".ninfer"))
         .cloned()
         .or_else(|| {
-            ["Q4_K_M", "Q5_K_M", "Q8_0", "Q6_K", "Q4_0", "NVFP4", "RK8V4", "INT8", "BF16"]
-                .iter()
-                .find(|candidate| tags.iter().any(|tag| tag.to_uppercase().contains(**candidate)))
-                .map(|value| value.to_string())
+            [
+                "NVFP4", "NF4", "W4A4", "IQ3_S", "IQ3_XXS", "GSQ", "PQ2", "IQ2_S",
+                "TERNARY", "1.58BIT", "PTQ1", "BONSAI", "FP8", "INT8", "BF16", "FP16",
+                "Q4_K_M", "Q5_K_M", "Q8_0", "Q6_K", "Q4_0", "Q4_1", "Q5_0", "Q5_1",
+                "Q2_K", "Q3_K_M", "Q3_K_S", "Q3_K_L", "RK8V4",
+            ]
+            .iter()
+            .find(|candidate| tags.iter().any(|tag| tag.to_uppercase().contains(**candidate)) || id.to_uppercase().contains(**candidate))
+            .map(|value| value.to_string())
         });
     // 参数量：优先取形如 0.5B / 7B / 14B / 32B / 70B 的数字（名称或标签中最靠前的匹配）。
     let parameter_sources = std::iter::once(id.clone())
@@ -3126,40 +3403,12 @@ fn hf_model_from_value(value: &serde_json::Value) -> Option<HuggingFaceModel> {
             })
         })
         .next();
-    // 量化比特位：从 id / 标签 / 推荐量化名中提取 Q 数字（IQ3 → 3、Q4_K_M → 4、Q8_0 → 8）。
-    let quant_bits = parameter_sources
-        .iter()
-        .chain(std::iter::once(&sample_quant.clone().unwrap_or_default()))
-        .filter_map(|text| {
-            let upper = text.to_uppercase();
-            for token in upper.split(|c: char| !c.is_ascii_alphanumeric()) {
-                if token.starts_with('Q') && token.len() > 1 {
-                    if let Ok(digits) = token[1..].chars().take(2).collect::<String>().parse::<i32>() {
-                        if (1..=8).contains(&digits) {
-                            return Some(digits);
-                        }
-                    }
-                }
-                if let Some(rest) = token.strip_prefix("IQ") {
-                    if let Ok(digits) = rest.chars().take(1).collect::<String>().parse::<i32>() {
-                        if (1..=8).contains(&digits) {
-                            return Some(digits);
-                        }
-                    }
-                }
-                // 1-bit 与 16-bit/原版：HF 标签可写为 F16/BF16/FP16/FP32/F32。
-                if matches!(token, "F16" | "BF16" | "FP16" | "FP32" | "F32") {
-                    return Some(16);
-                }
-            }
-            None
-        })
-        .next()
-        .or_else(|| sample_quant.as_deref().and_then(|quant| {
-            quant.to_uppercase().chars().find(|c| *c != 'I' && *c != 'Q')
-                .and_then(|c| c.to_digit(10))
-                .map(|digit| digit as i32)
-        }));
+    // 量化比特位：从 id / 标签 / 推荐量化名中提取代表性比特位
+    let quant_sources = std::iter::once(id.clone())
+        .chain(tags.iter().cloned())
+        .chain(std::iter::once(sample_quant.clone().unwrap_or_default()))
+        .collect::<Vec<_>>();
+    let quant_bits = extract_primary_quant_bits(&quant_sources);
     Some(HuggingFaceModel {
         id,
         author,
@@ -3172,6 +3421,7 @@ fn hf_model_from_value(value: &serde_json::Value) -> Option<HuggingFaceModel> {
         sample_quant: if gated { None } else { sample_quant },
         parameters_b,
         quant_bits,
+        source: Some("hf".into()),
     })
 }
 
@@ -3205,6 +3455,189 @@ fn regex_like_parameter(text: &str) -> Option<f64> {
         i += 1;
     }
     None
+}
+
+/// 解析魔塔社区（ModelScope）OpenAPI 模型条目为 HuggingFaceModel 统一结构
+fn ms_model_from_value(value: &serde_json::Value) -> Option<HuggingFaceModel> {
+    let id = value.get("id").and_then(|v| v.as_str())?.to_string();
+    if id.is_empty() {
+        return None;
+    }
+    let author = id.split('/').next().unwrap_or("").to_string();
+    let name = value
+        .get("display_name")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&id)
+        .to_string();
+    let tags: Vec<String> = value
+        .get("tags")
+        .and_then(|v| v.as_array())
+        .map(|items| items.iter().filter_map(|t| t.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let sample_quant = tags
+        .iter()
+        .find(|tag| tag.to_lowercase().contains(".gguf") || tag.to_lowercase().contains(".ninfer"))
+        .cloned()
+        .or_else(|| {
+            [
+                "NVFP4", "NF4", "W4A4", "IQ3_S", "IQ3_XXS", "GSQ", "PQ2", "IQ2_S",
+                "TERNARY", "1.58BIT", "PTQ1", "BONSAI", "FP8", "INT8", "BF16", "FP16",
+                "Q4_K_M", "Q5_K_M", "Q8_0", "Q6_K", "Q4_0", "Q4_1", "Q5_0", "Q5_1",
+                "Q2_K", "Q3_K_M", "Q3_K_S", "Q3_K_L", "RK8V4",
+            ]
+            .iter()
+            .find(|candidate| tags.iter().any(|tag| tag.to_uppercase().contains(**candidate)) || id.to_uppercase().contains(**candidate))
+            .map(|v| v.to_string())
+        });
+    let raw_params = value.get("params").and_then(|v| v.as_f64()).unwrap_or(0.0);
+    let parameters_b = if raw_params > 10_000_000.0 {
+        Some((raw_params / 1_000_000_000.0 * 100.0).round() / 100.0)
+    } else {
+        let parameter_sources = std::iter::once(id.clone()).chain(tags.iter().cloned()).collect::<Vec<_>>();
+        parameter_sources.iter().filter_map(|text| regex_like_parameter(text).or_else(|| regex_like_parameter(&text.to_lowercase()))).next()
+    };
+    let quant_sources = std::iter::once(id.clone())
+        .chain(tags.iter().cloned())
+        .chain(std::iter::once(sample_quant.clone().unwrap_or_default()))
+        .collect::<Vec<_>>();
+    let quant_bits = extract_primary_quant_bits(&quant_sources);
+    Some(HuggingFaceModel {
+        id,
+        author,
+        name,
+        downloads: value.get("downloads").and_then(|v| v.as_u64()).unwrap_or(0),
+        likes: value.get("likes").and_then(|v| v.as_u64()).unwrap_or(0),
+        updated_at: value.get("last_modified").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+        tags,
+        gguf_count: -1,
+        sample_quant,
+        parameters_b,
+        quant_bits,
+        source: Some("ms".into()),
+    })
+}
+
+/// 拉取魔塔社区候选模型并按量化位过滤（服务端按 search 查询，若指定 quants 则按比特位二次过滤）。
+fn ms_fetch_models_filtered(
+    client: &reqwest::blocking::Client,
+    search: Option<&str>,
+    sort: Option<&str>,
+    format_filter: Option<&str>,
+    limit: usize,
+    skip: Option<usize>,
+    quants: Option<Vec<i32>>,
+) -> Result<Vec<HuggingFaceModel>, String> {
+    let wanted = limit;
+    let ms_sort = match sort {
+        Some("downloads") => "downloads",
+        Some("likes") => "likes",
+        Some("last_modified") | Some("lastModified") | Some("updated") => "last_modified",
+        _ => "default",
+    };
+    let raw_search = search.unwrap_or("").trim();
+    let mut effective_search = raw_search.to_string();
+    if format_filter == Some("gguf") {
+        if !effective_search.to_lowercase().contains("gguf") {
+            if effective_search.is_empty() {
+                effective_search = "gguf".to_string();
+            } else {
+                effective_search = format!("{} gguf", effective_search);
+            }
+        }
+    } else if format_filter == Some("ninfer") {
+        if !effective_search.to_lowercase().contains("ninfer") {
+            if effective_search.is_empty() {
+                effective_search = "ninfer".to_string();
+            } else {
+                effective_search = format!("{} ninfer", effective_search);
+            }
+        }
+    }
+
+    let is_ninfer = format_filter == Some("ninfer") || effective_search.to_lowercase().contains("ninfer");
+
+    if let Some(bits) = quants {
+        if !bits.is_empty() {
+            // 注意：对于 NINFER 格式模型，魔搭社区仓库与标签非 q{bit} 命名（为 NVFP4 / Ternary / PQ2 / GSQ 等），
+            // 若向 search 追加 q{bit} 会导致 ModelScope OpenAPI 布尔 AND 搜索命中 0 条记录！
+            // 故仅在非 NINFER（如 GGUF）场景下向 search 追加 q{bit}，NINFER 场景在客户端内存中精准过滤。
+            if !is_ninfer {
+                let quant_tokens: Vec<String> = bits.iter().map(|b| format!("q{}", b)).collect();
+                let search_lower = effective_search.to_lowercase();
+                let has_quant_in_search = quant_tokens.iter().any(|qt| search_lower.contains(qt));
+                if !has_quant_in_search {
+                    if effective_search.is_empty() {
+                        effective_search = quant_tokens.join(" ");
+                    } else {
+                        effective_search = format!("{} {}", effective_search, quant_tokens.join(" "));
+                    }
+                }
+            }
+
+            let mut seen = std::collections::HashSet::new();
+            let mut collected: Vec<HuggingFaceModel> = Vec::new();
+            // ModelScope openapi 的 page_size 最大不得超过 50！
+            let page_size = 50usize;
+            let mut page_number = (skip.unwrap_or(0) / page_size) + 1;
+            for _ in 0..15 {
+                let mut url = reqwest::Url::parse(&format!("{}/models", MS_OPENAPI_BASE))
+                    .map_err(|e| format!("构建请求 URL 失败：{}", e))?;
+                url.query_pairs_mut()
+                    .append_pair("page_size", &page_size.to_string())
+                    .append_pair("page_number", &page_number.to_string())
+                    .append_pair("sort", ms_sort);
+                if !effective_search.is_empty() {
+                    url.query_pairs_mut().append_pair("search", &effective_search);
+                }
+                let value = fetch_ms_json(client, url.as_str())?;
+                let items = value.get("data").and_then(|d| d.get("models")).and_then(|m| m.as_array())
+                    .ok_or_else(|| "ModelScope API 返回格式异常".to_string())?;
+                let mut any = false;
+                for item in items {
+                    if let Some(mut model) = ms_model_from_value(item) {
+                        any = true;
+                        let sources = std::iter::once(model.id.clone())
+                            .chain(model.tags.iter().cloned())
+                            .chain(std::iter::once(model.sample_quant.clone().unwrap_or_default()))
+                            .collect::<Vec<_>>();
+                        let all_bits = extract_quant_bits_set(&sources);
+                        let matches_quant = bits.iter().any(|b| all_bits.contains(b));
+                        if matches_quant && seen.insert(model.id.clone()) {
+                            if let Some(&first_matched) = bits.iter().find(|b| all_bits.contains(b)) {
+                                model.quant_bits = Some(first_matched);
+                            }
+                            collected.push(model);
+                            if collected.len() >= wanted {
+                                return Ok(collected);
+                            }
+                        }
+                    }
+                }
+                if !any || items.len() < page_size {
+                    break;
+                }
+                page_number += 1;
+            }
+            return Ok(collected);
+        }
+    }
+
+    // ModelScope openapi 的 page_size 最大不得超过 50
+    let page_size = wanted.clamp(1, 50);
+    let page_number = (skip.unwrap_or(0) / page_size) + 1;
+    let mut url = reqwest::Url::parse(&format!("{}/models", MS_OPENAPI_BASE))
+        .map_err(|e| format!("构建请求 URL 失败：{}", e))?;
+    url.query_pairs_mut()
+        .append_pair("page_size", &page_size.to_string())
+        .append_pair("page_number", &page_number.to_string())
+        .append_pair("sort", ms_sort);
+    if !effective_search.is_empty() {
+        url.query_pairs_mut().append_pair("search", &effective_search);
+    }
+    let value = fetch_ms_json(client, url.as_str())?;
+    let items = value.get("data").and_then(|d| d.get("models")).and_then(|m| m.as_array())
+        .ok_or_else(|| "ModelScope API 返回格式异常".to_string())?;
+    Ok(items.iter().filter_map(ms_model_from_value).collect())
 }
 
 /// 本周 HuggingFace 热门模型（sort=trending）；支持格式筛选（全部 / 仅 GGUF / 仅 NINFER）。
@@ -3294,6 +3727,89 @@ async fn hf_list_files(app: AppHandle, repo: String) -> Result<Vec<HuggingFaceFi
     })
     .await
     .map_err(|error| format!("获取文件列表任务中断：{}", error))?
+}
+
+/// 本周魔塔社区热门模型（sort=default）；支持格式筛选（全部 / 仅 GGUF / 仅 NINFER）。
+#[tauri::command]
+async fn ms_trending(
+    app: AppHandle,
+    limit: Option<usize>,
+    gguf_only: Option<bool>,
+    format_filter: Option<String>,
+    skip: Option<usize>,
+    sort: Option<String>,
+    quants: Option<Vec<i32>>,
+) -> Result<Vec<HuggingFaceModel>, String> {
+    let config = read_config(&app)?;
+    let network = config.network.clone().unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        let client = build_net_client(&network)?;
+        let effective_filter = format_filter.as_deref().or_else(|| {
+            if gguf_only.unwrap_or(false) { Some("gguf") } else { None }
+        });
+        ms_fetch_models_filtered(&client, None, sort.as_deref(), effective_filter, limit.unwrap_or(12), skip, quants)
+    })
+    .await
+    .map_err(|error| format!("获取魔塔社区热门榜单任务中断：{}", error))?
+}
+
+/// 搜索魔塔社区模型（关键词 / 组织名）；支持格式筛选。
+#[tauri::command]
+async fn ms_search(
+    app: AppHandle,
+    query: String,
+    limit: Option<usize>,
+    gguf_only: Option<bool>,
+    format_filter: Option<String>,
+    skip: Option<usize>,
+    sort: Option<String>,
+    quants: Option<Vec<i32>>,
+) -> Result<Vec<HuggingFaceModel>, String> {
+    let config = read_config(&app)?;
+    let network = config.network.clone().unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        let client = build_net_client(&network)?;
+        let effective_filter = format_filter.as_deref().or_else(|| {
+            if gguf_only.unwrap_or(false) { Some("gguf") } else { None }
+        });
+        ms_fetch_models_filtered(&client, Some(&query), sort.as_deref(), effective_filter, limit.unwrap_or(30), skip, quants)
+    })
+    .await
+    .map_err(|error| format!("魔塔社区搜索任务中断：{}", error))?
+}
+
+/// 列出魔塔社区仓库中的 .gguf 与 .ninfer 模型文件（递归，按文件名排序）。
+#[tauri::command]
+async fn ms_list_files(app: AppHandle, repo: String) -> Result<Vec<HuggingFaceFile>, String> {
+    let config = read_config(&app)?;
+    let network = config.network.clone().unwrap_or_default();
+    tauri::async_runtime::spawn_blocking(move || {
+        let client = build_net_client(&network)?;
+        let base = hf_repo_id(&repo);
+        let url = format!("{}/models/{}/repo/files?Revision=master&Recursive=True", MS_API_BASE, base);
+        let value = fetch_ms_json(&client, &url)?;
+        let files_array = value.get("Data").and_then(|d| d.get("Files")).and_then(|f| f.as_array())
+            .ok_or_else(|| "魔塔社区返回文件列表格式异常".to_string())?;
+        let mut files: Vec<HuggingFaceFile> = files_array
+            .iter()
+            .filter_map(|item| {
+                let path = item.get("Path").and_then(|v| v.as_str()).or_else(|| item.get("Name").and_then(|v| v.as_str()))?;
+                let lower = path.to_lowercase();
+                if !lower.ends_with(".gguf") && !lower.ends_with(".ninfer") {
+                    return None;
+                }
+                let size_bytes = item.get("Size").and_then(|v| v.as_u64()).unwrap_or(0);
+                Some(HuggingFaceFile {
+                    name: path.to_string(),
+                    size_bytes,
+                })
+            })
+            .collect();
+        files.sort_by(|left, right| left.name.cmp(&right.name));
+        Ok(files)
+    })
+    .await
+    .map_err(|error| format!("获取魔塔社区文件列表任务中断：{}", error))?
 }
 
 /// 计算目标下载路径并防目录逃逸（仅允许文件名中的普通路径段）。
@@ -3494,6 +4010,23 @@ fn download_hf_with_fallback(config_client: &reqwest::blocking::Client, url: &st
         .map_err(|_| "无法访问 HuggingFace（配置代理 / 直连 / 本地代理 / hf-mirror 镜像均失败）".to_string())
 }
 
+/// 下载魔塔社区文件：多通道自动兜底（直连 → 配置网络 → 本地探测代理）。
+/// 返回 (客户端, 实际 URL)。
+fn download_ms_with_fallback(config_client: &reqwest::blocking::Client, url: &str) -> Result<(reqwest::blocking::Client, String), String> {
+    let attempt = |client: &reqwest::blocking::Client, url: &str| -> Result<(reqwest::blocking::Client, String), String> {
+        let response = client
+            .get(url)
+            .header("user-agent", HF_UA)
+            .timeout(std::time::Duration::from_secs(30))
+            .send()
+            .map_err(|error| error.to_string())?;
+        drop(response);
+        Ok((client.clone(), url.to_string()))
+    };
+    with_ms_net_fallback(config_client, url, attempt)
+        .map_err(|_| "无法访问魔塔社区（直连 / 配置网络 / 本地代理均失败）".to_string())
+}
+
 /// 判断下载 URL 是否属于 HuggingFace（官方站或 hf-mirror 镜像），决定是否附加 Token。
 fn is_hf_url(url: &str) -> bool {
     url.starts_with(HF_DL_BASE) || url.contains("hf-mirror.com")
@@ -3668,6 +4201,141 @@ async fn hf_avatar(app: AppHandle, author: String) -> Result<Option<String>, Str
     Ok(data_uri)
 }
 
+/// 魔搭（ModelScope）作者头像会话级内存缓存：author -> data URI；None 表示已尝试但不可用。
+fn ms_avatar_cache() -> &'static Mutex<HashMap<String, Option<String>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<String>>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// 从魔搭组织主页 HTML 提取头像 CDN URL
+fn extract_ms_avatar_url_from_html(html: &str) -> Option<String> {
+    for prefix in ["https://resources.modelscope.cn/avatar/", "https://resouces.modelscope.cn/avatar/"] {
+        let mut search_from = 0;
+        while let Some(rel_start) = html[search_from..].find(prefix) {
+            let start = search_from + rel_start;
+            let rest = &html[start..];
+            let end = rest.find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '<' || c == '>' || c == '\\').unwrap_or(rest.len());
+            let candidate = &rest[..end];
+            let lower = candidate.to_lowercase();
+            if (lower.ends_with(".jpg") || lower.ends_with(".jpeg") || lower.ends_with(".png") || lower.ends_with(".webp"))
+                && !lower.contains("default-avatar")
+            {
+                return Some(candidate.to_string());
+            }
+            search_from = start + prefix.len();
+        }
+    }
+    None
+}
+
+/// 解析魔搭作者（组织 / 用户）头像的公开 CDN 地址：
+/// 1. 优先尝试组织主页（GET https://modelscope.cn/organization/{author}）；
+/// 2. 备选尝试用户个人 API（GET https://modelscope.cn/api/v1/users/{author}）。
+fn ms_resolve_avatar_url(client: &reqwest::blocking::Client, author: &str) -> Result<String, String> {
+    // 1. 组织主页
+    let org_url = format!("https://modelscope.cn/organization/{}", author);
+    if let Ok(resp) = client.get(&org_url).header(reqwest::header::USER_AGENT, HF_UA).send() {
+        if resp.status().is_success() {
+            if let Ok(html) = resp.text() {
+                if let Some(avatar_url) = extract_ms_avatar_url_from_html(&html) {
+                    return Ok(avatar_url);
+                }
+            }
+        }
+    }
+
+    // 2. 用户 API
+    let user_url = format!("https://modelscope.cn/api/v1/users/{}", author);
+    if let Ok(resp) = client.get(&user_url).header(reqwest::header::USER_AGENT, HF_UA).send() {
+        if resp.status().is_success() {
+            if let Ok(val) = resp.json::<serde_json::Value>() {
+                if let Some(av) = val.get("Data").and_then(|d| d.get("Avatar")).and_then(|v| v.as_str()) {
+                    if !av.is_empty() && !av.contains("default-avatar") {
+                        return Ok(av.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    Err("该作者没有公开魔搭头像".into())
+}
+
+/// 经网络下载魔搭头像图片，返回 (MIME, 字节)；非图片响应或超过 2MB 视为失败。
+fn ms_fetch_avatar_image(client: &reqwest::blocking::Client, url: &str) -> Result<(String, Vec<u8>), String> {
+    let response = client.get(url).header(reqwest::header::USER_AGENT, HF_UA).send().map_err(|e| e.to_string())?;
+    let status = response.status();
+    let mime = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or("")
+        .split(';')
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    if !status.is_success() {
+        return Err(format!("HTTP {}", status.as_u16()));
+    }
+    if !mime.starts_with("image/") {
+        return Err(format!("响应不是图片（{}）", if mime.is_empty() { "未知类型" } else { &mime }));
+    }
+    let bytes = response.bytes().map_err(|e| e.to_string())?;
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err("头像文件超过 2MB".into());
+    }
+    Ok((mime, bytes.to_vec()))
+}
+
+/// 获取魔搭（ModelScope）作者（组织 / 用户）头像并转为 data URI 返回，前端 <img> 直接渲染。
+/// 国内直连优先 + 本地代理兜底；按作者缓存，拉不到时返回 Ok(None)，前端回退到 ModelScope 官方 Logo。
+#[tauri::command]
+async fn ms_avatar(app: AppHandle, author: String) -> Result<Option<String>, String> {
+    let author = author.trim().trim_start_matches('@').to_string();
+    if author.is_empty() || author.len() > 120 || !author.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')) {
+        return Ok(None);
+    }
+    if let Some(cached) = ms_avatar_cache().lock().map_err(|_| "头像缓存不可用")?.get(&author) {
+        return Ok(cached.clone());
+    }
+    let config = read_config(&app)?;
+    let network = config.network.clone().unwrap_or_default();
+    let cache_key = author.clone();
+    let fetched = tauri::async_runtime::spawn_blocking(move || {
+        let author = cache_key.as_str();
+        let mut channels: Vec<reqwest::blocking::Client> = Vec::new();
+        // 直连（国内最快）
+        channels.push(direct_client().clone());
+        // 配置网络通道
+        if let Ok(client) = build_net_client(&network) {
+            channels.push(client);
+        }
+        // 本地探测代理
+        if let Some(proxy_url) = probe_local_proxy() {
+            if let Ok(proxied) = proxied_client(&proxy_url) {
+                channels.push(proxied);
+            }
+        }
+        let mut errors: Vec<String> = Vec::new();
+        for client in &channels {
+            match ms_resolve_avatar_url(client, author) {
+                Ok(cdn_url) => match ms_fetch_avatar_image(client, &cdn_url) {
+                    Ok((mime, bytes)) => return Ok(Some(format!("data:{};base64,{}", mime, base64_encode(&bytes)))),
+                    Err(error) => errors.push(error),
+                },
+                Err(error) => errors.push(error),
+            }
+        }
+        Err(format!("魔搭头像获取失败：{}", errors.join("；")))
+    })
+    .await
+    .map_err(|error| format!("获取魔搭头像任务中断：{}", error))?;
+    let data_uri = fetched.ok().flatten();
+    ms_avatar_cache().lock().map_err(|_| "头像缓存不可用")?.insert(author, data_uri.clone());
+    Ok(data_uri)
+}
+
 /// HF / 直链下载共用的传输核心：带鉴权发起请求 → 状态检查（gated 错误协议）→
 /// （可选）Range 断点续传 → 流式落盘（200ms 节流进度 + 速度平滑 + 每任务独立的取消/暂停处理）。
 /// allow_resume：HF 仓库下载启用「文件已存在直接返回」与 Range 续传；直链下载行为保持原样（false）。
@@ -3837,6 +4505,44 @@ async fn hf_download(app: AppHandle, state: State<'_, DownloadRegistry>, repo: S
     })
     .await;
     // 无论成功失败都摘除控制器（若已被新一轮下载接管则保留新循环的控制器）
+    registry.unregister_if_current(&task_id, &cleanup_task);
+    result.map_err(|error| format!("下载任务中断：{}", error))?
+}
+
+/// 下载魔塔社区仓库中的指定文件到模型存储目录（流式 + 进度事件 + 断点续传）。
+/// task_id：前端为每次下载生成的唯一标识；取消 / 暂停只作用于该任务自己的控制器。
+#[tauri::command]
+async fn ms_download(app: AppHandle, state: State<'_, DownloadRegistry>, repo: String, file: String, task_id: String) -> Result<HfDownloadResult, String> {
+    let config = read_config(&app)?;
+    let network = config.network.clone().unwrap_or_default();
+    let root = models_root(&app, &config)?;
+    let registry = state.inner().clone();
+    let task = registry.register(&task_id);
+    let loop_registry = registry.clone();
+    let cleanup_task = task.clone();
+    let closure_task_id = task_id.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        let client = build_net_client(&network)?;
+        let dest = model_download_dest(&root, &repo, &file)?;
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent).map_err(|error| format!("创建下载目录失败：{}", error))?;
+        }
+        // 恢复上次暂停留下的 .part 断点文件
+        let part_path = dest.with_extension("part");
+        if !dest.exists() && part_path.exists() {
+            let _ = fs::rename(&part_path, &dest);
+        }
+        let url = format!("{}/api/v1/models/{}/repo?Revision=master&FilePath={}", MS_DL_BASE, hf_repo_id(&repo), file);
+        emit_model_progress(&app, &closure_task_id, &repo, &file, "download", 0, 0, 0, 0, "开始下载");
+        // 多通道兜底：直连 → 配置网络 → 本地代理
+        let (net_client, effective_url) = download_ms_with_fallback(&client, &url)?;
+        let size_bytes = hf_transfer_loop(&app, &loop_registry, &task, &closure_task_id, &repo, &file, &net_client, &effective_url, "", &dest, true)?;
+        Ok(HfDownloadResult {
+            path: dest.to_string_lossy().to_string(),
+            size_bytes,
+        })
+    })
+    .await;
     registry.unregister_if_current(&task_id, &cleanup_task);
     result.map_err(|error| format!("下载任务中断：{}", error))?
 }
@@ -5294,6 +6000,46 @@ mod tests {
 
         assert_eq!(extract_cuda_full_version("llama-b11149-bin-win-vulkan-x64.zip"), "");
     }
+
+    #[test]
+    fn ninfer_quant_extraction_tests() {
+        use super::{extract_quant_bits_set, extract_primary_quant_bits};
+
+        // 1-bit: Ternary / Bonsai / 1.58bit
+        let s1 = vec!["sanbanfu/Ternary-Bonsai-2-27B-ninfer-v3-spliced.ninfer".into()];
+        let b1 = extract_quant_bits_set(&s1);
+        assert!(b1.contains(&1), "Ternary should match 1-bit");
+        assert!(!b1.contains(&8), "Ternary 1.58bit should not falsely match 8-bit");
+
+        // 2-bit & 3-bit: Swift-1.5 多量化
+        let s2 = vec![
+            "fyb423/Swift-1.5-Qwen3.8-27B-GSQ-RCO-NInfer".into(),
+            "iq2_s".into(),
+            "iq3_s".into(),
+            "iq3_xxs".into(),
+        ];
+        let b2 = extract_quant_bits_set(&s2);
+        assert!(b2.contains(&2), "Should match 2-bit");
+        assert!(b2.contains(&3), "Should match 3-bit (IQ3 and GSQ)");
+
+        // 4-bit: NVFP4
+        let s3 = vec![
+            "LittleStar888/qwen3_8_27b_nvfp4.ninfer".into(),
+            "nvfp4".into(),
+            "w4a4".into(),
+        ];
+        let b3 = extract_quant_bits_set(&s3);
+        assert!(b3.contains(&4), "NVFP4/W4A4 should match 4-bit");
+        assert_eq!(extract_primary_quant_bits(&s3), Some(4));
+
+        // 16-bit: BF16
+        let s4 = vec![
+            "ByronLeeee/Xiaomi-OCR-0-Ninfer".into(),
+            "bf16".into(),
+        ];
+        let b4 = extract_quant_bits_set(&s4);
+        assert!(b4.contains(&16), "BF16 should match 16-bit");
+    }
 }
 
 pub fn run() {
@@ -5318,7 +6064,7 @@ pub fn run() {
             react_mounted_ms: None,
             reported: false,
         })))
-        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_whoami, hf_avatar, hf_download, hf_download_url, hf_cancel_download, hf_pause_download, hf_clear_download, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, check_orphan_server, kill_orphan_server, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, pick_files, pick_folder, pick_server_dir, pick_server_file, expand_paths, inspect_gguf, paths_exist, export_config_backup, pick_config_backup, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
+        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_whoami, hf_avatar, hf_download, hf_download_url, hf_cancel_download, hf_pause_download, hf_clear_download, ms_trending, ms_search, ms_list_files, ms_avatar, ms_download, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, check_orphan_server, kill_orphan_server, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, read_ninfer_request_log, pick_files, pick_folder, pick_server_dir, pick_server_file, expand_paths, inspect_gguf, paths_exist, export_config_backup, pick_config_backup, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
         .setup(|app| {
             configure_main_window(app)?;
             setup_tray(app)?;

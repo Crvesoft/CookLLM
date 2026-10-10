@@ -117,7 +117,7 @@ export const lineKind = (stream: LlamaLogPayload["stream"], line: string): "syst
 };
 
 export interface LogTimingFragment {
-  type: "task_start" | "task_end" | "prefill" | "decode" | "decode_progress" | "total" | "cache" | "generic_speed";
+  type: "task_start" | "task_end" | "prefill" | "decode" | "decode_progress" | "total" | "cache" | "ttft" | "queue" | "generic_speed";
   taskId?: string;
   speed?: number; // tokens/sec
   tokens?: number;
@@ -126,6 +126,26 @@ export interface LogTimingFragment {
   cachedTokens?: number;
   totalPromptTokens?: number;
   cacheHitRatio?: number;
+}
+
+/**
+ * 解析 NInfer 时长字段（实测自 ninfer-serve.exe stderr done 行）：
+ * - 亚秒 → `65.5 ms` / `389 ms`
+ * - 秒级 → `2.1s`
+ * - 超过 1 分钟 → 复合格式 `1m 51.9s` / `11m 6.14s`（甚至 `1h 2m 3.4s`）
+ * 匹配失败返回 undefined。
+ */
+export function parseNinferDurationMs(raw: string): number | undefined {
+  const m = raw
+    .trim()
+    .match(/^(?:(\d+(?:\.\d+)?)\s*h)?\s*(?:(\d+(?:\.\d+)?)\s*m(?!s))?\s*(?:(\d+(?:\.\d+)?)\s*(ms|s))?\s*$/i);
+  if (!m || (m[1] == null && m[2] == null && m[3] == null)) return undefined;
+  let ms = 0;
+  if (m[1] != null) ms += parseFloat(m[1]) * 3600000;
+  if (m[2] != null) ms += parseFloat(m[2]) * 60000;
+  if (m[3] != null) ms += m[4] && m[4].toLowerCase() === "ms" ? parseFloat(m[3]) : parseFloat(m[3]) * 1000;
+  // Math.round 消除 2.1s → 2100.0000000000002 类浮点噪声
+  return ms > 0 ? Math.round(ms) : undefined;
 }
 
 /**
@@ -155,7 +175,8 @@ export function parseInferenceLogFragments(line: string): LogTimingFragment[] {
 
   // 0.2 Ninfer 原生请求完成/终止感知（实测格式）：
   // "req#12 done | openai-chat | output limit | prompt 60 | output 256 | cache 0 (0.0%) | TTFT 65.5 ms | total 2.1s | prefill 937.3 tok/s | decode 123.2 tok/s | mtp accepted 176/287 (61.3%)"
-  // 变体: total 可为 "620 ms"；cache 段为 "cache N (P%)"；cancelled / failed / rejected 终止行仅作 task_end 兜底
+  // 变体: total 可为 "620 ms"，超过 1 分钟转复合 "1m 51.9s"；排队时多出 "| queue 1m 49.7s |" 段且 TTFT 含排队；
+  // cancelled / failed / rejected 终止行仅作 task_end 兜底
   const ninferDoneMatch = line.match(/\breq#(\d+)\s+done\b/i);
   const ninferEndMatch = ninferDoneMatch || line.match(/\breq#(\d+)\s+(?:cancelled|failed|rejected)\b/i);
   if (ninferEndMatch) {
@@ -164,8 +185,15 @@ export function parseInferenceLogFragments(line: string): LogTimingFragment[] {
       const promptMatch = line.match(/\bprompt\s+(\d+)\b/i);
       const outputMatch = line.match(/\boutput\s+(\d+)\b/i);
       const cacheMatch = line.match(/\bcache\s+(\d+)\s*\(([^)]*)\)/i);
-      const ttftMatch = line.match(/\bTTFT\s+([0-9.]+)\s*ms/i);
-      const totalMatch = line.match(/\btotal\s+([0-9.]+)\s*(ms|s)\b/i);
+      // 时长字段实测格式（ninfer-serve stderr）: "TTFT 65.5 ms" / "total 2.1s" / "total 620 ms"
+      // 超过 1 分钟的时长会转成复合格式 "1m 51.9s" / "11m 6.14s" —— 旧版单值正则必失配，导致墙钟回填虚高
+      const durationAfter = (keyword: string): number | undefined => {
+        const kw = line.match(new RegExp(`\\b${keyword}\\s+([^|]+)`, "i"));
+        return kw ? parseNinferDurationMs(kw[1]) : undefined;
+      };
+      const ttftMs = durationAfter("TTFT");
+      const totalTimeMs = durationAfter("total");
+      const queueMs = durationAfter("queue");
       const prefillMatch = line.match(/\bprefill\s+([0-9.]+)\s*tok\/s/i);
       const decodeMatch = line.match(/\bdecode\s+([0-9.]+)\s*tok\/s/i);
 
@@ -173,14 +201,11 @@ export function parseInferenceLogFragments(line: string): LogTimingFragment[] {
       const decodeTokens = outputMatch ? parseInt(outputMatch[1], 10) : undefined;
       const cachedTokens = cacheMatch ? parseInt(cacheMatch[1], 10) : 0;
       const cachePct = cacheMatch ? cacheMatch[2].match(/([0-9.]+)\s*%/) : null;
-      const ttftMs = ttftMatch ? parseFloat(ttftMatch[1]) : undefined;
       const prefillTps = prefillMatch ? parseFloat(prefillMatch[1]) : undefined;
       const decodeTps = decodeMatch ? parseFloat(decodeMatch[1]) : undefined;
-      let totalTimeMs: number | undefined;
-      if (totalMatch) {
-        const v = parseFloat(totalMatch[1]);
-        totalTimeMs = totalMatch[2].toLowerCase() === "s" ? Math.round(v * 1000) : Math.round(v);
-      }
+      // TTFT 含排队等待（实测 req#3: TTFT 1m49.8s = queue 1m49.7s + prefill 0.089s）；
+      // 纯 prefill 计算时间 = TTFT − queue（与 NInfer 官方平台"处理时间"口径一致）
+      const prefillComputeMs = ttftMs != null && queueMs != null ? Math.max(0, ttftMs - queueMs) : ttftMs;
 
       const cacheHitRatio = cachePct
         ? parseFloat(cachePct[1])
@@ -205,9 +230,16 @@ export function parseInferenceLogFragments(line: string): LogTimingFragment[] {
           type: "prefill",
           taskId: reqId,
           tokens: computedPrefill,
-          timeMs: ttftMs,
+          timeMs: prefillComputeMs,
           speed: prefillTps,
         });
+      }
+
+      if (ttftMs != null) {
+        fragments.push({ type: "ttft", taskId: reqId, timeMs: Math.round(ttftMs) });
+      }
+      if (queueMs != null) {
+        fragments.push({ type: "queue", taskId: reqId, timeMs: Math.round(queueMs) });
       }
 
       if (decodeTps != null || decodeTokens != null || decodeTimeMs != null) {
@@ -493,6 +525,10 @@ export class InferenceTracker {
   private lastCommittedTaskId: string | null = null;
   /** Ninfer /stats counters 差分基线：每次轮询刷新，用于把累计计数器换算为窗口内瞬时增量 */
   private ninferCounterBase: { at: number; decode: number | null; prefill: number | null; reused: number | null } | null = null;
+  /** 当前 NInfer 引擎实例 id（--request-log-jsonl 的 server_start 事件） */
+  private ninferInstanceId: string | null = null;
+  /** 引擎启动时间锚点（reset 时刻）：早于它的 JSONL 记录视为旧实例残留，直接忽略 */
+  private ninferLogSinceTs: number = 0;
 
   public hasActiveTurn(): boolean {
     return Boolean(this.current.id);
@@ -522,6 +558,7 @@ export class InferenceTracker {
             taskId: frag.taskId,
             lastUpdateAt: now,
             taskStartTime: now,
+            instanceId: this.ninferInstanceId ?? undefined,
           };
         }
       }
@@ -573,6 +610,11 @@ export class InferenceTracker {
         if (frag.tokens != null && this.current.decodeTokens == null) {
           this.current.decodeTokens = frag.tokens;
         }
+      } else if (frag.type === "ttft") {
+        // NInfer done 行的权威 TTFT（含排队等待）；覆盖 prefill 片段兜底设置的近似值
+        if (frag.timeMs != null) this.current.ttftMs = frag.timeMs;
+      } else if (frag.type === "queue") {
+        if (frag.timeMs != null) this.current.queueMs = frag.timeMs;
       } else if (frag.type === "generic_speed") {
         if (this.current.decodeTps == null && frag.speed != null) {
           this.current.decodeTps = frag.speed;
@@ -664,6 +706,7 @@ export class InferenceTracker {
         taskId: strTaskId,
         lastUpdateAt: now,
         taskStartTime: now,
+        instanceId: this.ninferInstanceId ?? undefined,
       };
     }
 
@@ -773,6 +816,7 @@ export class InferenceTracker {
       this.current.id = `inf-${now}-${Math.random().toString(36).slice(2, 6)}`;
       this.current.timestamp = now;
       this.current.taskStartTime = now;
+      this.current.instanceId = this.ninferInstanceId ?? undefined;
     }
 
     // 处理期间持续刷新心跳：即使计数器短暂无增量（长 prefill、排队等），
@@ -809,6 +853,98 @@ export class InferenceTracker {
 
     const snapshot = this.buildMetricsSnapshot();
     return { updated: true, latest: snapshot, isTurnFinished: false };
+  }
+
+  /**
+   * NInfer 原生 --request-log-jsonl 结构化记录合并（与 NInfer 官方监测平台同数据源）。
+   * request_done 事件携带全精度 timings / tokens / queue 指标，作为权威值覆盖 stderr 文本解析结果；
+   * server_start 事件用于锁定当前引擎实例 id（stderr 轮次据此打戳，引擎重启后互不串扰）。
+   */
+  public applyNinferRequestLog(records: unknown[]): { updated: boolean; latest: InferenceMetrics | null } {
+    let updated = false;
+    let latest: InferenceMetrics | null = null;
+    const num = (v: unknown): number | null => (typeof v === "number" && isFinite(v) ? v : null);
+    for (const rec of records) {
+      if (!rec || typeof rec !== "object") continue;
+      const r = rec as Record<string, any>;
+      const instanceId = typeof r.server_instance_id === "string" ? r.server_instance_id : undefined;
+      const ts = typeof r.timestamp_unix_ms === "number" ? r.timestamp_unix_ms : 0;
+      if (r.event === "server_start") {
+        if (instanceId) this.ninferInstanceId = instanceId;
+        continue;
+      }
+      if (r.event !== "request_done") continue; // request_start / throughput 记录暂不消费
+      // 轮转重读时旧实例残留记录直接忽略（允许 2s 时钟容差）
+      if (this.ninferLogSinceTs && ts && ts < this.ninferLogSinceTs - 2000) continue;
+      const req = r.request || {};
+      const res = r.result || {};
+      const t = r.timings_seconds || {};
+      const et = r.engine_timing || {};
+      const taskId = req.request_id != null ? String(req.request_id) : undefined;
+      if (!taskId) continue;
+      const ttftMs = num(t.ttft);
+      const totalMs = num(t.total);
+      const queueMs = num(et.queue_wait_seconds);
+      const decodeMs = num(t.decode);
+      const prefillMs = num(t.prefill);
+      const promptTokens = num(res.prompt_tokens);
+      const cachedTokens = num(res.prefix_cache_hit_tokens) ?? 0;
+      const decodeTokens = num(res.completion_tokens);
+      const thinkingTokens = num(res.model_thinking_tokens);
+      const computedPrefill = num(res.computed_prefill_tokens)
+        ?? (promptTokens != null ? Math.max(0, promptTokens - cachedTokens) : null);
+      const exact: Partial<InferenceMetrics> = {
+        taskId,
+        instanceId: instanceId ?? null,
+        promptTokens,
+        cachedTokens,
+        cacheHitRatio: promptTokens != null && promptTokens > 0 ? parseFloat(((cachedTokens / promptTokens) * 100).toFixed(1)) : null,
+        prefillTokens: computedPrefill,
+        prefillTimeMs: prefillMs != null ? Math.round(prefillMs * 1000) : null,
+        prefillTps: prefillMs != null && prefillMs > 0 && computedPrefill != null ? parseFloat((computedPrefill / prefillMs).toFixed(1)) : null,
+        ttftMs: ttftMs != null ? Math.round(ttftMs * 1000) : null,
+        queueMs: queueMs != null ? Math.round(queueMs * 1000) : null,
+        decodeTokens,
+        thinkingTokens,
+        decodeTimeMs: decodeMs != null ? Math.round(decodeMs * 1000) : null,
+        decodeTps: decodeMs != null && decodeMs > 0 && decodeTokens != null ? parseFloat((decodeTokens / decodeMs).toFixed(1)) : null,
+        totalTimeMs: totalMs != null ? Math.round(totalMs * 1000) : null,
+      };
+
+      // 1) 活跃轮次同实例同 taskId（或轮询兜底开的无 taskId 轮，开始时间早于本 done 记录）：
+      //    就地覆盖为权威值后立即归档（done 已落地），避免随后兜底归档出重复轮次
+      const currentMatches =
+        this.current.taskId === taskId && (this.current.instanceId == null || this.current.instanceId === instanceId)
+        || (this.current.taskId == null && this.current.taskStartTime != null && ts > 0 && this.current.taskStartTime <= ts);
+      if (currentMatches) {
+        this.current = { ...this.current, ...exact, timestamp: this.current.timestamp };
+        const finished = this.commitCurrent();
+        if (finished) {
+          updated = true;
+          latest = finished;
+        }
+        continue;
+      }
+      // 2) 已归档轮次（stderr 先建）：权威覆盖，保留原 id/timestamp（React key 稳定）
+      const idx = this.history.findIndex((h) => h.taskId === taskId && (h.instanceId == null || h.instanceId === instanceId));
+      if (idx >= 0) {
+        const prev = this.history[idx];
+        this.history[idx] = { ...prev, ...exact, timestamp: prev.timestamp, instanceId: prev.instanceId ?? exact.instanceId ?? null };
+        updated = true;
+        latest = this.history[idx];
+        continue;
+      }
+      // 3) stderr 完全没跟上的请求（日志级别关闭 / 中途接管）：补录为已完成轮次
+      const added: InferenceMetrics = {
+        id: `inf-jsonl-${instanceId ?? "x"}-${taskId}`,
+        timestamp: ts || Date.now(),
+        ...exact,
+      } as InferenceMetrics;
+      this.history = [added, ...this.history].slice(0, this.maxHistory);
+      updated = true;
+      latest = added;
+    }
+    return { updated, latest };
   }
 
   /**
@@ -867,6 +1003,8 @@ export class InferenceTracker {
     return {
       id: this.current.id || `inf-${Date.now()}`,
       timestamp: this.current.timestamp || Date.now(),
+      taskId: this.current.taskId,
+      instanceId: this.current.instanceId ?? null,
       decodeTps: this.current.decodeTps ?? null,
       decodeTokens: this.current.decodeTokens ?? null,
       decodeTimeMs: this.current.decodeTimeMs ?? null,
@@ -877,6 +1015,8 @@ export class InferenceTracker {
       promptTokens: promptCount,
       cacheHitRatio: ratio != null ? parseFloat(ratio.toFixed(1)) : null,
       ttftMs: this.current.ttftMs ?? this.current.prefillTimeMs ?? null,
+      queueMs: this.current.queueMs ?? null,
+      thinkingTokens: this.current.thinkingTokens ?? null,
       totalTimeMs: this.current.totalTimeMs ?? (
         (this.current.prefillTimeMs || 0) + (this.current.decodeTimeMs || 0) || null
       ),
@@ -915,6 +1055,8 @@ export class InferenceTracker {
     this.history = [];
     this.lastCommittedTaskId = null;
     this.ninferCounterBase = null;
+    this.ninferInstanceId = null;
+    this.ninferLogSinceTs = Date.now();
   }
 }
 

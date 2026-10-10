@@ -4,6 +4,7 @@ import { APP_VERSION } from "../data";
 import { useI18n } from "../i18n";
 import { cancelAppUpdate, downloadAppUpdate, installAppUpdate, onDownloadProgress, type DownloadProgress, type UpdateCheckResult } from "../tauri";
 import { formatBytes, formatMB } from "../utils";
+import ChangelogViewer from "./ChangelogViewer";
 
 type UpdatePhase = "info" | "download" | "ready" | "launch" | "error";
 
@@ -180,7 +181,7 @@ export default function AppUpdateDialog({ open, update, onClose }: { open: boole
                 <strong>{t("update.changelog")}</strong>
               </div>
               <div className="update-changelog-content">
-                <pre>{update.releaseNotes?.trim() || t("update.noChangelog")}</pre>
+                <ChangelogViewer content={update.releaseNotes?.trim() || t("update.noChangelog")} />
               </div>
             </div>
           </div>

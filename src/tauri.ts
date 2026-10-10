@@ -32,6 +32,12 @@ export async function getServerStatus(): Promise<ServerStatus> {
   return invoke<ServerStatus>("get_server_status");
 }
 
+/** NInfer --request-log-jsonl 增量记录（server_start / request_start / request_done）；llama.cpp 或未运行返回空 */
+export async function readNinferRequestLog(): Promise<unknown[]> {
+  if (!isTauri()) return [];
+  return invoke<unknown[]>("read_ninfer_request_log");
+}
+
 export interface OrphanProcessItem {
   pid: number;
   name: string;
@@ -425,6 +431,55 @@ export async function hfAvatar(author: string): Promise<string | null> {
 export async function hfDownload(repo: string, file: string, taskId: string): Promise<HfDownloadResult> {
   if (!isTauri()) throw new Error("仅 Tauri 桌面端可用");
   return invoke<HfDownloadResult>("hf_download", { repo, file, taskId });
+}
+
+/* ==================== 社区探索（魔塔社区 ModelScope） ==================== */
+
+/** 本周魔塔社区热门模型（支持格式筛选） */
+export async function msTrending(limit?: number, ggufOnly?: boolean, skip?: number, sort?: string, quants?: number[], formatFilter?: FormatFilter): Promise<HfModel[]> {
+  if (!isTauri()) return [];
+  const payload = {
+    ...(limit ? { limit } : {}),
+    ...(ggufOnly !== undefined ? { ggufOnly } : {}),
+    ...(formatFilter ? { formatFilter } : {}),
+    ...(skip ? { skip } : {}),
+    ...(sort ? { sort } : {}),
+    ...(quants && quants.length ? { quants } : {})
+  };
+  return invoke<HfModel[]>("ms_trending", payload);
+}
+
+/** 搜索魔塔社区模型（支持格式筛选） */
+export async function msSearch(query: string, limit?: number, ggufOnly?: boolean, skip?: number, sort?: string, quants?: number[], formatFilter?: FormatFilter): Promise<HfModel[]> {
+  if (!isTauri()) return [];
+  const payload = {
+    query,
+    ...(limit ? { limit } : {}),
+    ...(ggufOnly !== undefined ? { ggufOnly } : {}),
+    ...(formatFilter ? { formatFilter } : {}),
+    ...(skip ? { skip } : {}),
+    ...(sort ? { sort } : {}),
+    ...(quants && quants.length ? { quants } : {})
+  };
+  return invoke<HfModel[]>("ms_search", payload);
+}
+
+/** 列出魔塔社区仓库中的 .gguf 与 .ninfer 模型文件 */
+export async function msListFiles(repo: string): Promise<HfFile[]> {
+  if (!isTauri()) return [];
+  return invoke<HfFile[]>("ms_list_files", { repo });
+}
+
+/** 获取魔搭作者（组织 / 用户）头像，返回 data URI；拉不到时返回 null（前端回退 ModelScope 官方徽章） */
+export async function msAvatar(author: string): Promise<string | null> {
+  if (!isTauri()) return null;
+  return invoke<string | null>("ms_avatar", { author });
+}
+
+/** 从魔塔社区下载模型文件（流式 + 进度事件）；taskId 为前端生成的唯一任务标识 */
+export async function msDownload(repo: string, file: string, taskId: string): Promise<HfDownloadResult> {
+  if (!isTauri()) throw new Error("仅 Tauri 桌面端可用");
+  return invoke<HfDownloadResult>("ms_download", { repo, file, taskId });
 }
 
 /** 从任意直链下载模型文件（流式 + 进度事件）；taskId 为前端生成的唯一任务标识 */

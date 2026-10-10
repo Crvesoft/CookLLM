@@ -950,16 +950,19 @@ export default function InferenceInspector({
   const computePct = cachePct != null ? 100 - cachePct : null;
   const prefillMs = selected.prefillTimeMs && selected.prefillTimeMs > 0 ? selected.prefillTimeMs : null;
   const decodeMs = selected.decodeTimeMs && selected.decodeTimeMs > 0 ? selected.decodeTimeMs : null;
+  const queueMs = selected.queueMs != null && selected.queueMs > 0 ? selected.queueMs : null;
   const totalMs = selected.totalTimeMs && selected.totalTimeMs > 0
     ? selected.totalTimeMs
     : prefillMs != null && decodeMs != null ? prefillMs + decodeMs : null;
   const ttftMs = selected.ttftMs && selected.ttftMs > 0 ? selected.ttftMs : prefillMs;
-  const timed = (prefillMs ?? 0) + (decodeMs ?? 0);
-  const prefillPct = timed > 0 && prefillMs != null ? Math.round((prefillMs / timed) * 100) : null;
-  const decodePct = timed > 0 && decodeMs != null ? (prefillPct != null ? 100 - prefillPct : 100) : null;
+  // 耗时构成：排队（NInfer TTFT 含排队）+ Prefill 计算 + Decode，按三者之和归一化
+  const timed = (queueMs ?? 0) + (prefillMs ?? 0) + (decodeMs ?? 0);
+  const queuePct = queueMs != null && timed > 0 ? Math.round((queueMs / timed) * 100) : null;
+  const prefillPct = prefillMs != null && timed > 0 ? Math.round((prefillMs / timed) * 100) : null;
+  const decodePct = decodeMs != null && timed > 0 ? Math.max(0, 100 - (queuePct ?? 0) - (prefillPct ?? 0)) : null;
 
   const decodeSub = decodeTokens > 0
-    ? `${tokens(decodeTokens)} tok${decodeMs ? ` · ${duration(decodeMs)}` : ""}`
+    ? `${tokens(decodeTokens)} tok${decodeMs ? ` · ${duration(decodeMs)}` : ""}${selected.thinkingTokens != null && selected.thinkingTokens > 0 ? ` · ${t("perf.thinkingTokens", { n: tokens(selected.thinkingTokens) })}` : ""}`
     : prefillPhase ? t("perf.pending") : "";
   const prefillSub = prefillTokens > 0
     ? `${tokens(prefillTokens)} tok${prefillMs ? ` · ${duration(prefillMs)}` : ""}`
@@ -968,7 +971,13 @@ export default function InferenceInspector({
   const kpis: { key: string; value: string; name: string; sub: string }[] = [
     { key: "decode", value: selected.decodeTps != null ? `${speed(selected.decodeTps)} tok/s` : "—", name: "Decode", sub: decodeSub },
     { key: "prefill", value: selected.prefillTps != null ? `${speed(selected.prefillTps)} tok/s` : "—", name: "Prefill", sub: prefillSub },
-    { key: "ttft", value: ttftMs != null ? duration(ttftMs) : streaming ? t("perf.pending") : "—", name: "TTFT", sub: ttftMs != null ? t("perf.firstToken") : "" },
+    {
+      key: "ttft",
+      value: ttftMs != null ? duration(ttftMs) : streaming ? t("perf.pending") : "—",
+      name: "TTFT",
+      // NInfer 口径 TTFT 含排队：排队显著时直接在副标题量化，避免误读为模型慢
+      sub: ttftMs != null ? (queueMs != null ? t("perf.ttftWithQueue", { queue: duration(queueMs) }) : t("perf.firstToken")) : "",
+    },
     { key: "total", value: totalMs != null ? duration(totalMs) : "—", name: "Total", sub: totalMs != null ? t("perf.requestTime") : "" },
   ];
 
@@ -1053,6 +1062,14 @@ export default function InferenceInspector({
 
             <div className="inf-block inf-timing">
               <span className="inf-block-title">{t("perf.timing")}</span>
+              {queueMs != null && (
+                <div className="inf-time-row">
+                  <span>{t("perf.queue")}</span>
+                  <b>{duration(queueMs)}</b>
+                  <em>{queuePct != null ? `${queuePct}%` : ""}</em>
+                  <i aria-hidden="true"><span className="queue" style={{ width: `${queuePct ?? 0}%` }} /></i>
+                </div>
+              )}
               <div className="inf-time-row">
                 <span>Prefill</span>
                 <b>{duration(prefillMs)}</b>
@@ -1079,6 +1096,7 @@ export default function InferenceInspector({
                 <div><b>{sessionStats.avgDecodeTps ?? "—"}<small> tok/s</small></b><em>{t("perf.statDecode")}</em></div>
                 <div><b>{sessionStats.avgPrefillTps ?? "—"}<small> tok/s</small></b><em>{t("perf.statPrefill")}</em></div>
                 <div><b>{sessionStats.avgCacheHitRatio != null ? `${sessionStats.avgCacheHitRatio}%` : "—"}</b><em>{t("perf.statCache")}</em></div>
+                <div><b>{tokens(sessionStats.totalPromptTokens)}<small> tok</small></b><em>{t("perf.statPromptTokens")}</em></div>
                 <div><b>{tokens(sessionStats.totalTokens)}<small> tok</small></b><em>{t("perf.statTokens")}</em></div>
               </div>
             </div>
@@ -1140,6 +1158,14 @@ export default function InferenceInspector({
 
               <div className="inf-block inf-timing">
                 <span className="inf-block-title">{t("perf.timing")}</span>
+                {queueMs != null && (
+                  <div className="inf-time-row">
+                    <span>{t("perf.queue")}</span>
+                    <b>{duration(queueMs)}</b>
+                    <em>{queuePct != null ? `${queuePct}%` : ""}</em>
+                    <i aria-hidden="true"><span className="queue" style={{ width: `${queuePct ?? 0}%` }} /></i>
+                  </div>
+                )}
                 <div className="inf-time-row">
                   <span>Prefill</span>
                   <b>{duration(prefillMs)}</b>
@@ -1165,6 +1191,7 @@ export default function InferenceInspector({
                 <div><b>{sessionStats.avgDecodeTps ?? "—"}<small> tok/s</small></b><em>{t("perf.statDecode")}</em></div>
                 <div><b>{sessionStats.avgPrefillTps ?? "—"}<small> tok/s</small></b><em>{t("perf.statPrefill")}</em></div>
                 <div><b>{sessionStats.avgCacheHitRatio != null ? `${sessionStats.avgCacheHitRatio}%` : "—"}</b><em>{t("perf.statCache")}</em></div>
+                <div><b>{tokens(sessionStats.totalPromptTokens)}<small> tok</small></b><em>{t("perf.statPromptTokens")}</em></div>
                 <div><b>{tokens(sessionStats.totalTokens)}<small> tok</small></b><em>{t("perf.statTokens")}</em></div>
               </div>
             </div>

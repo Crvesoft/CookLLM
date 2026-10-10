@@ -174,9 +174,12 @@ export function HistoryDetailsTable({
                 ? item.totalTimeMs
                 : prefillMs != null && decodeMs != null ? prefillMs + decodeMs : null;
               const ttftMs = item.ttftMs && item.ttftMs > 0 ? item.ttftMs : prefillMs;
-              const timed = (prefillMs ?? 0) + (decodeMs ?? 0);
-              const prefillPct = timed > 0 ? Math.round(((prefillMs ?? 0) / timed) * 100) : null;
-              const decodePct = timed > 0 && prefillPct != null ? 100 - prefillPct : null;
+              // 耗时构成含排队（NInfer 口径 TTFT 含 queue，需单列出来才不被误读为 prefill/decode 慢）
+              const queueMs = item.queueMs != null && item.queueMs > 0 ? item.queueMs : null;
+              const timed = (queueMs ?? 0) + (prefillMs ?? 0) + (decodeMs ?? 0);
+              const queuePct = queueMs != null && timed > 0 ? Math.round((queueMs / timed) * 100) : null;
+              const prefillPct = timed > 0 && prefillMs != null ? Math.round((prefillMs / timed) * 100) : null;
+              const decodePct = timed > 0 && decodeMs != null ? Math.max(0, 100 - (queuePct ?? 0) - (prefillPct ?? 0)) : null;
 
               const promptTokens = item.promptTokens ?? ((item.prefillTokens ?? 0) + (item.cachedTokens ?? 0));
               const decodeTokens = item.decodeTokens ?? 0;
@@ -235,13 +238,22 @@ export function HistoryDetailsTable({
                     ) : "—"}
                   </td>
                   <td className="col-timing">
-                    {prefillPct != null && decodePct != null ? (
+                    {timed > 0 && (prefillPct != null || decodePct != null) ? (
                       <div className="inf-table-timing">
                         <div className="inf-timing-split-bar">
-                          <span className="prefill" style={{ width: `${prefillPct}%` }} title={`Prefill: ${prefillPct}%`} />
-                          <span className="decode" style={{ width: `${decodePct}%` }} title={`Decode: ${decodePct}%`} />
+                          {queuePct != null && queuePct > 0 && (
+                            <span className="queue" style={{ width: `${queuePct}%` }} title={`Queue: ${queuePct}%`} />
+                          )}
+                          {prefillPct != null && (
+                            <span className="prefill" style={{ width: `${prefillPct}%` }} title={`Prefill: ${prefillPct}%`} />
+                          )}
+                          {decodePct != null && (
+                            <span className="decode" style={{ width: `${decodePct}%` }} title={`Decode: ${decodePct}%`} />
+                          )}
                         </div>
-                        <small>{prefillPct}% / {decodePct}%</small>
+                        <small>
+                          {queuePct != null && queuePct > 0 ? `${queuePct}% / ` : ""}{prefillPct ?? 0}% / {decodePct ?? 0}%
+                        </small>
                       </div>
                     ) : "—"}
                   </td>
