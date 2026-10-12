@@ -1,4 +1,4 @@
-import { Activity, ChevronDown, ChevronUp, Copy, Check, SquareTerminal, Zap } from "lucide-react";
+import { Activity, ChevronDown, ChevronUp, Copy, Check, SquareTerminal, Zap, Box, SlidersHorizontal } from "lucide-react";
 import type React from "react";
 import { useI18n } from "../i18n";
 import { useEffect, useRef, useState } from "react";
@@ -15,6 +15,8 @@ interface LogDockProps {
   status: ServerStatus;
   /** 运行中的模型显示名，状态栏展示用 */
   modelName?: string;
+  /** 运行中的预设显示名，状态栏展示用 */
+  profileName?: string;
   /** 服务异常（启动失败 / 进程意外退出）：状态栏变红并提示查看日志 */
   abnormal: boolean;
   /** 最近一次从日志解析到的生成吞吐，可选展示 */
@@ -49,6 +51,7 @@ export default function LogDock({
   logs,
   status,
   modelName,
+  profileName,
   abnormal,
   tokPerSec,
   latestMetrics,
@@ -164,8 +167,13 @@ export default function LogDock({
   };
 
   // 状态栏基础文案：异常 > 运行中 > 未启动
-  const baseModelText = modelName || t("modelFallback");
-  const statusText = abnormal ? t("serviceAbnormal") : status.running ? `${baseModelText} · Running` : t("notStarted");
+  const baseModelText = modelName || status.modelName || t("modelFallback");
+  const currentProfileName = (profileName || status.profileName)?.trim();
+  const fullStatusTooltip = abnormal
+    ? t("serviceAbnormal")
+    : status.running
+      ? `${baseModelText}${currentProfileName ? ` (${currentProfileName})` : ""} · ${t("statusRunning")}`
+      : t("notStarted");
 
   return (
     <div className={cn("log-dock", open && "open", resizing && "resizing")} style={{ height: open ? height : 34 }}>
@@ -226,7 +234,28 @@ export default function LogDock({
       </div>
       <div className={cn("log-dock-bar", !abnormal && status.running && "running", abnormal && "abnormal")}>
         <div className="log-dock-bar-left">
-          <span className="log-dock-status"><i aria-hidden="true" />{statusText}</span>
+          <div className="log-dock-status" title={fullStatusTooltip}>
+            <i aria-hidden="true" />
+            {abnormal ? (
+              <span className="dock-status-state abnormal">{t("serviceAbnormal")}</span>
+            ) : status.running ? (
+              <div className="dock-running-group">
+                <span className="dock-model-chip" title={`${t("modelFallback")}: ${baseModelText}`}>
+                  <Box size={11} className="dock-model-icon" />
+                  <span className="dock-model-name">{baseModelText}</span>
+                </span>
+                {currentProfileName && (
+                  <span className="dock-profile-pill" title={`${t("launchProfile")}: ${currentProfileName}`}>
+                    <SlidersHorizontal size={10} className="dock-profile-icon" />
+                    <span className="dock-profile-tag">{t("dock.profileTag")}</span>
+                    <span className="dock-profile-name">{currentProfileName}</span>
+                  </span>
+                )}
+              </div>
+            ) : (
+              <span className="dock-status-state idle">{t("notStarted")}</span>
+            )}
+          </div>
 
           {activeEngineName && onOpenEnginePicker && (
             <button

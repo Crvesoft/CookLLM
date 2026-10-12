@@ -101,7 +101,11 @@ export function Topbar({ page, status, busy, onToggleService, models, modelId, o
                 <i className={cn("status-dot", busy ? "busy" : "idle")} aria-hidden="true" />
                 <select value={modelId} onChange={(e) => onSelectModel(e.target.value)} disabled={!models.length || busy}>
                   {!models.length && <option value="">{t("selectModel")}</option>}
-                  {models.map((item) => <option key={item.id} value={item.id}>{modelTitle(item)}</option>)}
+                  {models.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {modelTitle(item)}
+                    </option>
+                  ))}
                 </select>
               </label>
             )}

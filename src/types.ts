@@ -115,6 +115,20 @@ export interface Profile {
   seed?: number;
   /** ninfer 专属：CUDA Graph 驱动状态预留显存（--cuda-graph-allowance-mib MiB） */
   cudaGraphAllowanceMib?: number;
+  /** ninfer 专属：启用图片与视频输入（--vision） */
+  vision?: boolean;
+  /** ninfer 专属：快捷开启 CPU 视觉（--vision-cpu） */
+  visionCpu?: boolean;
+  /** ninfer 专属：视觉组件放置位置（--vision-residency，如 resident / overlay） */
+  visionResidency?: string;
+  /** ninfer 专属：每项媒体的视觉 token 上限（--vision-max-merged N，默认 16384；CPU 视觉建议 256） */
+  visionMaxMerged?: number;
+  /** ninfer 专属：已处理媒体缓存 MiB（--media-cache-mib MiB，默认 1024） */
+  mediaCacheMib?: number;
+  /** ninfer 专属：活跃媒体总预算 MiB（--media-live-mib MiB，默认 2048） */
+  mediaLiveMib?: number;
+  /** ninfer 专属：媒体预处理线程数（--media-preprocess-threads N，默认 0 自动） */
+  mediaPreprocessThreads?: number;
 }
 
 /** 托管的 llama.cpp / ninfer 引擎分支版本 */

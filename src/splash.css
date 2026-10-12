@@ -12,7 +12,7 @@ html, body {
   align-items: center;
   justify-content: center;
   gap: 18px;
-  background: radial-gradient(circle at 72% 0%, rgba(255, 107, 40, .10), transparent 29%), #f2f4f9;
+  background: radial-gradient(ellipse 60% 190px at 78% 270px, rgba(255, 107, 40, 0.035) 0%, rgba(255, 107, 40, 0.015) 50%, rgba(255, 107, 40, 0) 100%), #f2f4f9;
   font-family: Inter, "Noto Sans SC", system-ui, sans-serif;
 }
 
@@ -35,7 +35,7 @@ html, body {
 }
 
 [data-theme="dark"] #splash {
-  background: radial-gradient(circle at 72% 0%, rgba(255, 107, 40, .12), transparent 29%), #181818;
+  background: radial-gradient(ellipse 60% 190px at 78% 270px, rgba(255, 107, 40, 0.045) 0%, rgba(255, 107, 40, 0.02) 50%, rgba(255, 107, 40, 0) 100%), #181818;
 }
 
 [data-theme="dark"] #splash .title {

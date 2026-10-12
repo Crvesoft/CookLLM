@@ -409,10 +409,10 @@ export async function hfSearch(query: string, limit?: number, ggufOnly?: boolean
   return invoke<HfModel[]>("hf_search", payload);
 }
 
-/** 列出仓库 main 分支的 .gguf 与 .ninfer 模型文件 */
-export async function hfListFiles(repo: string): Promise<HfFile[]> {
+/** 列出仓库 main 分支的模型文件（支持按格式筛选） */
+export async function hfListFiles(repo: string, formatFilter?: FormatFilter): Promise<HfFile[]> {
   if (!isTauri()) return [];
-  return invoke<HfFile[]>("hf_list_files", { repo });
+  return invoke<HfFile[]>("hf_list_files", { repo, ...(formatFilter ? { formatFilter } : {}) });
 }
 
 /** 验证 Hugging Face Token（/whoami-v2），成功返回绑定的用户名 */
@@ -464,10 +464,10 @@ export async function msSearch(query: string, limit?: number, ggufOnly?: boolean
   return invoke<HfModel[]>("ms_search", payload);
 }
 
-/** 列出魔塔社区仓库中的 .gguf 与 .ninfer 模型文件 */
-export async function msListFiles(repo: string): Promise<HfFile[]> {
+/** 列出魔塔社区仓库中的模型文件（支持按格式筛选） */
+export async function msListFiles(repo: string, formatFilter?: FormatFilter): Promise<HfFile[]> {
   if (!isTauri()) return [];
-  return invoke<HfFile[]>("ms_list_files", { repo });
+  return invoke<HfFile[]>("ms_list_files", { repo, ...(formatFilter ? { formatFilter } : {}) });
 }
 
 /** 获取魔搭作者（组织 / 用户）头像，返回 data URI；拉不到时返回 null（前端回退 ModelScope 官方徽章） */

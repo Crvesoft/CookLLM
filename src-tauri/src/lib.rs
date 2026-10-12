@@ -10,7 +10,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 use tauri::{
-    menu::{Menu, MenuItem, PredefinedMenuItem},
+    menu::{Menu, MenuItem, PredefinedMenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent},
     webview::NewWindowResponse,
     AppHandle, Emitter, Manager, State,
@@ -166,6 +166,27 @@ struct Profile {
     /// ninfer 专属：CUDA Graph 驱动状态预留显存（--cuda-graph-allowance-mib MiB；NInfer 官方模板为 72）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     cuda_graph_allowance_mib: Option<u32>,
+    /// ninfer 专属：启用图片与视频输入（--vision）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vision: Option<bool>,
+    /// ninfer 专属：快捷开启 CPU 视觉（--vision-cpu）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vision_cpu: Option<bool>,
+    /// ninfer 专属：视觉组件放置位置（--vision-residency，如 resident / overlay）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vision_residency: Option<String>,
+    /// ninfer 专属：每项媒体的视觉 token 上限（--vision-max-merged N）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    vision_max_merged: Option<u32>,
+    /// ninfer 专属：已处理媒体缓存 MiB（--media-cache-mib MiB）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    media_cache_mib: Option<u32>,
+    /// ninfer 专属：活跃媒体总预算 MiB（--media-live-mib MiB）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    media_live_mib: Option<u32>,
+    /// ninfer 专属：媒体预处理线程数（--media-preprocess-threads N）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    media_preprocess_threads: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -340,6 +361,13 @@ impl Default for AppConfig {
                 top_k: None,
                 seed: None,
                 cuda_graph_allowance_mib: None,
+                vision: None,
+                vision_cpu: None,
+                vision_residency: None,
+                vision_max_merged: None,
+                media_cache_mib: None,
+                media_live_mib: None,
+                media_preprocess_threads: None,
             }],
             theme: None,
             custom_tags: Vec::new(),
@@ -806,16 +834,32 @@ fn save_config(app: AppHandle, config: AppConfig) -> Result<(), String> {
         return Err(error.to_string());
     }
     let _ = fs::remove_file(&backup);
+    update_tray_status(&app, None);
     Ok(())
 }
 
 fn update_tray_status(app: &AppHandle, running_model: Option<&str>) {
+    let active_name = if running_model.is_some() {
+        running_model.map(|s| s.to_string())
+    } else {
+        let state = app.try_state::<ProcessState>();
+        if let Some(state) = state {
+            let guard = state.0.lock().ok();
+            guard.and_then(|g| g.as_ref().and_then(|m| m.status.model_name.clone()))
+                 .filter(|name| !name.is_empty())
+        } else {
+            None
+        }
+    };
     if let Some(tray) = app.tray_by_id("main-tray") {
-        let tooltip = match running_model {
+        let tooltip = match active_name.as_deref() {
             Some(name) => format!("CookLLM · 运行中: {}", name),
             None => "CookLLM · 本地大模型管理器".to_string(),
         };
         let _ = tray.set_tooltip(Some(tooltip));
+        if let Ok(menu) = build_tray_menu(app, active_name.as_deref()) {
+            let _ = tray.set_menu(Some(menu));
+        }
     }
 }
 
@@ -825,7 +869,11 @@ static PROCESS_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
 
 #[tauri::command]
 fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, profile_id: String) -> Result<ServerStatus, String> {
-    let config = read_config(&app)?;
+    start_server_internal(&app, &state, &model_id, &profile_id)
+}
+
+fn start_server_internal(app: &AppHandle, state: &ProcessState, model_id: &str, profile_id: &str) -> Result<ServerStatus, String> {
+    let config = read_config(app)?;
     let model = config.models.iter().find(|item| item.id == model_id).cloned().ok_or("未找到模型配置")?;
     let profile = model.profiles.iter().find(|item| item.id == profile_id)
         .or_else(|| config.profiles.iter().find(|item| item.id == profile_id))
@@ -1102,6 +1150,56 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
             }
         }
 
+        // 12.5 图片与视频 / 视觉多模态 (NInfer 原生视觉组件)
+        let is_vision_enabled = profile.vision.unwrap_or(false)
+            || profile.vision_cpu.unwrap_or(false)
+            || has_extra_arg("--vision")
+            || has_extra_arg("--vision-cpu");
+
+        if is_vision_enabled && !has_extra_arg("--vision") {
+            command.arg("--vision");
+        }
+
+        if is_vision_enabled {
+            let is_vision_cpu = profile.vision_cpu.unwrap_or(false);
+            if is_vision_cpu && !has_extra_arg("--vision-cpu") {
+                command.arg("--vision-cpu");
+            }
+
+            if let Some(ref residency) = profile.vision_residency {
+                let r = residency.trim();
+                if !r.is_empty() && !has_extra_arg("--vision-residency") {
+                    command.arg("--vision-residency").arg(r);
+                }
+            }
+
+            if let Some(max_merged) = profile.vision_max_merged {
+                if max_merged > 0 && !has_extra_arg("--vision-max-merged") {
+                    command.arg("--vision-max-merged").arg(max_merged.to_string());
+                }
+            } else if is_vision_cpu && !has_extra_arg("--vision-max-merged") {
+                command.arg("--vision-max-merged").arg("256");
+            }
+
+            if let Some(cache_mib) = profile.media_cache_mib {
+                if !has_extra_arg("--media-cache-mib") {
+                    command.arg("--media-cache-mib").arg(cache_mib.to_string());
+                }
+            }
+
+            if let Some(live_mib) = profile.media_live_mib {
+                if live_mib > 0 && !has_extra_arg("--media-live-mib") {
+                    command.arg("--media-live-mib").arg(live_mib.to_string());
+                }
+            }
+
+            if let Some(threads) = profile.media_preprocess_threads {
+                if threads > 0 && !has_extra_arg("--media-preprocess-threads") {
+                    command.arg("--media-preprocess-threads").arg(threads.to_string());
+                }
+            }
+        }
+
         // 13. 用户自定义参数
         if !extra_tokens.is_empty() {
             command.args(&extra_tokens);
@@ -1245,22 +1343,26 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
         *guard = Some(ManagedProcess { child, status: status.clone(), request_log: ninfer_request_log_tail });
     }
     drop(lifecycle);
-    update_tray_status(&app, Some(&model_display_name));
+    update_tray_status(app, Some(&model_display_name));
     Ok(status)
 }
 
 #[tauri::command]
 fn stop_server(app: AppHandle, state: State<ProcessState>) -> Result<ServerStatus, String> {
+    stop_server_internal(&app, &state)
+}
+
+fn stop_server_internal(app: &AppHandle, state: &ProcessState) -> Result<ServerStatus, String> {
     let lifecycle = PROCESS_LIFECYCLE_LOCK.lock().map_err(|_| "进程生命周期锁已损坏")?;
     let managed = { state.0.lock().map_err(|_| "进程状态锁已损坏")?.take() };
     if let Some(mut managed) = managed {
         kill_managed_child(&mut managed);
-        emit_log(&app, "system", "llama-server 已停止");
+        emit_log(app, "system", "llama-server 已停止");
     } else {
-        emit_log(&app, "system", "llama-server 未在运行");
+        emit_log(app, "system", "llama-server 未在运行");
     }
     drop(lifecycle);
-    update_tray_status(&app, None);
+    update_tray_status(app, None);
     Ok(ServerStatus::default())
 }
 
@@ -2896,11 +2998,151 @@ fn configure_main_window(app: &mut tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
+fn build_tray_menu(app: &AppHandle, running_model: Option<&str>) -> tauri::Result<Menu<tauri::Wry>> {
+    let menu = Menu::new(app)?;
+
+    let config = read_config(app).ok();
+    let models = config.as_ref().map(|c| c.models.as_slice()).unwrap_or_default();
+
+    // 1. 服务状态项 (只读指示)
+    let status_text = match running_model {
+        Some(name) => {
+            let format_tag = models
+                .iter()
+                .find(|m| {
+                    let dname = m
+                        .display_name
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or(m.name.as_str());
+                    dname == name || m.name == name
+                })
+                .map(|m| {
+                    let is_ninfer = m.path.to_lowercase().ends_with(".ninfer")
+                        || m.architecture.to_uppercase() == "NINFER";
+                    if is_ninfer { "[Ninfer] " } else { "[GGUF] " }
+                })
+                .unwrap_or("");
+            format!("🟢 运行中: {}{}", format_tag, name)
+        }
+        None => "⚪ 服务未运行".to_string(),
+    };
+    let status_item = MenuItem::with_id(app, "status_label", &status_text, false, None::<&str>)?;
+    menu.append(&status_item)?;
+
+    let sep1 = PredefinedMenuItem::separator(app)?;
+    menu.append(&sep1)?;
+
+    // 2. 启停控制（服务运行中显示停止与打开 WebUI）
+    if running_model.is_some() {
+        let stop_item = MenuItem::with_id(app, "stop_service", "⏹ 停止服务", true, None::<&str>)?;
+        menu.append(&stop_item)?;
+
+        let webui_item = MenuItem::with_id(app, "open_webui", "🌐 打开会话界面 (WebUI)", true, None::<&str>)?;
+        menu.append(&webui_item)?;
+    }
+
+    // 3. 启动模型（子菜单）
+    let start_submenu = Submenu::new(app, "▶ 启动模型", true)?;
+    if models.is_empty() {
+        let empty_item = MenuItem::with_id(app, "no_models", "暂无可用模型 (请先导入)", false, None::<&str>)?;
+        start_submenu.append(&empty_item)?;
+    } else {
+        for model in models {
+            let display_name = model
+                .display_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .unwrap_or(model.name.as_str());
+            let is_ninfer = model.path.to_lowercase().ends_with(".ninfer")
+                || model.architecture.to_uppercase() == "NINFER";
+            let format_tag = if is_ninfer { "[Ninfer]" } else { "[GGUF]" };
+            let is_current = running_model.map(|cur| cur == display_name).unwrap_or(false);
+            let label = if is_current {
+                format!("✓ {} {}", format_tag, display_name)
+            } else {
+                format!("{} {}", format_tag, display_name)
+            };
+            let item_id = format!("start_model:{}", model.id);
+            let item = MenuItem::with_id(app, &item_id, &label, !is_current, None::<&str>)?;
+            start_submenu.append(&item)?;
+        }
+    }
+    menu.append(&start_submenu)?;
+
+    let sep2 = PredefinedMenuItem::separator(app)?;
+    menu.append(&sep2)?;
+
+    // 4. 窗口控制
+    let show_item = MenuItem::with_id(app, "show", "显示 CookLLM 窗口", true, None::<&str>)?;
+    menu.append(&show_item)?;
+
+    let sep3 = PredefinedMenuItem::separator(app)?;
+    menu.append(&sep3)?;
+
+    // 5. 退出
+    let quit_item = MenuItem::with_id(app, "quit", "❌ 退出 CookLLM", true, None::<&str>)?;
+    menu.append(&quit_item)?;
+
+    Ok(menu)
+}
+
+fn handle_tray_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
+    let id = event.id.as_ref();
+    match id {
+        "show" => {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }
+        "stop_service" => {
+            let state = app.state::<ProcessState>();
+            let _ = stop_server_internal(app, &state);
+        }
+        "open_webui" => {
+            let state = app.state::<ProcessState>();
+            let port = {
+                let guard = state.0.lock().ok();
+                guard.and_then(|g| g.as_ref().and_then(|m| m.status.port)).unwrap_or(8080)
+            };
+            let _ = open_url(app.clone(), format!("http://127.0.0.1:{}", port));
+        }
+        "quit" => {
+            app.exit(0);
+        }
+        s if s.starts_with("start_model:") => {
+            let model_id = &s["start_model:".len()..];
+            if let Ok(config) = read_config(app) {
+                if let Some(model) = config.models.iter().find(|m| m.id == model_id) {
+                    let profile_id = if config.preferred_model_id.as_deref() == Some(model_id) && config.preferred_profile_id.is_some() {
+                        config.preferred_profile_id.clone().unwrap()
+                    } else if let Some(p) = model.profiles.first() {
+                        p.id.clone()
+                    } else if let Some(p) = config.profiles.first() {
+                        p.id.clone()
+                    } else {
+                        String::new()
+                    };
+                    if !profile_id.is_empty() {
+                        let state = app.state::<ProcessState>();
+                        if let Err(err) = start_server_internal(app, &state, model_id, &profile_id) {
+                            emit_log(app, "stderr", &format!("托盘启动服务失败: {}", err));
+                        }
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
-    let show_item = MenuItem::with_id(app, "show", "显示 CookLLM", true, None::<&str>)?;
-    let separator = PredefinedMenuItem::separator(app)?;
-    let quit_item = MenuItem::with_id(app, "quit", "退出 CookLLM", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&show_item, &separator, &quit_item])?;
+    let handle = app.handle().clone();
+    let menu = build_tray_menu(&handle, None)?;
 
     let icon = app.default_window_icon().cloned();
 
@@ -2909,19 +3151,7 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| {
-            match event.id.as_ref() {
-                "show" => {
-                    if let Some(window) = app.get_webview_window("main") {
-                        let _ = window.show();
-                        let _ = window.unminimize();
-                        let _ = window.set_focus();
-                    }
-                }
-                "quit" => {
-                    app.exit(0);
-                }
-                _ => {}
-            }
+            handle_tray_menu_event(app, event);
         })
         .on_tray_icon_event(|tray, event| {
             if let TrayIconEvent::Click {
@@ -3695,9 +3925,15 @@ async fn hf_search(app: AppHandle, query: String, limit: Option<usize>, gguf_onl
     .map_err(|error| format!("搜索任务中断：{}", error))?
 }
 
-/// 列出仓库 main 分支的 .gguf 与 .ninfer 模型文件（递归，按文件名排序）。
+/// 列出仓库 main 分支的文件列表（递归，按文件名排序）；
+/// format_filter 为 "gguf" 时仅保留 .gguf，为 "ninfer" 时仅保留 .ninfer，
+/// 为 "all" 或 None 时不按格式过滤（仅保留普通文件，排除目录）。
 #[tauri::command]
-async fn hf_list_files(app: AppHandle, repo: String) -> Result<Vec<HuggingFaceFile>, String> {
+async fn hf_list_files(
+    app: AppHandle,
+    repo: String,
+    format_filter: Option<String>,
+) -> Result<Vec<HuggingFaceFile>, String> {
     let config = read_config(&app)?;
     let network = config.network.clone().unwrap_or_default();
     tauri::async_runtime::spawn_blocking(move || {
@@ -3706,6 +3942,7 @@ async fn hf_list_files(app: AppHandle, repo: String) -> Result<Vec<HuggingFaceFi
         let url = format!("{}/models/{}/tree/main?recursive=true&expand=false", HF_API_BASE, base);
         let value = fetch_hf_json(&client, &url)?;
         let items = value.as_array().ok_or("HuggingFace API 返回格式异常")?;
+        let filter_mode = format_filter.as_deref().unwrap_or("all").trim().to_lowercase();
         let mut files: Vec<HuggingFaceFile> = items
             .iter()
             .filter_map(|item| {
@@ -3715,8 +3952,20 @@ async fn hf_list_files(app: AppHandle, repo: String) -> Result<Vec<HuggingFaceFi
                 }
                 let name = item.get("path").and_then(|value| value.as_str())?;
                 let lower = name.to_lowercase();
-                if !lower.ends_with(".gguf") && !lower.ends_with(".ninfer") {
-                    return None;
+                match filter_mode.as_str() {
+                    "gguf" => {
+                        if !lower.ends_with(".gguf") {
+                            return None;
+                        }
+                    }
+                    "ninfer" => {
+                        if !lower.ends_with(".ninfer") {
+                            return None;
+                        }
+                    }
+                    _ => {
+                        // "all" 或其他：不过滤文件扩展名
+                    }
                 }
                 let size = item.get("size").and_then(|value| value.as_u64()).unwrap_or(0);
                 Some(HuggingFaceFile { name: name.to_string(), size_bytes: size })
@@ -3778,9 +4027,15 @@ async fn ms_search(
     .map_err(|error| format!("魔塔社区搜索任务中断：{}", error))?
 }
 
-/// 列出魔塔社区仓库中的 .gguf 与 .ninfer 模型文件（递归，按文件名排序）。
+/// 列出魔塔社区仓库中的文件列表（递归，按文件名排序）；
+/// format_filter 为 "gguf" 时仅保留 .gguf，为 "ninfer" 时仅保留 .ninfer，
+/// 为 "all" 或 None 时不按格式过滤（排除目录）。
 #[tauri::command]
-async fn ms_list_files(app: AppHandle, repo: String) -> Result<Vec<HuggingFaceFile>, String> {
+async fn ms_list_files(
+    app: AppHandle,
+    repo: String,
+    format_filter: Option<String>,
+) -> Result<Vec<HuggingFaceFile>, String> {
     let config = read_config(&app)?;
     let network = config.network.clone().unwrap_or_default();
     tauri::async_runtime::spawn_blocking(move || {
@@ -3790,13 +4045,31 @@ async fn ms_list_files(app: AppHandle, repo: String) -> Result<Vec<HuggingFaceFi
         let value = fetch_ms_json(&client, &url)?;
         let files_array = value.get("Data").and_then(|d| d.get("Files")).and_then(|f| f.as_array())
             .ok_or_else(|| "魔塔社区返回文件列表格式异常".to_string())?;
+        let filter_mode = format_filter.as_deref().unwrap_or("all").trim().to_lowercase();
         let mut files: Vec<HuggingFaceFile> = files_array
             .iter()
             .filter_map(|item| {
+                // 排除目录（ModelScope 中 Type 为 "tree" 的是目录，"blob" 是文件）
+                let item_type = item.get("Type").and_then(|v| v.as_str()).unwrap_or("");
+                if item_type == "tree" {
+                    return None;
+                }
                 let path = item.get("Path").and_then(|v| v.as_str()).or_else(|| item.get("Name").and_then(|v| v.as_str()))?;
                 let lower = path.to_lowercase();
-                if !lower.ends_with(".gguf") && !lower.ends_with(".ninfer") {
-                    return None;
+                match filter_mode.as_str() {
+                    "gguf" => {
+                        if !lower.ends_with(".gguf") {
+                            return None;
+                        }
+                    }
+                    "ninfer" => {
+                        if !lower.ends_with(".ninfer") {
+                            return None;
+                        }
+                    }
+                    _ => {
+                        // "all" 或其他：不过滤文件扩展名
+                    }
                 }
                 let size_bytes = item.get("Size").and_then(|v| v.as_u64()).unwrap_or(0);
                 Some(HuggingFaceFile {

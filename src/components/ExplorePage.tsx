@@ -272,23 +272,54 @@ interface FileRowProps {
   onCancel?: (file: HfFile) => void;
 }
 
+function fileFormatBadge(name: string, t: ReturnType<typeof useI18n>["t"]) {
+  const lower = name.toLowerCase();
+  if (lower.endsWith(".gguf")) {
+    return {
+      className: "gguf",
+      text: "GGUF",
+      title: t("models.formatGgufTitle"),
+    };
+  }
+  if (lower.endsWith(".ninfer")) {
+    return {
+      className: "ninfer",
+      text: "NINFER",
+      title: t("models.formatNinferTitle"),
+    };
+  }
+  if (lower.endsWith(".safetensors")) {
+    return {
+      className: "safetensors",
+      text: "SAFE",
+      title: "Safetensors 权重文件",
+    };
+  }
+  const extMatch = lower.match(/\.([a-z0-9]{1,6})$/);
+  const ext = extMatch ? extMatch[1].toUpperCase() : "FILE";
+  return {
+    className: "other",
+    text: ext,
+    title: `${ext} 文件`,
+  };
+}
+
 function FileRow({ file, progress, disabled, queued, preferred, onDownload, onCancel }: FileRowProps) {
   const { t } = useI18n();
   const active = progress !== undefined && progress.phase !== "paused" && progress.phase !== "cancelled" && progress.phase !== "error";
   const quant = quantBadge(file.name);
   const speed = active ? humanSpeed(progress.speedBps) : "";
-
-  const isNinfer = file.name.toLowerCase().endsWith(".ninfer");
+  const fmt = fileFormatBadge(file.name, t);
 
   return (
     <div className={cn("hf-file-row", preferred && "hf-file-row-preferred", active && "downloading")}>
       <div className="hf-file-main">
         {preferred && <Star size={12} className="hf-file-star" fill="currentColor" />}
         <span
-          className={cn("hf-file-format-badge", isNinfer ? "ninfer" : "gguf")}
-          title={isNinfer ? t("models.formatNinferTitle") : t("models.formatGgufTitle")}
+          className={cn("hf-file-format-badge", fmt.className)}
+          title={fmt.title}
         >
-          {isNinfer ? "NINFER" : "GGUF"}
+          {fmt.text}
         </span>
         {quant && <span className={cn("hf-quant-badge", preferred && "preferred")}>{quant}</span>}
         <span className="hf-file-quant" title={file.name}>{fileName(file.name)}</span>
@@ -445,10 +476,19 @@ const ModelRow = memo(function ModelRow({ model, preferredQuant, rank, onViewFil
   const isGguf = Boolean(
     model.id.toLowerCase().includes("gguf") ||
     model.name?.toLowerCase().includes("gguf") ||
-    model.tags?.some((tag) => tag.toLowerCase().includes("gguf")) ||
-    (!isNinfer)
+    model.tags?.some((tag) => tag.toLowerCase().includes("gguf"))
   );
-  const formatLabel = isNinfer && isGguf ? "GGUF · NINFER" : isNinfer ? "NINFER" : "GGUF";
+  const isSafetensors = Boolean(
+    model.id.toLowerCase().includes("safetensors") ||
+    model.name?.toLowerCase().includes("safetensors") ||
+    model.tags?.some((tag) => tag.toLowerCase().includes("safetensors"))
+  );
+
+  const formatLabels: string[] = [];
+  if (isGguf) formatLabels.push("GGUF");
+  if (isNinfer) formatLabels.push("NINFER");
+  if (isSafetensors && !isGguf && !isNinfer) formatLabels.push("Safetensors");
+  const formatLabel = formatLabels.join(" · ");
 
   const metaBits = [
     updated ? t("explore.metaUpdated", { date: updated }) : "",
@@ -471,6 +511,7 @@ const ModelRow = memo(function ModelRow({ model, preferredQuant, rank, onViewFil
             <strong title={model.id}>{model.id}</strong>
             {isGguf && <span className="hf-format-pill gguf" title={t("models.formatGgufTitle")}>GGUF</span>}
             {isNinfer && <span className="hf-format-pill ninfer" title={t("models.formatNinferTitle")}>NINFER</span>}
+            {isSafetensors && !isGguf && !isNinfer && <span className="hf-format-pill safetensors" title="Safetensors 格式">SAFE</span>}
             {preferredQuant && <span className="hf-quant-badge preferred" title={t("explore.quantPreferred", { quant: quant || "" })}><Star size={10} fill="currentColor" />{quant}</span>}
             {parameter && <span className="hf-param-badge" title={t("explore.facetParams")}>{parameter}</span>}
             {quant && !preferredQuant && <span className="hf-quant-badge" title={t("explore.facetQuant")}>{quant}</span>}
@@ -544,8 +585,8 @@ function FileModal({ model, files, filesLoading, filesError, preferredBits, disk
       <section className="file-modal">
         <header>
           <div className="file-modal-head">
-            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-              <strong>{model.id}</strong>
+            <div className="file-modal-title">
+              <strong title={model.id}>{model.id}</strong>
               <button
                 className="hf-model-link"
                 type="button"
@@ -564,7 +605,7 @@ function FileModal({ model, files, filesLoading, filesError, preferredBits, disk
           <button className="ghost-icon" title={t("ariaClose")} onClick={onClose}><X size={18} /></button>
         </header>
         <div className="file-modal-path">
-          <span><FolderOpen size={14} />{diskUsage?.path ?? t("explore.storageDir")}{diskUsage ? " · " + t("explore.storageFree", { free: formatBytes(diskUsage.freeBytes) }) : ""}</span>
+          <span title={diskUsage?.path ?? t("explore.storageDir")}><FolderOpen size={14} />{diskUsage?.path ?? t("explore.storageDir")}{diskUsage ? " · " + t("explore.storageFree", { free: formatBytes(diskUsage.freeBytes) }) : ""}</span>
           <button className="secondary-button compact" onClick={() => void onPickModelsDir()}><FolderOpen size={13} />{t("explore.changeDir")}</button>
         </div>
         <div className="file-modal-body">
@@ -983,16 +1024,17 @@ export default function ExplorePage(props: Props) {
   openFilesRef.current = (model: HfModel) => {
     setModalModel(model);
     const isMs = model.source === "ms";
-    if (filesMap[model.id] === undefined && !filesLoading[model.id]) {
-      setFilesLoading((previous) => ({ ...previous, [model.id]: true }));
-      setFilesError((previous) => ({ ...previous, [model.id]: null }));
-      const fetchPromise = isMs ? msListFiles(model.id) : hfListFiles(model.id);
+    const cacheKey = `${model.id}::${formatFilter}`;
+    if (filesMap[cacheKey] === undefined && !filesLoading[cacheKey]) {
+      setFilesLoading((previous) => ({ ...previous, [cacheKey]: true }));
+      setFilesError((previous) => ({ ...previous, [cacheKey]: null }));
+      const fetchPromise = isMs ? msListFiles(model.id, formatFilter) : hfListFiles(model.id, formatFilter);
       void fetchPromise.then((result) => {
-        setFilesMap((previous) => ({ ...previous, [model.id]: result }));
+        setFilesMap((previous) => ({ ...previous, [cacheKey]: result }));
       }).catch((err) => {
-        setFilesError((previous) => ({ ...previous, [model.id]: err instanceof Error ? err.message : String(err) }));
+        setFilesError((previous) => ({ ...previous, [cacheKey]: err instanceof Error ? err.message : String(err) }));
       }).finally(() => {
-        setFilesLoading((previous) => ({ ...previous, [model.id]: false }));
+        setFilesLoading((previous) => ({ ...previous, [cacheKey]: false }));
       });
     }
   };
@@ -2015,9 +2057,9 @@ export default function ExplorePage(props: Props) {
   {modalModel && (
     <FileModal
       model={modalModel}
-      files={filesMap[modalModel.id] ?? null}
-      filesLoading={!!filesLoading[modalModel.id]}
-      filesError={filesError[modalModel.id] ?? null}
+      files={filesMap[`${modalModel.id}::${formatFilter}`] ?? null}
+      filesLoading={!!filesLoading[`${modalModel.id}::${formatFilter}`]}
+      filesError={filesError[`${modalModel.id}::${formatFilter}`] ?? null}
       preferredBits={quantPreferredBits}
       diskUsage={props.diskUsage}
       progressMap={props.progressMap}

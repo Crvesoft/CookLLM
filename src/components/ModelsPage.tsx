@@ -181,8 +181,12 @@ function ModelCard({ model, profiles, selectedProfileId, isDefaultModel, isRunni
       >
         {model.quantization}
       </span>
-      {model.architecture && model.architecture.toUpperCase() !== "GGUF" && <span>{model.architecture}</span>}
       {hasMmproj && <span title={mmprojTitle}>{isMmprojRam ? "mmproj·RAM" : "mmproj"}</span>}
+      {isNinfer && selected?.vision && (
+        <span title={selected.visionCpu ? "--vision --vision-cpu" : "--vision"}>
+          {selected.visionCpu ? "Vision·CPU" : "Vision"}
+        </span>
+      )}
       {model.tags?.map((tag) => (
         <span
           key={tag}
@@ -257,8 +261,12 @@ function ModelRow({ model, profiles, selectedProfileId, isDefaultModel, isRunnin
         >
           {model.quantization}
         </span>
-        {model.architecture && model.architecture.toUpperCase() !== "GGUF" && <span>{model.architecture}</span>}
         {hasMmproj && <span title={mmprojTitle}>{isMmprojRam ? "mmproj·RAM" : "mmproj"}</span>}
+        {isNinfer && selected?.vision && (
+          <span title={selected.visionCpu ? "--vision --vision-cpu" : "--vision"}>
+            {selected.visionCpu ? "Vision·CPU" : "Vision"}
+          </span>
+        )}
         {model.tags?.map((tag) => (
           <span
             key={tag}

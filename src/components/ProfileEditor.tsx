@@ -1,4 +1,4 @@
-import { Cpu, FolderOpen, HelpCircle, Info, Save, SlidersHorizontal, Star, X, Zap } from "lucide-react";
+import { Cpu, FolderOpen, HelpCircle, Save, SlidersHorizontal, Star, X, Zap } from "lucide-react";
 import { useI18n } from "../i18n";
 import { useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { pickFiles } from "../tauri";
@@ -18,19 +18,21 @@ const NINFER_REASONING_EFFORTS = ["high", "xhigh", "medium", "low", "minimal", "
 type ToggleFieldProps = {
   label: string;
   hint?: string;
+  tooltip?: string;
   checked: boolean;
   onChange: (next: boolean) => void;
   icon?: ReactNode;
   disabled?: boolean;
 };
 
-function ToggleField({ label, hint, checked, onChange, icon, disabled }: ToggleFieldProps) {
+function ToggleField({ label, hint, tooltip, checked, onChange, icon, disabled }: ToggleFieldProps) {
+  const titleText = tooltip ? (hint ? `${hint} · ${tooltip}` : tooltip) : hint;
   return (
     <button
       type="button"
       className={cn("toggle-row", checked && "enabled", disabled && "disabled")}
       aria-pressed={checked}
-      title={hint}
+      title={titleText}
       disabled={disabled}
       onClick={() => !disabled && onChange(!checked)}
     >
@@ -130,6 +132,34 @@ export default function ProfileEditor({
       if (draft.mtpDraftPath == null) update("mtpDraftPath", "");
     }
   };
+
+  const toggleVision = (next: boolean) => {
+    setDraft((cur) => {
+      const nextDraft = { ...cur, vision: next };
+      if (!next) {
+        nextDraft.visionCpu = false;
+      }
+      return nextDraft;
+    });
+  };
+
+  const toggleVisionCpu = (next: boolean) => {
+    setDraft((cur) => {
+      const nextDraft = { ...cur, visionCpu: next };
+      if (next) {
+        nextDraft.vision = true;
+        if (nextDraft.visionMaxMerged === undefined || nextDraft.visionMaxMerged === 16384) {
+          nextDraft.visionMaxMerged = 256;
+        }
+      } else {
+        if (nextDraft.visionMaxMerged === 256) {
+          nextDraft.visionMaxMerged = 16384;
+        }
+      }
+      return nextDraft;
+    });
+  };
+
 
   const attachMmproj = async () => {
     setVisionError(null);
@@ -506,15 +536,92 @@ export default function ProfileEditor({
               )}
             </div>
           </div>
-          {!isNinfer && (
-            <div className="form-section">
-              <div className="form-section-title">
-                <span>06</span>
-                <div>
-                  <h3>{t("ed.s6Title")}</h3>
-                  <p>{t("ed.s6Desc")}</p>
-                </div>
+          <div className="form-section">
+            <div className="form-section-title">
+              <span>06</span>
+              <div>
+                <h3>{isNinfer ? t("ed.s6TitleNinfer") : t("ed.s6Title")}</h3>
+                <p>{isNinfer ? t("ed.s6DescNinfer") : t("ed.s6Desc")}</p>
               </div>
+            </div>
+            {isNinfer ? (
+              <div className="form-grid two">
+                {/* 第 1 行：启用图片与视频输入、快捷开启 CPU 视觉（与下方 Section 07 对齐的双列全宽 ToggleField） */}
+                <ToggleField
+                  label={t("f.vision")}
+                  hint="--vision"
+                  tooltip={t("f.visionTooltip")}
+                  checked={Boolean(draft.vision)}
+                  onChange={toggleVision}
+                />
+                <ToggleField
+                  label={t("f.visionCpu")}
+                  hint="--vision-cpu"
+                  tooltip={t("f.visionCpuTooltip")}
+                  checked={Boolean(draft.visionCpu)}
+                  onChange={toggleVisionCpu}
+                />
+
+                {/* 第 2 行：视觉组件放置位置、视觉 Token 上限 */}
+                <Field label={t("f.visionResidency")} hint="--vision-residency" tooltip={t("f.visionResidencyTooltip")}>
+                  <select
+                    value={(!draft.visionResidency || draft.visionResidency === "resident") ? "resident" : draft.visionResidency}
+                    onChange={(e) => update("visionResidency", e.target.value)}
+                  >
+                    <option value="resident">{t("f.visionResidencyResident")}</option>
+                    <option value="overlay">{t("f.visionResidencyOverlay")}</option>
+                    <option value="cpu">{t("f.visionResidencyCpu")}</option>
+                  </select>
+                </Field>
+                <Field label={t("f.visionMaxMerged")} hint="--vision-max-merged" tooltip={t("f.visionMaxMergedTooltip")}>
+                  <input
+                    type="number"
+                    min="64"
+                    step="64"
+                    value={draft.visionMaxMerged ?? ""}
+                    placeholder={draft.visionCpu ? "256" : "16384"}
+                    onChange={(e) => {
+                      const val = e.target.value.trim();
+                      if (val === "") { update("visionMaxMerged", undefined); return; }
+                      const num = Number(val);
+                      if (Number.isFinite(num)) update("visionMaxMerged", Math.max(1, Math.trunc(num)));
+                    }}
+                  />
+                </Field>
+
+                {/* 第 3 行：媒体缓存 MiB、活跃媒体预算 MiB */}
+                <Field label={t("f.mediaCacheMib")} hint="--media-cache-mib" tooltip={t("f.mediaCacheMibTooltip")}>
+                  <input
+                    type="number"
+                    min="0"
+                    step="128"
+                    value={draft.mediaCacheMib ?? ""}
+                    placeholder="1024"
+                    onChange={(e) => {
+                      const val = e.target.value.trim();
+                      if (val === "") { update("mediaCacheMib", undefined); return; }
+                      const num = Number(val);
+                      if (Number.isFinite(num)) update("mediaCacheMib", Math.max(0, Math.trunc(num)));
+                    }}
+                  />
+                </Field>
+                <Field label={t("f.mediaLiveMib")} hint="--media-live-mib" tooltip={t("f.mediaLiveMibTooltip")}>
+                  <input
+                    type="number"
+                    min="128"
+                    step="128"
+                    value={draft.mediaLiveMib ?? ""}
+                    placeholder="2048"
+                    onChange={(e) => {
+                      const val = e.target.value.trim();
+                      if (val === "") { update("mediaLiveMib", undefined); return; }
+                      const num = Number(val);
+                      if (Number.isFinite(num)) update("mediaLiveMib", Math.max(1, Math.trunc(num)));
+                    }}
+                  />
+                </Field>
+              </div>
+            ) : (
               <div className="form-grid">
                 <Field label={t("f.visionModel")} hint="--mmproj">
                   <div className="vision-input-row">
@@ -543,11 +650,11 @@ export default function ProfileEditor({
                   {visionError && <p className="import-error">{visionError}</p>}
                 </Field>
               </div>
-            </div>
-          )}
+            )}
+          </div>
           <div className="form-section">
             <div className="form-section-title">
-              <span>{isNinfer ? "06" : "07"}</span>
+              <span>07</span>
               <div>
                 <h3>{t("ed.s8Title")}</h3>
                 <p>{isNinfer ? t("ed.s8DescNinfer") : t("ed.s8Desc")}</p>
@@ -628,7 +735,7 @@ export default function ProfileEditor({
             )}
           </div>
           <div className="form-section">
-            <div className="form-section-title"><span>{isNinfer ? "07" : "08"}</span><div><h3>{t("ed.s7Title")}</h3><p>{t("ed.s7Desc")}</p></div></div>
+            <div className="form-section-title"><span>08</span><div><h3>{t("ed.s7Title")}</h3><p>{t("ed.s7Desc")}</p></div></div>
             <Field label="Extra Arguments" hint={t("f.extraHint")}>
               <textarea value={draft.extraArgs} onChange={(e) => update("extraArgs", e.target.value)} placeholder="--no-warmup --cont-batching" />
               {/(?:^|\s)--reasoning-budget(?:=|\s|$)/i.test(draft.extraArgs) && (
@@ -654,32 +761,39 @@ export default function ProfileEditor({
                   noMmprojOffload: Boolean(draft.noMmprojOffload),
                   ...(isNinfer
                     ? {
-                        kvDtype: draft.kvDtype || "rk8v4",
-                        prefillChunk: draft.prefillChunk ?? 512,
-                        fastPrefillKernel: draft.fastPrefillKernel ?? true,
-                        cudaMemoryPolicy: draft.cudaMemoryPolicy || "mixed",
-                        deviceIndex: draft.deviceIndex ?? 0,
-                        deviceProfile: "auto",
-                        specMtp: draft.specMtp ?? true,
-                        draftTokens: draft.draftTokens ?? 2,
-                        adaptiveMtp: draft.adaptiveMtp ?? true,
-                        ngramDraftTokens: draft.ngramDraftTokens ?? 0,
-                        defaultMaxTokens: Math.max(0, Math.trunc(draft.defaultMaxTokens ?? 0)),
-                        topK: typeof draft.topK === "number" && draft.topK > 0 ? Math.min(20, Math.trunc(draft.topK)) : undefined,
-                        seed: typeof draft.seed === "number" && draft.seed >= 0 ? Math.trunc(draft.seed) : undefined,
-                        cudaGraphAllowanceMib: typeof draft.cudaGraphAllowanceMib === "number" && draft.cudaGraphAllowanceMib >= 0 ? Math.trunc(draft.cudaGraphAllowanceMib) : undefined,
-                        ...(isNinferKvmem
-                          ? {
-                              kvmemBudget: draft.kvmemBudget ?? 16384,
-                              kvmemGenReserve: draft.kvmemGenReserve ?? 4096,
-                              kvmemHostMib: draft.kvmemHostMib ?? 16384,
-                              kvmemSessions: draft.kvmemSessions ?? 4,
-                            }
-                          : {
-                              hostCacheMib: draft.hostCacheMib ?? 8192,
-                              kvCapacity: draft.kvCapacity ?? 32768,
-                            }),
-                      }
+                      kvDtype: draft.kvDtype || "rk8v4",
+                      prefillChunk: draft.prefillChunk ?? 512,
+                      fastPrefillKernel: draft.fastPrefillKernel ?? true,
+                      cudaMemoryPolicy: draft.cudaMemoryPolicy || "mixed",
+                      deviceIndex: draft.deviceIndex ?? 0,
+                      deviceProfile: "auto",
+                      specMtp: draft.specMtp ?? true,
+                      draftTokens: draft.draftTokens ?? 2,
+                      adaptiveMtp: draft.adaptiveMtp ?? true,
+                      ngramDraftTokens: draft.ngramDraftTokens ?? 0,
+                      defaultMaxTokens: Math.max(0, Math.trunc(draft.defaultMaxTokens ?? 0)),
+                      topK: typeof draft.topK === "number" && draft.topK > 0 ? Math.min(20, Math.trunc(draft.topK)) : undefined,
+                      seed: typeof draft.seed === "number" && draft.seed >= 0 ? Math.trunc(draft.seed) : undefined,
+                      cudaGraphAllowanceMib: typeof draft.cudaGraphAllowanceMib === "number" && draft.cudaGraphAllowanceMib >= 0 ? Math.trunc(draft.cudaGraphAllowanceMib) : undefined,
+                      vision: Boolean(draft.vision),
+                      visionCpu: Boolean(draft.visionCpu),
+                      visionResidency: draft.visionResidency?.trim() || undefined,
+                      visionMaxMerged: typeof draft.visionMaxMerged === "number" && draft.visionMaxMerged > 0 ? Math.trunc(draft.visionMaxMerged) : undefined,
+                      mediaCacheMib: typeof draft.mediaCacheMib === "number" && draft.mediaCacheMib >= 0 ? Math.trunc(draft.mediaCacheMib) : undefined,
+                      mediaLiveMib: typeof draft.mediaLiveMib === "number" && draft.mediaLiveMib > 0 ? Math.trunc(draft.mediaLiveMib) : undefined,
+                      mediaPreprocessThreads: typeof draft.mediaPreprocessThreads === "number" && draft.mediaPreprocessThreads >= 0 ? Math.trunc(draft.mediaPreprocessThreads) : undefined,
+                      ...(isNinferKvmem
+                        ? {
+                          kvmemBudget: draft.kvmemBudget ?? 16384,
+                          kvmemGenReserve: draft.kvmemGenReserve ?? 4096,
+                          kvmemHostMib: draft.kvmemHostMib ?? 16384,
+                          kvmemSessions: draft.kvmemSessions ?? 4,
+                        }
+                        : {
+                          hostCacheMib: draft.hostCacheMib ?? 8192,
+                          kvCapacity: draft.kvCapacity ?? 32768,
+                        }),
+                    }
                     : {}),
                 },
                 isDefault

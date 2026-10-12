@@ -742,6 +742,8 @@ export default function App() {
       }
       const name = fileBaseName.replace(/\.(gguf|ninfer)$/i, "").replace(/[-_]/g, " ");
       const isNinfer = path.toLowerCase().endsWith(".ninfer");
+      const isGguf = path.toLowerCase().endsWith(".gguf");
+      const ext = (path.split(".").pop() || "FILE").toUpperCase();
       const meta = await inspectGguf(path).catch(() => ({ architecture: "", parameters: "", quantization: "" }));
       const paramMatch = path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase();
       const parameters = meta.parameters || paramMatch || "—";
@@ -752,10 +754,10 @@ export default function App() {
         name,
         path,
         sizeBytes: sizeBytes ?? download.sizeBytes,
-        architecture: meta.architecture || (isNinfer ? "NINFER" : "GGUF"),
+        architecture: meta.architecture || (isNinfer ? "NINFER" : isGguf ? "GGUF" : ext),
         quantization: meta.quantization || parseQuantization(path, t("model.unknownQuant")),
         parameters,
-        metadataSource: meta.architecture || meta.quantization || meta.parameters ? (isNinfer ? "ninfer" : "gguf") : "filename",
+        metadataSource: meta.architecture || meta.quantization || meta.parameters ? (isNinfer ? "ninfer" : isGguf ? "gguf" : "filename") : "filename",
         profiles: initialProfiles,
         accent: ACCENTS[currentConfig.models.length % ACCENTS.length],
       };
@@ -1278,6 +1280,7 @@ export default function App() {
           logs={logs}
           status={status}
           modelName={activeModel ? modelTitle(activeModel) : undefined}
+          profileName={activeProfile?.name || status.profileName}
           abnormal={serviceAbnormal}
           tokPerSec={tokSample ? tokSample.rate : null}
           latestMetrics={latestInference}
