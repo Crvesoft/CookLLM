@@ -2,7 +2,7 @@ import type { AppConfig, LlamaLogPayload, ModelAsset, Profile } from "./types";
 import { formatMessage, getLocale } from "./i18n";
 
 /** 当前应用版本（与 tauri.conf.json / package.json 保持一致）：浏览器模式回退值，检测更新的比较基线 */
-export const APP_VERSION = "0.3.3";
+export const APP_VERSION = "0.3.4";
 /** 项目信息：GitHub 仓库（owner/repo）与主页地址 */
 export const APP_REPO = "Crvesoft/CookLLM";
 export const PROJECT_URL = `https://github.com/${APP_REPO}`;
@@ -62,16 +62,16 @@ export const DEFAULT_PROFILES: Profile[] = [
   { id: "low-memory", name: "低显存", description: "保守卸载与小批次，降低资源占用", host: "0.0.0.0", port: 9931, gpuLayers: 12, contextSize: 4096, threads: 6, parallel: 1, batchSize: 128, ubatchSize: 128, flashAttention: true, ncmoeLayers: 0, mtp: false, mtpDraftPath: undefined, specDraftNMax: 3, cacheTypeK: "f16", cacheTypeV: "f16", jinja: false, reasoning: "auto", reasoningEffort: "auto", reasoningBudget: -1, noMmprojOffload: false, loadMode: "mmap", temperature: 0.75, topP: 0.9, minP: 0.05, repeatPenalty: 1.12, extraArgs: "" },
 ];
 
-/** ninfer 模型导入时的默认预设：对齐 NInfer 官方 s-128k 推荐配置，仅此一个 */
+/** ninfer 模型导入时的默认预设：对齐 NInfer 官方 64K 纯文本推荐配置，仅此一个 */
 export const DEFAULT_NINFER_PROFILES: Profile[] = [
   {
-    id: "s-128k",
-    name: "NInfer · 128K",
-    description: "对齐 NInfer 官方推荐：xhigh 深度思考 · 输出不设限 · rk8v4 KV",
+    id: "s-64k",
+    name: "NInfer · 64K",
+    description: "对齐 NInfer 官方推荐：64K 纯文本 · xhigh 深度思考 · 输出不设限 · rk8v4 KV",
     host: "127.0.0.1",
     port: 18081,
     gpuLayers: 99,
-    contextSize: 131072,
+    contextSize: 65536,
     threads: 8,
     parallel: 1,
     batchSize: 512,
@@ -104,11 +104,13 @@ export const DEFAULT_NINFER_PROFILES: Profile[] = [
     adaptiveMtp: true,
     ngramDraftTokens: 31,
     hostCacheMib: 6144,
-    kvCapacity: 131072,
+    kvCapacity: 65536,
     defaultMaxTokens: 0,
     topK: 20,
     seed: 42,
     cudaGraphAllowanceMib: 72,
+    vision: false,
+    visionCpu: false,
   },
 ];
 
