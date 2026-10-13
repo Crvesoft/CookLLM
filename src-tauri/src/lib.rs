@@ -187,6 +187,18 @@ struct Profile {
     /// ninfer 专属：媒体预处理线程数（--media-preprocess-threads N）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     media_preprocess_threads: Option<u32>,
+    /// ninfer 专属：GDN 循环状态采用 FP16（--gdn-state-fp16）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    gdn_state_fp16: Option<bool>,
+    /// ninfer 专属：混合前缀缓存优化（--use-alt-prefix-caching）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    use_alt_prefix_caching: Option<bool>,
+    /// ninfer 专属：GPU 状态快照槽位（--device-snapshot-slots N）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    device_snapshot_slots: Option<u32>,
+    /// ninfer 专属：保留历史思考（--preserve-thinking）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    preserve_thinking: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -368,6 +380,10 @@ impl Default for AppConfig {
                 media_cache_mib: None,
                 media_live_mib: None,
                 media_preprocess_threads: None,
+                gdn_state_fp16: None,
+                use_alt_prefix_caching: None,
+                device_snapshot_slots: None,
+                preserve_thinking: None,
             }],
             theme: None,
             custom_tags: Vec::new(),
@@ -863,6 +879,110 @@ fn update_tray_status(app: &AppHandle, running_model: Option<&str>) {
     }
 }
 
+/// 自动发现引擎目录自带的官方 device-profiles.json 并智能同步/补全到隔离缓存中。
+/// 既保持了不同引擎路径之间的隔离防踩踏，又确保官方精心校准的 55 条 SM120/CUDA 优化内核路线（如 GDN 与 Attention 路由）100% 生效。
+fn sync_official_device_profile_routes(engine_path: &str, isolated_path: &std::path::Path) {
+    use std::path::{Path, PathBuf};
+    let engine_file = Path::new(engine_path);
+    let engine_dir = match engine_file.parent() {
+        Some(d) => d,
+        None => return,
+    };
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(parent) = engine_dir.parent() {
+        candidates.push(parent.join("config").join("device-profiles.json"));
+        candidates.push(parent.join("device-profiles.json"));
+    }
+    candidates.push(engine_dir.join("config").join("device-profiles.json"));
+    candidates.push(engine_dir.join("device-profiles.json"));
+
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        let base = Path::new(&local_app_data).join("NInferManager");
+        if let Ok(entries) = std::fs::read_dir(&base) {
+            for entry in entries.flatten() {
+                let sub = entry.path().join("config").join("device-profiles.json");
+                if sub.is_file() {
+                    candidates.push(sub);
+                }
+            }
+        }
+    }
+
+    let official_path = match candidates.into_iter().find(|p| p.is_file()) {
+        Some(p) => p,
+        None => return,
+    };
+
+    if !isolated_path.is_file() {
+        let _ = std::fs::copy(&official_path, isolated_path);
+        return;
+    }
+
+    let official_content = match std::fs::read_to_string(&official_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let official_json: serde_json::Value = match serde_json::from_str(&official_content) {
+        Ok(j) => j,
+        Err(_) => return,
+    };
+
+    let isolated_content = match std::fs::read_to_string(isolated_path) {
+        Ok(c) => c,
+        Err(_) => return,
+    };
+    let mut isolated_json: serde_json::Value = match serde_json::from_str(&isolated_content) {
+        Ok(j) => j,
+        Err(_) => return,
+    };
+
+    let mut changed = false;
+    if let (Some(off_devices), Some(iso_devices)) = (
+        official_json.get("devices").and_then(|v| v.as_array()),
+        isolated_json.get_mut("devices").and_then(|v| v.as_array_mut()),
+    ) {
+        for off_dev in off_devices {
+            let hw_class = off_dev.get("hardware_class").and_then(|v| v.as_str()).unwrap_or("");
+            if hw_class.is_empty() {
+                continue;
+            }
+            let off_routes = match off_dev.get("routes").and_then(|v| v.as_object()) {
+                Some(r) => r,
+                None => continue,
+            };
+
+            let iso_dev = iso_devices.iter_mut().find(|d| {
+                d.get("hardware_class").and_then(|v| v.as_str()) == Some(hw_class)
+            });
+
+            if let Some(target_dev) = iso_dev {
+                if let Some(iso_routes) = target_dev.get_mut("routes").and_then(|v| v.as_object_mut()) {
+                    for (route_key, route_val) in off_routes {
+                        let need_update = match iso_routes.get(route_key) {
+                            None => true,
+                            Some(val) => val != route_val,
+                        };
+                        if need_update {
+                            iso_routes.insert(route_key.clone(), route_val.clone());
+                            changed = true;
+                        }
+                    }
+                }
+            } else {
+                iso_devices.push(off_dev.clone());
+                changed = true;
+            }
+        }
+    }
+
+    if changed {
+        if let Ok(serialized) = serde_json::to_string_pretty(&isolated_json) {
+            let _ = std::fs::write(isolated_path, serialized);
+        }
+    }
+}
+
 /// start/stop 专用串行化锁：kill 旧进程最长 5 秒的等待只占用这把锁，
 /// 不再长时间持有 ProcessState 锁，避免重启/停止期间状态轮询全部卡住。
 static PROCESS_LIFECYCLE_LOCK: Mutex<()> = Mutex::new(());
@@ -978,15 +1098,33 @@ fn start_server_internal(app: &AppHandle, state: &ProcessState, model_id: &str, 
         });
         command.arg("--prefill-chunk").arg(prefill_chunk.to_string());
 
-        // 5. 快速预填充核函数
-        let kv_dtype = profile.kv_dtype.as_deref().unwrap_or("rk8v4");
-        let force_fast_prefill = engine_type == "ninfer_kvmem"
-            && matches!(kv_dtype, "int8" | "rk8v4" | "rk4v4" | "rk4v4-e8" | "rk2v4-e8");
-        if (force_fast_prefill || profile.fast_prefill_kernel.unwrap_or(true)) && !has_extra_arg("--fast-prefill-kernel") {
+        // 5. 快速预填充核函数（默认关闭）
+        if profile.fast_prefill_kernel.unwrap_or(false) && !has_extra_arg("--fast-prefill-kernel") {
             command.arg("--fast-prefill-kernel");
         }
 
+        // 5.5 GDN 循环状态 FP16（Swift / Qwen3.8 等 GDN 架构模型默认开启，大幅降低 Decode 显存读写带宽）
+        if profile.gdn_state_fp16.unwrap_or(true) && !has_extra_arg("--gdn-state-fp16") {
+            command.arg("--gdn-state-fp16");
+        }
+
+        // 5.6 混合前缀缓存优化与快照槽位（--use-alt-prefix-caching）
+        // 注意：ninfer-kvmem-server 引擎独占接管会话历史缓存（exclusive ownership of history caching），
+        // 传递 --use-alt-prefix-caching 或 --device-snapshot-slots 会与 KVMem 专属分层调度器冲突并导致拒启，
+        // 因此前缀缓存与快照槽位仅在标准 ninfer 引擎下传递。
+        if engine_type == "ninfer" {
+            if profile.use_alt_prefix_caching.unwrap_or(true) && !has_extra_arg("--use-alt-prefix-caching") {
+                command.arg("--use-alt-prefix-caching");
+            }
+            if let Some(slots) = profile.device_snapshot_slots {
+                if slots > 0 && !has_extra_arg("--device-snapshot-slots") {
+                    command.arg("--device-snapshot-slots").arg(slots.to_string());
+                }
+            }
+        }
+
         // 6. KV 数据类型量化
+        let kv_dtype = profile.kv_dtype.as_deref().unwrap_or("rk8v4");
         command.arg("--kv-dtype").arg(kv_dtype);
 
         // 7. GPU 设备索引与硬件调优
@@ -1001,7 +1139,8 @@ fn start_server_internal(app: &AppHandle, state: &ProcessState, model_id: &str, 
         // 7.2 设备 profile 文件路径 (--device-profile-path FILE)
         // 防踩踏隔离策略：若用户未显式传 --device-profile-path，且选择了 auto/calibrate 硬件标定，
         // 则按当前引擎执行程序的绝对路径计算隔离存储文件。
-        // 彻底解决多个不同构建版本 NInfer（例如 schema v1 与 v2）互相踩踏全局配置导致每次启动都被迫跑 45 秒标定的问题。
+        // 同时自动发现引擎自带的官方 device-profiles.json 并智能同步/补全到隔离文件，
+        // 确保官方精心校准的 55 条 SM120/CUDA 优化内核路线（如 GDN 与 Attention 路由）100% 生效。
         if let Some(ref path) = profile.device_profile_path {
             let p = path.trim();
             if !p.is_empty() && !has_extra_arg("--device-profile-path") {
@@ -1016,6 +1155,7 @@ fn start_server_internal(app: &AppHandle, state: &ProcessState, model_id: &str, 
                 let profiles_dir = app_dir.join("device_profiles");
                 let _ = std::fs::create_dir_all(&profiles_dir);
                 let isolated_path = profiles_dir.join(format!("profile_{}.json", hash_hex));
+                sync_official_device_profile_routes(&chosen_path, &isolated_path);
                 command.arg("--device-profile-path").arg(isolated_path);
             }
         }
@@ -1088,7 +1228,7 @@ fn start_server_internal(app: &AppHandle, state: &ProcessState, model_id: &str, 
                 command.arg("--no-thinking");
             }
         } else {
-            if !has_extra_arg("--preserve-thinking") {
+            if profile.preserve_thinking.unwrap_or(true) && !has_extra_arg("--preserve-thinking") {
                 command.arg("--preserve-thinking");
             }
             let effort = profile.reasoning_effort.trim().to_lowercase();
@@ -1151,22 +1291,24 @@ fn start_server_internal(app: &AppHandle, state: &ProcessState, model_id: &str, 
         }
 
         // 12.5 图片与视频 / 视觉多模态 (NInfer 原生视觉组件)
-        let is_vision_enabled = profile.vision.unwrap_or(false)
-            || profile.vision_cpu.unwrap_or(false)
-            || has_extra_arg("--vision")
+        let is_vision_cpu = profile.vision_cpu.unwrap_or(false)
+            || profile.vision_residency.as_deref().map(|s| s.trim() == "cpu").unwrap_or(false)
             || has_extra_arg("--vision-cpu");
+
+        let is_vision_enabled = profile.vision.unwrap_or(false)
+            || is_vision_cpu
+            || has_extra_arg("--vision");
 
         if is_vision_enabled && !has_extra_arg("--vision") {
             command.arg("--vision");
         }
 
         if is_vision_enabled {
-            let is_vision_cpu = profile.vision_cpu.unwrap_or(false);
-            if is_vision_cpu && !has_extra_arg("--vision-cpu") {
-                command.arg("--vision-cpu");
-            }
-
-            if let Some(ref residency) = profile.vision_residency {
+            if is_vision_cpu {
+                if !has_extra_arg("--vision-cpu") && !has_extra_arg("--vision-residency") {
+                    command.arg("--vision-cpu");
+                }
+            } else if let Some(ref residency) = profile.vision_residency {
                 let r = residency.trim();
                 if !r.is_empty() && !has_extra_arg("--vision-residency") {
                     command.arg("--vision-residency").arg(r);

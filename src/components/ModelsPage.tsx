@@ -182,9 +182,9 @@ function ModelCard({ model, profiles, selectedProfileId, isDefaultModel, isRunni
         {model.quantization}
       </span>
       {hasMmproj && <span title={mmprojTitle}>{isMmprojRam ? "mmproj·RAM" : "mmproj"}</span>}
-      {isNinfer && selected?.vision && (
-        <span title={selected.visionCpu ? "--vision --vision-cpu" : "--vision"}>
-          {selected.visionCpu ? "Vision·CPU" : "Vision"}
+      {isNinfer && (selected?.vision || selected?.visionCpu || selected?.visionResidency === "cpu") && (
+        <span title={(selected.visionCpu || selected.visionResidency === "cpu") ? "--vision --vision-cpu" : "--vision"}>
+          {(selected.visionCpu || selected.visionResidency === "cpu") ? "Vision·CPU" : "Vision"}
         </span>
       )}
       {model.tags?.map((tag) => (
@@ -262,9 +262,9 @@ function ModelRow({ model, profiles, selectedProfileId, isDefaultModel, isRunnin
           {model.quantization}
         </span>
         {hasMmproj && <span title={mmprojTitle}>{isMmprojRam ? "mmproj·RAM" : "mmproj"}</span>}
-        {isNinfer && selected?.vision && (
-          <span title={selected.visionCpu ? "--vision --vision-cpu" : "--vision"}>
-            {selected.visionCpu ? "Vision·CPU" : "Vision"}
+        {isNinfer && (selected?.vision || selected?.visionCpu || selected?.visionResidency === "cpu") && (
+          <span title={(selected.visionCpu || selected.visionResidency === "cpu") ? "--vision --vision-cpu" : "--vision"}>
+            {(selected.visionCpu || selected.visionResidency === "cpu") ? "Vision·CPU" : "Vision"}
           </span>
         )}
         {model.tags?.map((tag) => (

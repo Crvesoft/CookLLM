@@ -6749,6 +6749,48 @@ select option:checked {
   grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
+.form-grid.profile-sampling-grid-ninfer {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+}
+
+@media (max-width: 640px) {
+  .form-grid.profile-sampling-grid-ninfer {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.section-grid-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.field-toggle-box {
+  width: 100%;
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.15s ease;
+}
+
+.field-toggle-box:hover {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.field-toggle-box.enabled:hover {
+  border-color: #3b7b62;
+  background: rgba(38, 91, 70, 0.15);
+}
+
+.field-toggle-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+
 .field select optgroup {
   font-weight: 600;
   font-size: 11.5px;

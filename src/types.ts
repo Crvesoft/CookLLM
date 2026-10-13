@@ -129,6 +129,14 @@ export interface Profile {
   mediaLiveMib?: number;
   /** ninfer 专属：媒体预处理线程数（--media-preprocess-threads N，默认 0 自动） */
   mediaPreprocessThreads?: number;
+  /** ninfer 专属：GDN 循环状态采用 FP16（--gdn-state-fp16），减半宿主状态镜像显存并减少 Decode 内存带宽 */
+  gdnStateFp16?: boolean;
+  /** ninfer 专属：混合前缀缓存优化（--use-alt-prefix-caching） */
+  useAltPrefixCaching?: boolean;
+  /** ninfer 专属：GPU 状态快照槽位（--device-snapshot-slots N，未填写时按并发数与缓存情况自动分配） */
+  deviceSnapshotSlots?: number;
+  /** ninfer 专属：保留历史思考（--preserve-thinking），在后续多轮对话中保留助手的思考过程 */
+  preserveThinking?: boolean;
 }
 
 /** 托管的 llama.cpp / ninfer 引擎分支版本 */

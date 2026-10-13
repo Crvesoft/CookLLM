@@ -238,12 +238,12 @@ export default function ProfilesPage({
               {profile.noMmprojOffload ? "mmproj·RAM" : "mmproj"}
             </span>
           )}
-          {isNinfer && profile.vision && (
+          {isNinfer && (profile.vision || profile.visionCpu || profile.visionResidency === "cpu") && (
             <span
-              className={cn("feature-pill", profile.visionCpu && "cpu-vision-pill")}
-              title={profile.visionCpu ? "--vision --vision-cpu" : "--vision"}
+              className={cn("feature-pill", (profile.visionCpu || profile.visionResidency === "cpu") && "cpu-vision-pill")}
+              title={(profile.visionCpu || profile.visionResidency === "cpu") ? "--vision --vision-cpu" : "--vision"}
             >
-              {profile.visionCpu ? "Vision·CPU" : "Vision"}
+              {(profile.visionCpu || profile.visionResidency === "cpu") ? "Vision·CPU" : "Vision"}
             </span>
           )}
           {profile.mtp && <span className="feature-pill" title="Speculative MTP">MTP</span>}
@@ -347,12 +347,12 @@ export default function ProfilesPage({
                 {profile.noMmprojOffload ? "mmproj·RAM" : "mmproj"}
               </span>
             )}
-            {isNinfer && profile.vision && (
+            {isNinfer && (profile.vision || profile.visionCpu || profile.visionResidency === "cpu") && (
               <span
-                className={cn("feature-pill", profile.visionCpu && "cpu-vision-pill")}
-                title={profile.visionCpu ? "--vision --vision-cpu" : "--vision"}
+                className={cn("feature-pill", (profile.visionCpu || profile.visionResidency === "cpu") && "cpu-vision-pill")}
+                title={(profile.visionCpu || profile.visionResidency === "cpu") ? "--vision --vision-cpu" : "--vision"}
               >
-                {profile.visionCpu ? "Vision·CPU" : "Vision"}
+                {(profile.visionCpu || profile.visionResidency === "cpu") ? "Vision·CPU" : "Vision"}
               </span>
             )}
             {profile.mtp && <span className="feature-pill" title="Speculative MTP">MTP</span>}
