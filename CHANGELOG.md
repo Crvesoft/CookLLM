@@ -2,6 +2,14 @@
 
 本文档是发布流程提取 Release Notes 的唯一数据源（`.github/workflows/release.yml` 会自动读取，请在每次发版前更新本文件）。
 
+## v0.3.6
+
+#### 🛠️ NInfer / KVMem 引擎底层对齐与深度调优
+
+- **环境与目录对齐**：工作目录对齐引擎根路径，注入环境变量跳过 Qwen 非必需 Prefill 重排。
+- **长思考防截断**：智能适配 `--default-max-tokens`，彻底解决 8192 token 处长思维链被截断中断的问题。
+- **模板与内核直连**：自动识别官方 Jinja 对话模板与 67 条 SM120 调优路线，实现开箱秒启。
+
 ## v0.3.5
 
 #### ⚡ Ninfer / KVMem-Ninfer 核心加速与调优

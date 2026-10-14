@@ -505,7 +505,7 @@ dependencies = [
 
 [[package]]
 name = "cookllm"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "reqwest",
  "serde",
