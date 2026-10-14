@@ -512,7 +512,7 @@ fn emit_log(app: &AppHandle, stream: &str, line: impl Into<String>) {
 
 fn stream_reader<R: std::io::Read + Send + 'static>(app: AppHandle, stream: &'static str, reader: R) {
     std::thread::spawn(move || {
-        for line in BufReader::new(reader).lines().map_while(Result::ok) {
+        for line in BufReader::with_capacity(65536, reader).lines().map_while(Result::ok) {
             emit_log(&app, stream, line);
         }
     });
@@ -879,9 +879,9 @@ fn update_tray_status(app: &AppHandle, running_model: Option<&str>) {
     }
 }
 
-/// 自动发现引擎目录自带的官方 device-profiles.json 并智能同步/补全到隔离缓存中。
-/// 既保持了不同引擎路径之间的隔离防踩踏，又确保官方精心校准的 55 条 SM120/CUDA 优化内核路线（如 GDN 与 Attention 路由）100% 生效。
-fn sync_official_device_profile_routes(engine_path: &str, isolated_path: &std::path::Path) {
+/// 自动发现官方 device-profiles.json 并智能同步/补全硬件优化路由到隔离缓存中。
+/// 既保持了不同引擎路径之间的隔离防踩踏，又确保官方精心校准的 67 条 SM120/CUDA 优化内核路线（如 GDN 与 Attention 路由）100% 生效。
+fn sync_official_device_profile_routes(engine_path: &str, isolated_path: &std::path::Path, target_schema: i64) {
     use std::path::{Path, PathBuf};
     let engine_file = Path::new(engine_path);
     let engine_dir = match engine_file.parent() {
@@ -911,30 +911,48 @@ fn sync_official_device_profile_routes(engine_path: &str, isolated_path: &std::p
 
     let official_path = match candidates.into_iter().find(|p| p.is_file()) {
         Some(p) => p,
-        None => return,
+        None => {
+            if isolated_path.is_file() {
+                ensure_device_profile_schema(isolated_path, target_schema);
+            }
+            return;
+        }
     };
 
     if !isolated_path.is_file() {
         let _ = std::fs::copy(&official_path, isolated_path);
+        ensure_device_profile_schema(isolated_path, target_schema);
         return;
     }
 
     let official_content = match std::fs::read_to_string(&official_path) {
         Ok(c) => c,
-        Err(_) => return,
+        Err(_) => {
+            ensure_device_profile_schema(isolated_path, target_schema);
+            return;
+        }
     };
     let official_json: serde_json::Value = match serde_json::from_str(&official_content) {
         Ok(j) => j,
-        Err(_) => return,
+        Err(_) => {
+            ensure_device_profile_schema(isolated_path, target_schema);
+            return;
+        }
     };
 
     let isolated_content = match std::fs::read_to_string(isolated_path) {
         Ok(c) => c,
-        Err(_) => return,
+        Err(_) => {
+            ensure_device_profile_schema(isolated_path, target_schema);
+            return;
+        }
     };
     let mut isolated_json: serde_json::Value = match serde_json::from_str(&isolated_content) {
         Ok(j) => j,
-        Err(_) => return,
+        Err(_) => {
+            ensure_device_profile_schema(isolated_path, target_schema);
+            return;
+        }
     };
 
     let mut changed = false;
@@ -981,6 +999,96 @@ fn sync_official_device_profile_routes(engine_path: &str, isolated_path: &std::p
             let _ = std::fs::write(isolated_path, serialized);
         }
     }
+    ensure_device_profile_schema(isolated_path, target_schema);
+}
+
+/// 自动发现引擎目录自带或 NInferManager 配置的官方 chat_template.jinja 对话模板绝对路径。
+fn find_official_chat_template(engine_path: &str) -> Option<std::path::PathBuf> {
+    use std::path::{Path, PathBuf};
+    let engine_file = Path::new(engine_path);
+    let engine_dir = engine_file.parent()?;
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(parent) = engine_dir.parent() {
+        candidates.push(parent.join("config").join("chat_template.jinja"));
+        candidates.push(parent.join("chat_template.jinja"));
+    }
+    candidates.push(engine_dir.join("config").join("chat_template.jinja"));
+    candidates.push(engine_dir.join("chat_template.jinja"));
+
+    if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+        let base = Path::new(&local_app_data).join("NInferManager");
+        if let Ok(entries) = std::fs::read_dir(&base) {
+            for entry in entries.flatten() {
+                let sub = entry.path().join("config").join("chat_template.jinja");
+                if sub.is_file() {
+                    candidates.push(sub);
+                }
+            }
+        }
+    }
+
+    candidates.into_iter().find(|p| p.is_file())
+}
+
+/// 确保 device-profiles.json 符合引擎所需的 schema_version 规范（标准 ninfer 为 1，ninfer_kvmem 为 2）。
+/// 彻底修复不同引擎版本间 schema 不兼容导致引擎报
+/// "not a ninfer.device-route-profiles v1 document" 或 "this build reads only version 2; recalibrate"
+/// 并触发持续数十秒满载重复标定的严重缺陷。
+fn ensure_device_profile_schema(path: &std::path::Path, expected_version: i64) {
+    if let Ok(content) = std::fs::read_to_string(path) {
+        if let Ok(mut json) = serde_json::from_str::<serde_json::Value>(&content) {
+            let is_device_route = json.get("schema")
+                .and_then(|v| v.as_str())
+                .map(|s| s == "ninfer.device-route-profiles")
+                .unwrap_or(false);
+            let version = json.get("schema_version").and_then(|v| v.as_i64()).unwrap_or(0);
+            if is_device_route && version != expected_version {
+                json["schema_version"] = serde_json::json!(expected_version);
+                if let Ok(serialized) = serde_json::to_string_pretty(&json) {
+                    let _ = std::fs::write(path, serialized);
+                }
+            }
+        }
+    }
+}
+
+/// 自动发现引擎目录自带或 NInferManager 配置的官方 device-profiles.json 硬件标定文件绝对路径。
+fn find_official_device_profile(engine_path: &str, is_kvmem: bool) -> Option<std::path::PathBuf> {
+    use std::path::{Path, PathBuf};
+    let engine_file = Path::new(engine_path);
+    let engine_dir = engine_file.parent()?;
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(parent) = engine_dir.parent() {
+        candidates.push(parent.join("config").join("device-profiles.json"));
+        candidates.push(parent.join("device-profiles.json"));
+    }
+    candidates.push(engine_dir.join("config").join("device-profiles.json"));
+    candidates.push(engine_dir.join("device-profiles.json"));
+
+    // 注意：LOCALAPPDATA/NInferManager 属于标准 Ninfer 官方管理器的配置目录（schema_version: 1），
+    // 仅在标准 ninfer 引擎下作为候选；对于 ninfer_kvmem 绝不直接返回此路径，避免互相踩踏与 schema 冲突。
+    if !is_kvmem {
+        if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+            let base = Path::new(&local_app_data).join("NInferManager");
+            if let Ok(entries) = std::fs::read_dir(&base) {
+                for entry in entries.flatten() {
+                    let sub = entry.path().join("config").join("device-profiles.json");
+                    if sub.is_file() {
+                        candidates.push(sub);
+                    }
+                }
+            }
+        }
+    }
+
+    let found = candidates.into_iter().find(|p| p.is_file());
+    if let Some(ref p) = found {
+        let expected_schema = if is_kvmem { 2 } else { 1 };
+        ensure_device_profile_schema(p, expected_schema);
+    }
+    found
 }
 
 /// start/stop 专用串行化锁：kill 旧进程最长 5 秒的等待只占用这把锁，
@@ -1058,10 +1166,25 @@ fn start_server_internal(app: &AppHandle, state: &ProcessState, model_id: &str, 
 
     let engine_type = detect_engine_type(&chosen_path);
     let mut command = Command::new(&chosen_path);
+    // 自动将子进程工作目录（Cwd）切换到引擎根目录（如 E:\AI\ninfer-run），
+    // 确保与 NInferManager 官方启动机制 100% 一致，使相对路径（如 config/...）与引擎模块平滑加载
+    if let Some(engine_dir) = std::path::Path::new(&chosen_path).parent() {
+        let working_dir = if (engine_type == "ninfer" || engine_type == "ninfer_kvmem")
+            && engine_dir.parent().map(|p| p.join("config").is_dir()).unwrap_or(false)
+        {
+            engine_dir.parent().unwrap()
+        } else {
+            engine_dir
+        };
+        command.current_dir(working_dir);
+    }
     // NInfer 结构化请求日志 tail 游标（第 14 节填充；llama.cpp 引擎保持 None）
     let mut ninfer_request_log_tail: Option<RequestLogTail> = None;
 
     if engine_type == "ninfer" || engine_type == "ninfer_kvmem" {
+        // 0. 注入官方关键环境变量：跳过 Qwen 非必需的 Prefill 网格强制重排
+        command.env("NINFER_PREFILL_ALIGN", "0");
+
         // 1. 模型路径：必须作为首个位置参数，绝对不能加 -m
         command.arg(&model.path);
 
@@ -1081,13 +1204,17 @@ fn start_server_internal(app: &AppHandle, state: &ProcessState, model_id: &str, 
             .arg("--max-context").arg(profile.context_size.to_string())
             .arg("--max-concurrency").arg(profile.parallel.clamp(1, 8).to_string());
 
-        // 3.5 默认输出上限：仅当显式设置 > 0 时才传递；若为 0 或未设置则缺省不传，
-        // 此时 NInfer 会按官方规则自动采用最大可用限额，避免报 “--default-max-tokens must be positive”
+        // 3.5 默认输出上限 (--default-max-tokens)：
+        // - 标准 NInfer (engine_type == "ninfer")：官方服务端硬编码缺省为 8192；若用户配置 0 (不设限) 或未设置，
+        //   必须显式传 `--default-max-tokens 0` 才能生效为「生成直到上下文耗尽」，否则长思考/长输出会在 8192 token 处被截断报 output limit 并显示 Reasoning Cancelled。
+        // - NInfer-KVMem (engine_type == "ninfer_kvmem")：要求参数必须为正数 (若传 0 会报 “--default-max-tokens must be positive”)，
+        //   且 KVMem 服务端在缺省不传时会自动采用全局最大可用配额；因此 KVMem 仅当 tokens > 0 时才传递。
         if !has_extra_arg("--default-max-tokens") {
-            if let Some(tokens) = profile.default_max_tokens {
-                if tokens > 0 {
-                    command.arg("--default-max-tokens").arg(tokens.to_string());
-                }
+            let tokens = profile.default_max_tokens.unwrap_or(0);
+            if engine_type == "ninfer" {
+                command.arg("--default-max-tokens").arg(tokens.to_string());
+            } else if tokens > 0 {
+                command.arg("--default-max-tokens").arg(tokens.to_string());
             }
         }
 
@@ -1139,15 +1266,23 @@ fn start_server_internal(app: &AppHandle, state: &ProcessState, model_id: &str, 
         // 7.2 设备 profile 文件路径 (--device-profile-path FILE)
         // 防踩踏隔离策略：若用户未显式传 --device-profile-path，且选择了 auto/calibrate 硬件标定，
         // 则按当前引擎执行程序的绝对路径计算隔离存储文件。
-        // 同时自动发现引擎自带的官方 device-profiles.json 并智能同步/补全到隔离文件，
-        // 确保官方精心校准的 55 条 SM120/CUDA 优化内核路线（如 GDN 与 Attention 路由）100% 生效。
+        // 同时自动发现官方 device-profiles.json 并智能同步/补全到隔离文件，按引擎架构匹配对应的 schema_version（标准 ninfer 为 1，KVMem 为 2），
+        // 确保官方精心校准的 67 条 SM120/CUDA 优化内核路线（如 GDN 与 Attention 路由）100% 生效，启动即加载无需重标定。
+        let is_kvmem = engine_type == "ninfer_kvmem";
+        let target_schema: i64 = if is_kvmem { 2 } else { 1 };
+
         if let Some(ref path) = profile.device_profile_path {
             let p = path.trim();
             if !p.is_empty() && !has_extra_arg("--device-profile-path") {
+                ensure_device_profile_schema(std::path::Path::new(p), target_schema);
                 command.arg("--device-profile-path").arg(p);
             }
         } else if device_profile != "off" && !has_extra_arg("--device-profile-path") {
-            if let Ok(app_dir) = app.path().app_data_dir() {
+            if let Some(official_device_profile) = find_official_device_profile(&chosen_path, is_kvmem) {
+                // 若发现官方自带或 NInferManager 配置的 device-profiles.json，直接以绝对路径传递，
+                // 与 NInfer 官方启动机制 100% 一致，避免中间缓存同步脱节
+                command.arg("--device-profile-path").arg(official_device_profile);
+            } else if let Ok(app_dir) = app.path().app_data_dir() {
                 use std::hash::{Hash, Hasher};
                 let mut hasher = std::collections::hash_map::DefaultHasher::new();
                 chosen_path.to_lowercase().hash(&mut hasher);
@@ -1155,7 +1290,7 @@ fn start_server_internal(app: &AppHandle, state: &ProcessState, model_id: &str, 
                 let profiles_dir = app_dir.join("device_profiles");
                 let _ = std::fs::create_dir_all(&profiles_dir);
                 let isolated_path = profiles_dir.join(format!("profile_{}.json", hash_hex));
-                sync_official_device_profile_routes(&chosen_path, &isolated_path);
+                sync_official_device_profile_routes(&chosen_path, &isolated_path, target_schema);
                 command.arg("--device-profile-path").arg(isolated_path);
             }
         }
@@ -1165,6 +1300,10 @@ fn start_server_internal(app: &AppHandle, state: &ProcessState, model_id: &str, 
             let p = path.trim();
             if !p.is_empty() && !has_extra_arg("--chat-template") {
                 command.arg("--chat-template").arg(p);
+            }
+        } else if !has_extra_arg("--chat-template") {
+            if let Some(official_template) = find_official_chat_template(&chosen_path) {
+                command.arg("--chat-template").arg(official_template);
             }
         }
 
@@ -2239,6 +2378,39 @@ mod gguf_meta_tests {
         assert_eq!(meta.parameters, "8.0B");
         assert_eq!(meta.quantization, "Q8_0");
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn test_ensure_device_profile_schema_conversion() {
+        use super::ensure_device_profile_schema;
+        let path = std::env::temp_dir().join("test-device-profile-schema.json");
+        let initial_json = r#"{
+  "schema": "ninfer.device-route-profiles",
+  "schema_version": 1,
+  "devices": [
+    {
+      "hardware_class": "nvidia-geforce-rtx-5070-ti-sm120",
+      "routes": { "route1": "kernel_a" }
+    }
+  ]
+}"#;
+        std::fs::write(&path, initial_json).unwrap();
+
+        // Convert 1 -> 2 (for kvmem)
+        ensure_device_profile_schema(&path, 2);
+        let content_v2 = std::fs::read_to_string(&path).unwrap();
+        let parsed_v2: serde_json::Value = serde_json::from_str(&content_v2).unwrap();
+        assert_eq!(parsed_v2["schema_version"], 2);
+        assert_eq!(parsed_v2["devices"][0]["routes"]["route1"], "kernel_a");
+
+        // Convert 2 -> 1 (for standard ninfer)
+        ensure_device_profile_schema(&path, 1);
+        let content_v1 = std::fs::read_to_string(&path).unwrap();
+        let parsed_v1: serde_json::Value = serde_json::from_str(&content_v1).unwrap();
+        assert_eq!(parsed_v1["schema_version"], 1);
+        assert_eq!(parsed_v1["devices"][0]["routes"]["route1"], "kernel_a");
+
+        let _ = std::fs::remove_file(&path);
     }
 }
 
