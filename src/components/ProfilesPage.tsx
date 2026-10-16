@@ -195,7 +195,7 @@ export default function ProfilesPage({
         <div className="profile-stat-grid">
           <div>
             <span>{isNinfer ? "KV Dtype" : t("statGpuOffload")}</span>
-            <strong>{isNinfer ? (profile.kvDtype?.toUpperCase() || "RK8V4") : `${profile.gpuLayers}${t("profiles.layersSuffix")}`}</strong>
+            <strong>{isNinfer ? (profile.kvDtype?.toUpperCase() || "K8V4") : `${profile.gpuLayers}${t("profiles.layersSuffix")}`}</strong>
           </div>
           <div>
             <span>{t("statContext")}</span>
@@ -304,7 +304,7 @@ export default function ProfilesPage({
           <div className="profile-row-stat-pills">
             <span title={isNinfer ? "KV Dtype" : t("statGpuOffload")}>
               <MemoryStick size={12} />
-              <strong>{isNinfer ? (profile.kvDtype?.toUpperCase() || "RK8V4") : `${profile.gpuLayers}${t("profiles.layersSuffix")}`}</strong>
+              <strong>{isNinfer ? (profile.kvDtype?.toUpperCase() || "K8V4") : `${profile.gpuLayers}${t("profiles.layersSuffix")}`}</strong>
             </span>
             <span title={t("statContext")}>
               <Gauge size={12} />

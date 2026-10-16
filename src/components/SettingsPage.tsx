@@ -1,8 +1,8 @@
-import { Activity, AlertTriangle, ArrowRight, Check, ChevronDown, ChevronRight, Cpu, Download, Eye, EyeOff, FolderOpen, Github, KeyRound, Languages, Loader2, Moon, Pencil, Plus, RefreshCw, RotateCw, Search, SlidersHorizontal, Sparkles, Star, Sun, Trash2, Upload, Wifi, Wrench, X, Zap } from "lucide-react";
+import { Activity, AlertTriangle, ArrowRight, Check, ChevronDown, ChevronRight, Cpu, Download, Eye, EyeOff, FolderOpen, Github, Info, KeyRound, Languages, Loader2, Moon, Pencil, Plus, RefreshCw, RotateCw, Search, SlidersHorizontal, Sparkles, Star, Sun, Trash2, Upload, Wifi, Wrench, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { APP_REPO, PROJECT_URL } from "../data";
 import { useI18n } from "../i18n";
-import { cn, formatBytes, formatMB, formatEngineBackend } from "../utils";
+import { cn, formatBytes, formatMB, formatEngineBackend, getEngineTypeDisplay } from "../utils";
 import { cancelLlamaCppUpdate, checkLlamaCppUpdate, checkOrphanServer, detectHardware, downloadLlamaCpp, getAppVersion, getGpuInfo, getLlamaCppStatus, getModelsDir, getSystemProxy, hfWhoami, onDownloadProgress, openConfigDir, openExternal, pickModelsDir, pickServerDir, pickServerFile, revealInFolder, testProxyConnection, type DownloadProgress, type GpuInfo, type HardwareSuggestion, type LlamaCppLocalStatus, type LlamaCppRelease, type OrphanProcessItem, type ProxyTestResult, type ServerCandidate, type UpdateCheckResult } from "../tauri";
 import type { AppConfig, DiskUsage, LlamaEngine, LlamaLogPayload } from "../types";
 import ConfirmModal from "./ConfirmModal";
@@ -44,6 +44,10 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
   const activeEngine = engines.find((e) => e.id === config.activeEngineId)
     || engines.find((e) => e.path.toLowerCase() === serverPath.toLowerCase())
     || engines[0];
+
+  // 当前生效引擎的架构类型：官方在线更新仅对 llama.cpp 官方构建有效
+  const activeEngineType = getEngineTypeDisplay(activeEngine?.engineType, activeEngine?.path);
+  const isLlamaCppEngine = activeEngineType.key === "llamacpp";
 
   const handleSaveEngine = async (engine: LlamaEngine, setAsActive: boolean) => {
     let nextEngines = config.engines && config.engines.length > 0 ? [...config.engines] : (config.serverPath ? [{ id: "engine-default", name: "默认引擎", path: config.serverPath, backend: "cuda" }] : []);
@@ -563,7 +567,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
             {hfError && <p className="hf-token-error">{hfError}</p>}
           </div>
         </div>
-        {/* llama.cpp 管理及更新 */}
+        {/* 引擎管理及更新 */}
         <div className="settings-card settings-group engine-management-card">
           <div className="settings-card-icon"><Cpu size={18} /></div>
           <div className="settings-card-body">
@@ -607,8 +611,14 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
               {/* 分割线 */}
               <div className="engine-unified-divider" />
 
-              {/* 第二行：硬件加速环境单选 + 版本信息状态 */}
-              <div className="engine-unified-status-row">
+              {/* 第二行：硬件加速环境单选 + 版本信息状态（仅 llama.cpp 官方构建可在线更新） */}
+              <div className={cn("engine-unified-status-row", !isLlamaCppEngine && "official-update-unavailable")}>
+                {!isLlamaCppEngine && (
+                  <div className="engine-nonllama-update-hint">
+                    <Info size={14} />
+                    <span>{t("llama.nonLlamaUpdateHint", { engine: activeEngineType.label })}</span>
+                  </div>
+                )}
                 <div className="engine-backend-control-group">
                   <div className="mini-seg engine-backend-seg" ref={cudaMenuRef}>
                     {/* CUDA 复合胶囊按钮 */}
@@ -726,40 +736,42 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
               </div>
             </div>
 
-            {/* 右下角操作聚合 */}
-            <div className="engine-unified-actions">
-              <button
-                type="button"
-                className="secondary-button compact"
-                disabled={checking || updating}
-                onClick={() => void runCheck()}
-              >
-                <RefreshCw size={13} className={checking ? "spin" : ""} />
-                <span>{t("llama.checkUpdateBtn")}</span>
-              </button>
-
-              {isUpToDate ? (
+            {/* 右下角操作聚合（仅 llama.cpp 官方构建可在线更新） */}
+            {isLlamaCppEngine && (
+              <div className="engine-unified-actions">
                 <button
                   type="button"
                   className="secondary-button compact"
-                  disabled={updating || checking}
-                  onClick={() => void forceReinstall()}
+                  disabled={checking || updating}
+                  onClick={() => void runCheck()}
                 >
-                  <RotateCw size={13} className={updating ? "spin" : ""} />
-                  <span>{t("llama.forceReinstall")}</span>
+                  <RefreshCw size={13} className={checking ? "spin" : ""} />
+                  <span>{t("llama.checkUpdateBtn")}</span>
                 </button>
-              ) : (
-                <button
-                  type="button"
-                  className="engine-primary-btn compact"
-                  disabled={updating || checking}
-                  onClick={() => void startUpdate()}
-                >
-                  {updating ? <Loader2 size={13} className="spin" /> : <Download size={13} />}
-                  <span>{remote?.tag ? t("llama.updateBtnTag", { tag: remote.tag }) : t("llama.checkAndUpdate")}</span>
-                </button>
-              )}
-            </div>
+
+                {isUpToDate ? (
+                  <button
+                    type="button"
+                    className="secondary-button compact"
+                    disabled={updating || checking}
+                    onClick={() => void forceReinstall()}
+                  >
+                    <RotateCw size={13} className={updating ? "spin" : ""} />
+                    <span>{t("llama.forceReinstall")}</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="engine-primary-btn compact"
+                    disabled={updating || checking}
+                    onClick={() => void startUpdate()}
+                  >
+                    {updating ? <Loader2 size={13} className="spin" /> : <Download size={13} />}
+                    <span>{remote?.tag ? t("llama.updateBtnTag", { tag: remote.tag }) : t("llama.checkAndUpdate")}</span>
+                  </button>
+                )}
+              </div>
+            )}
 
             {serverBrowseError && <p className="import-error">{serverBrowseError}</p>}
             {engineError && <p className="import-error">{engineError}</p>}
@@ -871,7 +883,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
             <header className="update-modal-header">
               <div className="update-modal-title">
                 <Cpu size={17} className="update-modal-icon" />
-                <h2>{t("llama.title")}</h2>
+                <h2>{t("llama.updateModalTitle")}</h2>
                 {remote?.tag && <span className="update-modal-tag">{remote.tag}</span>}
               </div>
               {updating && progress.phase !== "done" && (

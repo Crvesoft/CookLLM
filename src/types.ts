@@ -71,7 +71,7 @@ export interface Profile {
   /** 该预设关联的 llama.cpp / ninfer 引擎分支 ID；未指定或为空则跟随全局默认引擎 */
   engineId?: string;
 
-  /** ninfer / ninfer-kvmem 专属：KV 缓存量化类型（如 rk8v4 / int8 / bf16 / nvfp4） */
+  /** ninfer / ninfer-kvmem 专属：KV 缓存量化格式（bf16 / int8 / fp8 / rk8v4 / rk4v4 / rk4v4-e8 / rk2v4-e8 / nvfp4 / k8v4） */
   kvDtype?: string;
   /** ninfer 专属：预填充分块 Token 数（128 的倍数，如 256 / 512） */
   prefillChunk?: number;

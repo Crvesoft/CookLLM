@@ -64,9 +64,9 @@ export function getEngineTypeDisplay(
   return { key, label };
 }
 
-/** 从文件名或路径中智能提取量化级别（支持 Q4_K_M、IQ4_XS、RK8V4、INT8、3.7bpw、F16 等） */
+/** 从文件名或路径中智能提取量化级别（支持 Q4_K_M、IQ4_XS、RK8V4、RK4V4-E8、RK4V4、RK2V4-E8、FP8、INT8、3.7bpw、F16 等） */
 export function parseQuantization(path: string, fallback: string): string {
-  const match = path.match(/(?:I?Q\d(?:_[A-Z0-9]+)+|\d+(?:\.\d+)?bpw|(?:FP|BF|F)16|(?:FP|F)32|RK8V4|K8V4|NVFP4|INT8|INT4|GSQ)/i)?.[0];
+  const match = path.match(/(?:I?Q\d(?:_[A-Z0-9]+)+|\d+(?:\.\d+)?bpw|(?:FP|BF|F)16|(?:FP|F)32|RK8V4|RK4V4-E8|RK4V4_E8|RK4V4|RK2V4-E8|RK2V4_E8|K8V4|NVFP4|FP8|INT8|INT4|GSQ)/i)?.[0];
   if (!match) return fallback;
   return match.toLowerCase().endsWith("bpw") ? match : match.toUpperCase();
 }

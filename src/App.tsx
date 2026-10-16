@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { DEMO_CONFIG, DEFAULT_PROFILES, DEFAULT_NINFER_PROFILES, defaultProfilesForModel, INITIAL_LOGS, mergeImportedConfig, migrateConfig, uid } from "./data";
 import { setLocale, useI18n } from "./i18n";
-import { checkForUpdate, checkOrphanServer, exportConfigBackup, getGpuStats, getModelsDir, getServerStatus, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, msDownload, inspectGguf, isTauri, killOrphanServer, loadConfig, onLlamaLog, openExternal, pathsExist, pickConfigBackup, pickModelsDir, readNinferRequestLog, removeLocalFile, revealInFolder, saveConfig, setWindowTheme, startServer, stopServer, type OrphanProcessItem, type UpdateCheckResult } from "./tauri";
+import { checkForUpdate, checkOrphanServer, exportConfigBackup, getGpuStats, getModelsDir, getServerStatus, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, msDownload, inspectGguf, isTauri, killOrphanServer, loadConfig, onLlamaLog, onTrayViewError, openExternal, pathsExist, pickConfigBackup, pickDirectory, pickModelsDir, readNinferRequestLog, removeLocalFile, revealInFolder, saveConfig, setWindowTheme, startServer, stopServer, type ConfigBackupEnvelope, type OrphanProcessItem, type UpdateCheckResult } from "./tauri";
 import type { ActiveDownload } from "./components/ExplorePage";
 import type { PickedFile } from "./tauri";
 import { onModelDownloadProgress } from "./tauri";
@@ -22,6 +22,7 @@ import AppUpdateDialog from "./components/AppUpdateDialog";
 import OrphanServerModal from "./components/OrphanServerModal";
 import EngineHubModal from "./components/EngineHubModal";
 import EngineModal from "./components/EngineModal";
+import BackupImportModal from "./components/BackupImportModal";
 import type { LlamaEngine } from "./types";
 import { APP_VERSION } from "./data";
 
@@ -29,6 +30,13 @@ import { APP_VERSION } from "./data";
 const DOWNLOADS_STORAGE_KEY = "cookllm.downloads";
 /** 自动续传全局一次性标记（StrictMode 双挂载 / 组件重建不会重复发起） */
 let autoResumeTriggered = false;
+
+/**
+ * 服务「真正就绪」日志特征：引擎加载完毕并开始监听。
+ * llama.cpp 输出 "server is listening on ..."，Ninfer 输出 "listening on http://..."。
+ * 不可使用探针的「服务已就绪 (http://...)」——那只是端口刚通，模型权重/CUDA graph 仍在加载。
+ */
+const READY_LOG_RE = /is listening|listening on/i;
 
 function loadStoredDownloads(): ActiveDownload[] {
   try {
@@ -83,6 +91,37 @@ export default function App() {
   /** 本次退出是主动停止（区别于崩溃），由状态轮询消费 */
   const stopIntendedRef = useRef(false);
   const [busy, setBusy] = useState(false);
+  /** 启动中：进程已拉起但服务端口尚未就绪（按钮显示旋转过渡，避免生硬地直接切为停止图标） */
+  const [serviceStarting, setServiceStarting] = useState(false);
+  const serviceStartingRef = useRef(false);
+  const serviceStartingTimerRef = useRef<number | null>(null);
+  const endServiceStarting = () => {
+    if (serviceStartingTimerRef.current) {
+      window.clearTimeout(serviceStartingTimerRef.current);
+      serviceStartingTimerRef.current = null;
+    }
+    serviceStartingRef.current = false;
+    setServiceStarting(false);
+  };
+  const beginServiceStarting = () => {
+    serviceStartingRef.current = true;
+    setServiceStarting(true);
+    if (serviceStartingTimerRef.current) window.clearTimeout(serviceStartingTimerRef.current);
+    // 安全兜底：即便就绪日志缺失，也不会让按钮无限旋转（远超大型模型加载耗时）
+    serviceStartingTimerRef.current = window.setTimeout(() => endServiceStarting(), 900000);
+  };
+  /** 待播报的「已启动」提示：延迟到服务真正就绪（与 Dock 收起同步）后再弹出 */
+  const pendingStartedToastRef = useRef<string | null>(null);
+  /**
+   * 服务真正就绪：同步完成三件事 —— 收起 Dock、结束启动旋转动画、播报「已启动」。
+   * 三者必须同步，避免出现「还在转圈却提示已启动」的割裂感。
+   */
+  const markServiceReady = () => {
+    if (dockAutoCollapseRef.current) { dockAutoCollapseRef.current = false; setLogDockOpen(false); }
+    if (serviceStartingRef.current) endServiceStarting();
+    const pending = pendingStartedToastRef.current;
+    if (pending) { pendingStartedToastRef.current = null; setToast(t("toast.started", { model: pending })); }
+  };
   const [toast, setToast] = useState<string | null>(null);
   /** 社区探索：下载中任务（持久化到 localStorage，重开程序后恢复并自动续传） */
   const [downloads, setDownloads] = useState<ActiveDownload[]>(loadStoredDownloads);
@@ -134,6 +173,8 @@ export default function App() {
   /** llama.cpp 运行时管理中心（Ctrl+E） */
   const [engineHubOpen, setEngineHubOpen] = useState(false);
   const [engineAddModalOpen, setEngineAddModalOpen] = useState(false);
+  /** 配置备份导入向导弹窗 */
+  const [backupImportEnvelope, setBackupImportEnvelope] = useState<ConfigBackupEnvelope | null>(null);
 
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
@@ -272,8 +313,10 @@ export default function App() {
           unlisten = await onLlamaLog((payload) => {
             if (!active) return;
             queueLogs([payload]);
-            // 检测到服务就绪 → 自动收起 Dock（仅启动期间武装，避免误关用户手动打开的 Dock）
-            if (dockAutoCollapseRef.current && /is listening|listening on/i.test(payload.line)) { dockAutoCollapseRef.current = false; setLogDockOpen(false); }
+            // 服务「真正」就绪 = 引擎加载完毕并开始监听（llama.cpp: server is listening / Ninfer: listening on）。
+            // 注意：不能用探针的「服务已就绪」，那时端口刚通、模型尚未加载完。
+            // 该信号同时驱动「自动收起 Dock」「结束启动旋转动画」「播报已启动」，保证三者同步完成。
+            if (READY_LOG_RE.test(payload.line)) markServiceReady();
 
             // 结构化推理指标跟踪（Prefill / Decode / KV Cache 命中）
             const trackerRes = inferenceTrackerRef.current.processLine(payload.line);
@@ -285,6 +328,13 @@ export default function App() {
             } else {
               const tps = parseTokPerSec(payload.line);
               if (tps !== null) setTokSample({ rate: tps, at: Date.now() });
+            }
+          });
+          void onTrayViewError((errMsg) => {
+            if (!active) return;
+            setLogDockOpen(true);
+            if (errMsg) {
+              setToast(errMsg);
             }
           });
         } else {
@@ -305,6 +355,8 @@ export default function App() {
       void getServerStatus().then((st) => {
         if (!active) return;
         setStatus((prev) => (shallowEqualFields(prev, st) ? prev : st));
+        // 服务已停止（含启动失败 / 进程意外退出）：结束启动中的旋转过渡
+        if (!st.running && serviceStartingRef.current) endServiceStarting();
         // 当服务处于运行状态时，同步底层实时指标（针对不同引擎自动自适应）
         if (st.running && st.port) {
           const isNinfer = st.engineType === "ninfer" || st.engineType === "ninfer_kvmem";
@@ -955,7 +1007,7 @@ export default function App() {
     const engineName = profile.engineId
       ? config.engines?.find((e) => e.id === profile.engineId)?.name || profile.engineId
       : config.engines?.find((e) => e.id === config.activeEngineId)?.name || "默认引擎";
-    setBusy(true); setMenuModelId(null); appendLog(t("toast.starting", { model: modelTitle(model), profile: `${profile.name} [${engineName}]` }));
+    setBusy(true); beginServiceStarting(); setMenuModelId(null); appendLog(t("toast.starting", { model: modelTitle(model), profile: `${profile.name} [${engineName}]` }));
     try {
       if (isTauri()) setStatus(await startServer(model.id, profile.id));
       else {
@@ -972,7 +1024,7 @@ export default function App() {
           engineName,
           engineBackend: profile.engineId ? config.engines?.find((e) => e.id === profile.engineId)?.backend : "cuda",
         });
-        [`llama_model_loader: loaded meta data with ${model.parameters} parameters`, `load_tensors: offloading ${profile.gpuLayers} repeating layers to GPU`, `llama_context: n_ctx = ${profile.contextSize}, n_batch = ${profile.batchSize}, n_ubatch = ${profile.ubatchSize}`, `server is listening on http://${profile.host}:${profile.port}`].forEach((line, index) => window.setTimeout(() => appendLog(line, "stdout"), 180 * index));
+        [`llama_model_loader: loaded meta data with ${model.parameters} parameters`, `load_tensors: offloading ${profile.gpuLayers} repeating layers to GPU`, `llama_context: n_ctx = ${profile.contextSize}, n_batch = ${profile.batchSize}, n_ubatch = ${profile.ubatchSize}`, `server is listening on http://${profile.host}:${profile.port}`].forEach((line, index) => window.setTimeout(() => { appendLog(line, "stdout"); if (index === 3) markServiceReady(); }, 180 * index));
       }
       setServiceAbnormal(false); // 启动成功 → 清除异常标记
       inferenceTrackerRef.current.reset();
@@ -990,13 +1042,15 @@ export default function App() {
         if (profile.mtp || profile.mtpDraftPath) appendLog(`--spec-draft-n-max ${profile.specDraftNMax ?? 2}`, "stdout");
       }
       if (page !== "logs") setLogDockOpen(true); // 所有 Dock 页启动时自动展开，显示加载日志；就绪后自动收起（日志整页本身就在看日志）
-      setToast(t("toast.started", { model: modelTitle(model) }));
-    } catch (error) { appendLog(t("log.startFailed", { error: String(error) }), "stderr"); setServiceAbnormal(true); dockAutoCollapseRef.current = false; if (page !== "logs") setLogDockOpen(true); setToast(t("toast.startFailedToast")); }
+      // 「已启动」提示延迟到服务真正就绪后再播报（与 Dock 收起、旋转动画结束同步）；若就绪日志已提前到达则立即补播报
+      pendingStartedToastRef.current = modelTitle(model);
+      if (!serviceStartingRef.current) markServiceReady();
+    } catch (error) { pendingStartedToastRef.current = null; appendLog(t("log.startFailed", { error: String(error) }), "stderr"); setServiceAbnormal(true); dockAutoCollapseRef.current = false; endServiceStarting(); if (page !== "logs") setLogDockOpen(true); setToast(t("toast.startFailedToast")); }
     finally { setBusy(false); }
   };
 
   const handleStop = async () => {
-    setBusy(true); appendLog(t("log.stopping"));
+    setBusy(true); endServiceStarting(); pendingStartedToastRef.current = null; appendLog(t("log.stopping"));
     stopIntendedRef.current = true; // 本次退出是主动停止 → 不判为服务异常
     dockAutoCollapseRef.current = false;
     try { if (isTauri()) setStatus(await stopServer()); else { await new Promise((resolve) => window.setTimeout(resolve, 380)); setStatus(EMPTY_STATUS); appendLog(t("log.stopSuccess")); } setToast(t("toast.stopped")); }
@@ -1187,14 +1241,13 @@ export default function App() {
   };
   const importBackup = async () => {
     try {
-      const incoming = await pickConfigBackup();
-      if (!incoming) return;
-      const migrated = migrateConfig(incoming);
-      const candidates = [...(migrated.models || []).map((model) => model.path), ...(migrated.engines || []).map((engine) => engine.path)].filter(Boolean);
-      const present = new Set((await pathsExist(candidates)).map((path) => path.toLowerCase()));
-      const missing = new Set(candidates.map((path) => path.toLowerCase()).filter((path) => !present.has(path)));
-      const merged = mergeImportedConfig(config, migrated, missing);
-      await persist(merged.config, t("toast.backupImported", { added: merged.added, updated: merged.updated, skipped: merged.skipped }));
+      const envelope = await pickConfigBackup();
+      if (!envelope) return;
+      const migrated = migrateConfig(envelope.config);
+      setBackupImportEnvelope({
+        ...envelope,
+        config: migrated,
+      });
     } catch (error) {
       setToast(t("toast.backupFailed", { error: String(error) }));
     }
@@ -1253,8 +1306,8 @@ export default function App() {
 
   return <div className={cn("app-shell", sidebarCollapsed && "sidebar-collapsed", zenMode && "zen-mode")}>
     <Sidebar page={page} onPage={setPage} downloadBadge={exploreBadge} badgeProgress={exploreActive > 0 ? exploreProgress : undefined} updateAvailable={appUpdate?.status === "available"} status={status} abnormal={serviceAbnormal} gpuStats={gpuStats} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed((value) => !value)} theme={theme} onToggleTheme={() => void persist({ ...config, theme: theme === "dark" ? "light" : "dark" })} />
-    <div className={cn("workspace", isDockPage && "dock-mode")}><Topbar page={page} status={status} busy={busy} onToggleService={status.running ? handleStop : startQuick} models={config.models} modelId={quickModelId || config.preferredModelId || config.models[0]?.id || ""} onSelectModel={setQuickModelId} zenMode={zenMode} onToggleZenMode={() => setZenMode((v) => !v)} /><main className="main-content">
-      {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} query={query} onQuery={setQuery} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onAddProfile={(model) => { const isN = model.path.toLowerCase().endsWith(".ninfer"); const baseP = isN ? DEFAULT_NINFER_PROFILES[0] : DEFAULT_PROFILES[0]; setProfileEditing({ modelId: model.id, profile: { ...baseP, id: uid("profile"), name: t("newProfile") } }); }} onRenameModel={renameModel} onUpdateModelTags={updateModelTags} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} justImportedIds={justImportedIds} />}
+    <div className={cn("workspace", isDockPage && "dock-mode")}><Topbar page={page} status={status} busy={busy} serviceStarting={serviceStarting} onToggleService={status.running ? handleStop : startQuick} models={config.models} modelId={quickModelId || config.preferredModelId || config.models[0]?.id || ""} onSelectModel={setQuickModelId} zenMode={zenMode} onToggleZenMode={() => setZenMode((v) => !v)} /><main className="main-content">
+      {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} serviceStarting={serviceStarting} query={query} onQuery={setQuery} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onAddProfile={(model) => { const isN = model.path.toLowerCase().endsWith(".ninfer"); const baseP = isN ? DEFAULT_NINFER_PROFILES[0] : DEFAULT_PROFILES[0]; setProfileEditing({ modelId: model.id, profile: { ...baseP, id: uid("profile"), name: t("newProfile") } }); }} onRenameModel={renameModel} onUpdateModelTags={updateModelTags} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} justImportedIds={justImportedIds} onToast={setToast} />}
       <ExplorePage visible={page === "explore"} config={config} onPersist={persist} onToast={setToast} onLog={appendLog} diskUsage={diskUsage} onPickModelsDir={pickModelsDirFlow} onDownload={handleModelDownload} activeDownloads={downloads} progressMap={modelProgress} onPauseTask={handlePauseTask} onResumeTasks={handleResumeTasks} onPauseTasks={handlePauseTasks} onClearDone={handleClearDone} onCancelTask={handleCancelTask} onDeleteTask={handleDeleteTask} onDeleteTasks={deleteTasksImpl} onRetry={handleRetry} onReveal={handleReveal} onGoSettings={() => setPage("settings")} />
       {page === "profiles" && <ProfilesPage models={config.models} engines={config.engines} activeEngineId={config.activeEngineId} onEdit={(modelId, profile) => setProfileEditing({ modelId, profile })} onDelete={deleteProfile} onDuplicate={duplicateProfile} onSetDefault={setDefaultProfile} onReorderProfile={reorderProfiles} onDeleteProfiles={deleteMultipleProfiles} />}
       {/* 会话页保持常驻（隐藏而非卸载）：切换菜单不销毁内嵌 WebUI，回来时无需从聊天记录重新进入；WebUI 始终填满 Dock 下全部剩余高度 */}
@@ -1347,6 +1400,19 @@ export default function App() {
           setToast(t("toast.settingsSaved"));
         }}
         onClose={handleCloseOrphanModal}
+      />
+    )}
+    {backupImportEnvelope && (
+      <BackupImportModal
+        envelope={backupImportEnvelope}
+        currentConfig={config}
+        onConfirm={async (merged, summaryToast) => {
+          await persist(merged, summaryToast);
+          setBackupImportEnvelope(null);
+        }}
+        onClose={() => setBackupImportEnvelope(null)}
+        checkPathsExist={pathsExist}
+        onPickFolder={pickDirectory}
       />
     )}
   </div>;

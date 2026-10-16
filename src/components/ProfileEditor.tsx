@@ -10,7 +10,17 @@ const LOAD_MODES = ["mmap", "mlock", "ragged", "row", "direct"];
 const REASONING_MODES = ["off", "auto", "on"];
 const REASONING_EFFORTS = ["auto", "low", "medium", "high", "xhigh"];
 
-const NINFER_KV_DTYPES = ["rk8v4", "int8", "bf16", "nvfp4", "k8v4"];
+const NINFER_KV_DTYPES = [
+  "bf16",
+  "int8",
+  "fp8",
+  "rk8v4",
+  "rk4v4",
+  "rk4v4-e8",
+  "rk2v4-e8",
+  "nvfp4",
+  "k8v4",
+];
 const NINFER_CUDA_POLICIES = ["default", "mixed", "strict"];
 const NINFER_REASONING_EFFORTS = ["high", "xhigh", "medium", "low", "minimal", "none"];
 
@@ -260,7 +270,7 @@ export default function ProfileEditor({
             <div className="form-section-title"><span>01</span><div><h3>{t("ed.s1Title")}</h3><p>{t("ed.s1Desc")}</p></div></div>
             <div className="form-grid profile-info-grid">
               {/* 第一行：预设名称、监听地址、监听端口（各占 2 列，共 6 列，均分） */}
-              <Field label={t("f.name")} colSpan={2}>
+              <Field label={t("f.name")} hint={t("f.nameHint")} colSpan={2}>
                 <input
                   value={draft.name}
                   onChange={(e) => update("name", e.target.value)}
@@ -275,11 +285,12 @@ export default function ProfileEditor({
               </Field>
 
               {/* 第二行：说明与 推理引擎版本并排（各占 3 列，共 6 列，各 50%） */}
-              <Field label={t("f.description")} colSpan={3}>
+              <Field label={t("f.description")} hint={t("f.descriptionHint")} colSpan={3}>
                 <input value={draft.description} onChange={(e) => update("description", e.target.value)} />
               </Field>
               <Field
                 label={isNinfer ? (t("ed.runtimeEngineLabel") || "推理引擎") : t("llama.presetEngineLabel")}
+                hint={t("f.engineHint")}
                 colSpan={3}
               >
                 <select
@@ -389,10 +400,23 @@ export default function ProfileEditor({
             </div>
             {isNinfer ? (
               <div className="form-grid three">
-                <Field label={t("f.kvDtype")} hint="--kv-dtype">
-                  <select value={draft.kvDtype || "rk8v4"} onChange={select("kvDtype")}>
-                    {NINFER_KV_DTYPES.map((v) => <option key={v} value={v}>{v.toUpperCase()}</option>)}
-                  </select>
+                <Field label={t("f.kvDtype")} hint="--kv-dtype" tooltip={t("f.kvDtypeTooltip")}>
+                  {(() => {
+                    const currentKv = (draft.kvDtype || "k8v4").toLowerCase();
+                    const hasCustom = !NINFER_KV_DTYPES.includes(currentKv);
+                    return (
+                      <select value={currentKv} onChange={select("kvDtype")}>
+                        {hasCustom && draft.kvDtype && (
+                          <option value={draft.kvDtype}>{draft.kvDtype}</option>
+                        )}
+                        {NINFER_KV_DTYPES.map((v) => (
+                          <option key={v} value={v}>
+                            {v}
+                          </option>
+                        ))}
+                      </select>
+                    );
+                  })()}
                 </Field>
                 {isNinferKvmem ? (
                   <>
@@ -833,66 +857,66 @@ export default function ProfileEditor({
           <button className="secondary-button" onClick={onClose}>{t("cancel")}</button>
           <button
             className="primary-button"
-            onClick={() => {
-              const sanitizedBudget =
-                typeof draft.reasoningBudget === "number" && Number.isFinite(draft.reasoningBudget)
-                  ? Math.max(-1, Math.trunc(draft.reasoningBudget))
-                  : -1;
-              onSave(
-                {
-                  ...draft,
-                  mtpDraftPath: draft.mtpDraftPath?.trim() || undefined,
-                  reasoningBudget: sanitizedBudget,
-                  noMmprojOffload: Boolean(draft.noMmprojOffload),
-                  ...(isNinfer
-                    ? {
-                      kvDtype: draft.kvDtype || "rk8v4",
-                      prefillChunk: draft.prefillChunk ?? 512,
-                      fastPrefillKernel: Boolean(draft.fastPrefillKernel),
-                      cudaMemoryPolicy: draft.cudaMemoryPolicy || "default",
-                      deviceIndex: draft.deviceIndex ?? 0,
-                      deviceProfile: "auto",
-                      deviceProfilePath: undefined,
-                      gdnStateFp16: draft.gdnStateFp16 ?? true,
-                      preserveThinking: draft.preserveThinking ?? true,
-                      useAltPrefixCaching: draft.useAltPrefixCaching ?? true,
-                      deviceSnapshotSlots: typeof draft.deviceSnapshotSlots === "number" && draft.deviceSnapshotSlots > 0 ? Math.trunc(draft.deviceSnapshotSlots) : undefined,
-                      specMtp: draft.specMtp ?? true,
-                      draftTokens: draft.draftTokens ?? 2,
-                      adaptiveMtp: draft.adaptiveMtp ?? true,
-                      ngramDraftTokens: draft.ngramDraftTokens ?? 0,
-                      defaultMaxTokens: Math.max(0, Math.trunc(draft.defaultMaxTokens ?? 0)),
-                      topK: typeof draft.topK === "number" && draft.topK > 0 ? Math.min(20, Math.trunc(draft.topK)) : undefined,
-                      seed: typeof draft.seed === "number" && draft.seed >= 0 ? Math.trunc(draft.seed) : undefined,
-                      cudaGraphAllowanceMib: typeof draft.cudaGraphAllowanceMib === "number" && draft.cudaGraphAllowanceMib >= 0 ? Math.trunc(draft.cudaGraphAllowanceMib) : undefined,
-                      vision: Boolean(draft.vision || draft.visionCpu || draft.visionResidency === "cpu"),
-                      visionCpu: Boolean(draft.visionCpu || draft.visionResidency === "cpu"),
-                      visionResidency: (draft.visionCpu || draft.visionResidency === "cpu") ? "cpu" : (draft.visionResidency?.trim() || undefined),
-                      visionMaxMerged: typeof draft.visionMaxMerged === "number" && draft.visionMaxMerged > 0 ? Math.trunc(draft.visionMaxMerged) : undefined,
-                      mediaCacheMib: typeof draft.mediaCacheMib === "number" && draft.mediaCacheMib >= 0 ? Math.trunc(draft.mediaCacheMib) : undefined,
-                      mediaLiveMib: typeof draft.mediaLiveMib === "number" && draft.mediaLiveMib > 0 ? Math.trunc(draft.mediaLiveMib) : undefined,
-                      mediaPreprocessThreads: typeof draft.mediaPreprocessThreads === "number" && draft.mediaPreprocessThreads >= 0 ? Math.trunc(draft.mediaPreprocessThreads) : undefined,
-                      ...(isNinferKvmem
-                        ? {
-                          kvmemBudget: draft.kvmemBudget ?? 16384,
-                          kvmemGenReserve: draft.kvmemGenReserve ?? 4096,
-                          kvmemHostMib: draft.kvmemHostMib ?? 16384,
-                          kvmemSessions: draft.kvmemSessions ?? 4,
-                        }
-                        : {
-                          hostCacheMib: draft.hostCacheMib ?? 8192,
-                          kvCapacity: draft.kvCapacity ?? 32768,
-                        }),
-                    }
-                    : {}),
-                },
-                isDefault
-              );
-            }}
-          >
-            <Save size={16} />
-            {t("saveProfile")}
-          </button>
+              onClick={() => {
+                const sanitizedBudget =
+                  typeof draft.reasoningBudget === "number" && Number.isFinite(draft.reasoningBudget)
+                    ? Math.max(-1, Math.trunc(draft.reasoningBudget))
+                    : -1;
+                onSave(
+                  {
+                    ...draft,
+                    mtpDraftPath: draft.mtpDraftPath?.trim() || undefined,
+                    reasoningBudget: sanitizedBudget,
+                    noMmprojOffload: Boolean(draft.noMmprojOffload),
+                    ...(isNinfer
+                      ? {
+                        kvDtype: draft.kvDtype || "k8v4",
+                        prefillChunk: draft.prefillChunk ?? 512,
+                        fastPrefillKernel: Boolean(draft.fastPrefillKernel),
+                        cudaMemoryPolicy: draft.cudaMemoryPolicy || "default",
+                        deviceIndex: draft.deviceIndex ?? 0,
+                        deviceProfile: "auto",
+                        deviceProfilePath: undefined,
+                        gdnStateFp16: draft.gdnStateFp16 ?? true,
+                        preserveThinking: draft.preserveThinking ?? true,
+                        useAltPrefixCaching: draft.useAltPrefixCaching ?? true,
+                        deviceSnapshotSlots: typeof draft.deviceSnapshotSlots === "number" && draft.deviceSnapshotSlots > 0 ? Math.trunc(draft.deviceSnapshotSlots) : undefined,
+                        specMtp: draft.specMtp ?? true,
+                        draftTokens: draft.draftTokens ?? 2,
+                        adaptiveMtp: draft.adaptiveMtp ?? true,
+                        ngramDraftTokens: draft.ngramDraftTokens ?? 0,
+                        defaultMaxTokens: Math.max(0, Math.trunc(draft.defaultMaxTokens ?? 0)),
+                        topK: typeof draft.topK === "number" && draft.topK > 0 ? Math.min(20, Math.trunc(draft.topK)) : undefined,
+                        seed: typeof draft.seed === "number" && draft.seed >= 0 ? Math.trunc(draft.seed) : undefined,
+                        cudaGraphAllowanceMib: typeof draft.cudaGraphAllowanceMib === "number" && draft.cudaGraphAllowanceMib >= 0 ? Math.trunc(draft.cudaGraphAllowanceMib) : undefined,
+                        vision: Boolean(draft.vision || draft.visionCpu || draft.visionResidency === "cpu"),
+                        visionCpu: Boolean(draft.visionCpu || draft.visionResidency === "cpu"),
+                        visionResidency: (draft.visionCpu || draft.visionResidency === "cpu") ? "cpu" : (draft.visionResidency?.trim() || undefined),
+                        visionMaxMerged: typeof draft.visionMaxMerged === "number" && draft.visionMaxMerged > 0 ? Math.trunc(draft.visionMaxMerged) : undefined,
+                        mediaCacheMib: typeof draft.mediaCacheMib === "number" && draft.mediaCacheMib >= 0 ? Math.trunc(draft.mediaCacheMib) : undefined,
+                        mediaLiveMib: typeof draft.mediaLiveMib === "number" && draft.mediaLiveMib > 0 ? Math.trunc(draft.mediaLiveMib) : undefined,
+                        mediaPreprocessThreads: typeof draft.mediaPreprocessThreads === "number" && draft.mediaPreprocessThreads >= 0 ? Math.trunc(draft.mediaPreprocessThreads) : undefined,
+                        ...(isNinferKvmem
+                          ? {
+                            kvmemBudget: draft.kvmemBudget ?? 16384,
+                            kvmemGenReserve: draft.kvmemGenReserve ?? 4096,
+                            kvmemHostMib: draft.kvmemHostMib ?? 16384,
+                            kvmemSessions: draft.kvmemSessions ?? 4,
+                          }
+                          : {
+                            hostCacheMib: draft.hostCacheMib ?? 8192,
+                            kvCapacity: draft.kvCapacity ?? 32768,
+                          }),
+                      }
+                      : {}),
+                  },
+                  isDefault
+                );
+              }}
+            >
+              <Save size={16} />
+              {t("saveProfile")}
+            </button>
         </footer>
       </section>
     </div>

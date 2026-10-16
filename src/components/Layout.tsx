@@ -77,12 +77,14 @@ export function Sidebar({ page, onPage, downloadBadge, badgeProgress, updateAvai
   </aside>;
 }
 
-export function Topbar({ page, status, busy, onToggleService, models, modelId, onSelectModel, zenMode, onToggleZenMode }: { page: Page; status: ServerStatus; busy: boolean; onToggleService: () => void; models: ModelAsset[]; modelId: string; onSelectModel: (id: string) => void; zenMode?: boolean; onToggleZenMode?: () => void }) {
+export function Topbar({ page, status, busy, serviceStarting, onToggleService, models, modelId, onSelectModel, zenMode, onToggleZenMode }: { page: Page; status: ServerStatus; busy: boolean; serviceStarting?: boolean; onToggleService: () => void; models: ModelAsset[]; modelId: string; onSelectModel: (id: string) => void; zenMode?: boolean; onToggleZenMode?: () => void }) {
   const { t } = useI18n();
   /** 状态融入模型组件：运行中用只读胶囊替代下拉框（绿点 + 模型名称），停止服务后自动还原为可选下拉框 */
   const active = models.find((model) => model.id === status.modelId);
   const runningLabel = active ? modelTitle(active) : status.modelName || t("modelFallback");
   const isZenActive = zenMode && page === "playground";
+  /** 忙碌（启停请求进行中）或启动中（端口未就绪）统一走旋转过渡，避免图标生硬跳变 */
+  const pending = busy || !!serviceStarting;
   return (
     <header className="topbar" data-tauri-drag-region="deep">
       <div className="breadcrumbs">
@@ -90,15 +92,15 @@ export function Topbar({ page, status, busy, onToggleService, models, modelId, o
       </div>
       <div className="topbar-actions">
         {!isZenActive && (
-          <div className={cn("launcher-capsule", status.running && "running", busy && "busy")}>
+          <div className={cn("launcher-capsule", status.running && "running", pending && "busy")}>
             {status.running ? (
-              <span className="capsule-model" title={t("runningPrefix", { label: runningLabel })}>
-                <i className={cn("status-dot", busy ? "busy" : "live")} aria-hidden="true" />
+              <span className="capsule-model" title={pending ? t("statusStarting") : t("runningPrefix", { label: runningLabel })}>
+                <i className={cn("status-dot", pending ? "busy" : "live")} aria-hidden="true" />
                 <span>{runningLabel}</span>
               </span>
             ) : (
               <label className="capsule-select" title={t("selectModel")}>
-                <i className={cn("status-dot", busy ? "busy" : "idle")} aria-hidden="true" />
+                <i className={cn("status-dot", pending ? "busy" : "idle")} aria-hidden="true" />
                 <select value={modelId} onChange={(e) => onSelectModel(e.target.value)} disabled={!models.length || busy}>
                   {!models.length && <option value="">{t("selectModel")}</option>}
                   {models.map((item) => (
@@ -111,13 +113,13 @@ export function Topbar({ page, status, busy, onToggleService, models, modelId, o
             )}
             <span className="capsule-divider" aria-hidden="true" />
             <button
-              className={cn("capsule-btn", status.running && "running", busy && "busy")}
+              className={cn("capsule-btn", status.running && "running", pending && "busy")}
               disabled={busy}
               onClick={onToggleService}
               title={t(status.running ? "stopService" : "startService")}
               aria-label={t(status.running ? "stopService" : "startService")}
             >
-              {busy ? (
+              {pending ? (
                 <Loader2 size={12} className="spin" />
               ) : status.running ? (
                 <Square size={11} fill="currentColor" />

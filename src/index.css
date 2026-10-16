@@ -1123,26 +1123,36 @@ select option:checked {
   font-weight: 600;
 }
 
+/* 强调主操作按钮：全局统一为低饱和琥珀风格（与局部琥珀按钮一致） */
 .primary-button {
   height: 36px;
   padding: 0 14px;
-  border: 1px solid #9a6230;
-  color: #fff;
-  background: linear-gradient(135deg, #cf8530 0%, #b8471a 100%);
-  box-shadow: 0 6px 16px rgba(184, 71, 26, .16);
+  border: 1px solid rgba(255, 107, 40, .35);
+  color: #ffd9ad;
+  background: rgba(255, 107, 40, .12);
+  box-shadow: none;
+  transition: background .15s ease, border-color .15s ease, color .15s ease;
+}
+
+.primary-button:hover {
+  background: rgba(255, 107, 40, .22);
+  border-color: rgba(255, 107, 40, .6);
+  color: #ffffff;
 }
 
 [data-theme="light"] .primary-button {
   height: 36px;
   padding: 0 14px;
-  border: 1px solid #df8c42;
-  color: #fff;
-  background: linear-gradient(135deg, #ffa02e 0%, #ff4d17 100%);
-  box-shadow: 0 8px 22px rgba(217, 127, 54, .22);
+  border: 1px solid #efd3a6;
+  color: #b96a10;
+  background: #fdf2e1;
+  box-shadow: none;
 }
 
-.primary-button:hover {
-  filter: brightness(1.08);
+[data-theme="light"] .primary-button:hover {
+  background: #fce7cb;
+  border-color: #e5be85;
+  color: #9c550b;
 }
 
 .secondary-button {
@@ -4520,7 +4530,7 @@ select option:checked {
   margin-left: 3px;
 }
 
-/* ==================== llama.cpp 管理及更新 (精炼单面板 + 右下角操作聚合) ==================== */
+/* ==================== 引擎管理及更新 (精炼单面板 + 右下角操作聚合) ==================== */
 
 .engine-management-card .settings-card-body {
   display: flex;
@@ -4656,6 +4666,31 @@ select option:checked {
   align-items: center;
   gap: 10px;
   flex-wrap: wrap;
+}
+
+/* 当前引擎非 llama.cpp 官方构建：隐藏官方更新控件，仅显示提示条 */
+.engine-unified-status-row.official-update-unavailable .engine-backend-control-group,
+.engine-unified-status-row.official-update-unavailable .engine-unified-version-group {
+  display: none;
+}
+
+.engine-nonllama-update-hint {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 9px 12px;
+  border-radius: 8px;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.22);
+  color: #a5b4c8;
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.engine-nonllama-update-hint svg {
+  color: #38bdf8;
+  flex-shrink: 0;
 }
 
 /* 组合胶囊分段栏与 CUDA 复合下拉 (方案 B) */
@@ -4900,7 +4935,7 @@ select option:checked {
   flex-shrink: 0 !important;
 }
 
-/* 高亮主操作按钮 (深沉高阶，杜绝亮橙色) */
+/* 高亮主操作按钮：统一低饱和琥珀风格 */
 .engine-primary-btn {
   display: inline-flex;
   align-items: center;
@@ -4911,16 +4946,17 @@ select option:checked {
   font-weight: 600;
   height: 31px;
   padding: 0 14px;
-  background: #f4f4f5;
-  color: #09090b;
-  border: 1px solid #f4f4f5;
+  background: rgba(255, 107, 40, .12);
+  color: #ffd9ad;
+  border: 1px solid rgba(255, 107, 40, .35);
   cursor: pointer;
   transition: all 0.15s ease;
 }
 
 .engine-primary-btn:hover {
-  background: #ffffff;
-  border-color: #ffffff;
+  background: rgba(255, 107, 40, .22);
+  border-color: rgba(255, 107, 40, .6);
+  color: #ffffff;
 }
 
 .engine-primary-btn:disabled {
@@ -5722,7 +5758,7 @@ select option:checked {
   color: #64748b;
 }
 
-/* 亮色模式适配：llama.cpp 管理及更新 */
+/* 亮色模式适配：引擎管理及更新 */
 [data-theme="light"] .engine-card-header-left h3 {
   color: #0f172a;
 }
@@ -5759,6 +5795,16 @@ select option:checked {
 
 [data-theme="light"] .engine-unified-divider {
   background: #f1f5f9;
+}
+
+[data-theme="light"] .engine-nonllama-update-hint {
+  background: #f0f9ff;
+  border-color: #bae6fd;
+  color: #475569;
+}
+
+[data-theme="light"] .engine-nonllama-update-hint svg {
+  color: #0284c7;
 }
 
 [data-theme="light"] .mini-seg-divider {
@@ -5846,15 +5892,15 @@ select option:checked {
 }
 
 [data-theme="light"] .engine-primary-btn {
-  background: #0f172a;
-  border-color: #0f172a;
-  color: #ffffff;
+  background: #fdf2e1;
+  border-color: #efd3a6;
+  color: #b96a10;
 }
 
 [data-theme="light"] .engine-primary-btn:hover {
-  background: #1e293b;
-  border-color: #1e293b;
-  color: #ffffff;
+  background: #fce7cb;
+  border-color: #e5be85;
+  color: #9c550b;
 }
 
 [data-theme="light"] .dock-engine-pill {
@@ -12203,6 +12249,22 @@ select option:checked {
   animation: spin 1s linear infinite
 }
 
+/* 启停过渡：顶栏胶囊 / 启动按钮的旋转图标淡入，避免与静止图标生硬跳变 */
+@keyframes swap-fade-in {
+  from {
+    opacity: 0
+  }
+
+  to {
+    opacity: 1
+  }
+}
+
+.capsule-btn .spin,
+.launch-button .spin {
+  animation: spin 1s linear infinite, swap-fade-in .2s ease
+}
+
 /* 亮色：导入模型弹窗（修复黑底） */
 [data-theme="light"] .secondary-button {
   border-color: #d3dbe6;
@@ -12655,6 +12717,477 @@ body.reordering .profile-card:hover {
   padding: 13px 18px;
   border-top: 1px solid #333333;
   background: #1f1f1f;
+}
+
+.confirm-modal.backup-import-modal {
+  width: min(600px, 94vw);
+  max-height: min(90vh, 760px);
+  display: flex;
+  flex-direction: column;
+}
+
+.backup-modal-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.backup-modal-icon {
+  color: #7952f5;
+  flex-shrink: 0;
+}
+
+.backup-modal-subtitle {
+  margin: 2px 0 0 0;
+  font-size: 12px;
+  color: #8b95a7;
+}
+
+.backup-import-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+  max-height: calc(90vh - 140px);
+  padding: 16px 20px;
+}
+
+.backup-stats-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.backup-stat-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  font-size: 13px;
+  color: #d1d5db;
+}
+
+.backup-stat-chip svg {
+  color: #9d80f8;
+}
+
+.backup-path-health {
+  border-radius: 10px;
+  padding: 12px 14px;
+  font-size: 13px;
+}
+
+.backup-path-health.ok {
+  background: rgba(16, 185, 129, 0.1);
+  border: 1px solid rgba(16, 185, 129, 0.3);
+  color: #6ee7b7;
+}
+
+.backup-path-health.ok strong {
+  color: #a7f3d0;
+}
+
+.backup-path-health.ok .backup-path-health-desc {
+  color: #a7f3d0;
+  opacity: 0.9;
+}
+
+.backup-health-icon.ok {
+  color: #10b981;
+}
+
+.backup-path-health.warning {
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+  color: #fcd34d;
+}
+
+.backup-path-health.warning strong {
+  color: #fde68a;
+}
+
+.backup-path-health.warning .backup-path-health-desc {
+  color: #fde68a;
+  opacity: 0.9;
+}
+
+.backup-health-icon.warning {
+  color: #f59e0b;
+}
+
+.backup-path-health-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.backup-path-health-desc {
+  margin: 6px 0 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.backup-remap-box {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed rgba(245, 158, 11, 0.3);
+}
+
+.backup-remap-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.backup-remap-hint {
+  font-size: 11px;
+  color: #9ca3af;
+}
+
+.backup-remap-inputs {
+  display: flex;
+  align-items: flex-end;
+  gap: 10px;
+  margin-top: 10px;
+}
+
+.backup-remap-field {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.remap-arrow {
+  margin-bottom: 8px;
+  color: #f59e0b;
+  flex-shrink: 0;
+}
+
+.field-label-small {
+  font-size: 11px;
+  color: #9ca3af;
+  font-weight: 500;
+}
+
+.backup-remap-field input {
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid #404040;
+  background: #181818;
+  color: #f3f4f6;
+  font-size: 12px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+.backup-remap-field input:focus {
+  border-color: #7952f5;
+}
+
+.input-with-button {
+  display: flex;
+  gap: 6px;
+}
+
+.input-with-button input {
+  flex: 1;
+  min-width: 0;
+}
+
+.backup-mode-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.backup-section-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e5e7eb;
+}
+
+.backup-mode-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.backup-mode-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 12px 14px;
+  border-radius: 10px;
+  border: 1px solid #333333;
+  background: #1c1c1c;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.backup-mode-card:hover {
+  border-color: #4a4a4a;
+}
+
+.backup-mode-card.active {
+  border-color: #7952f5;
+  background: rgba(121, 82, 245, 0.07);
+}
+
+.mode-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: #f3f4f6;
+}
+
+.recommended-badge {
+  font-size: 11px;
+  padding: 1px 6px;
+  background: #7952f5;
+  color: #ffffff;
+  border-radius: 4px;
+  font-weight: 500;
+}
+
+.backup-mode-card p {
+  margin: 0;
+  font-size: 12px;
+  color: #9ca3af;
+  line-height: 1.5;
+  padding-left: 22px;
+}
+
+.backup-sub-options {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 8px;
+  padding-top: 8px;
+  padding-left: 22px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #d1d5db;
+  cursor: pointer;
+}
+
+.checkbox-row.compact {
+  font-size: 12px;
+}
+
+.backup-strategy-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 14px;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 8px;
+}
+
+.backup-strategy-radios {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.radio-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #d1d5db;
+  cursor: pointer;
+}
+
+.profile-footer-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: auto;
+}
+
+.profile-footer-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.profile-footer-msg {
+  font-size: 12px;
+  color: #10b981;
+  margin-left: 4px;
+}
+
+.profile-footer-msg.error {
+  color: #ef4444;
+}
+
+/* Light Theme overrides for Backup Import Modal */
+[data-theme="light"] .confirm-modal.backup-import-modal {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.14), 0 8px 16px rgba(15, 23, 42, 0.06);
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-modal-title h2 {
+  color: #0f172a;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-modal-subtitle {
+  color: #64748b;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-stat-chip {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  color: #334155;
+  font-weight: 500;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-stat-chip svg {
+  color: #7c3aed;
+}
+
+/* 路径就绪（健康状态）高对比度呈现 */
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-path-health.ok {
+  background: #f0fdf4;
+  border: 1px solid #86efac;
+  color: #166534;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-path-health.ok strong {
+  color: #14532d;
+  font-weight: 600;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-path-health.ok .backup-path-health-desc {
+  color: #15803d;
+  opacity: 1;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-health-icon.ok {
+  color: #16a34a;
+}
+
+/* 路径缺失警告状态高对比度呈现 */
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-path-health.warning {
+  background: #fffbeb;
+  border: 1px solid #fde68a;
+  color: #92400e;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-path-health.warning strong {
+  color: #78350f;
+  font-weight: 600;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-path-health.warning .backup-path-health-desc {
+  color: #92400e;
+  opacity: 1;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-health-icon.warning {
+  color: #d97706;
+}
+
+/* 路径重定位工具栏 */
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-remap-box {
+  border-top-color: #fde68a;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-remap-hint {
+  color: #64748b;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .field-label-small {
+  color: #475569;
+  font-weight: 600;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .remap-arrow {
+  color: #d97706;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-remap-field input {
+  background: #ffffff;
+  border-color: #cbd5e1;
+  color: #0f172a;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-remap-field input:focus {
+  border-color: #7c3aed;
+  box-shadow: 0 0 0 2px rgba(124, 58, 237, 0.12);
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-remap-field input::placeholder {
+  color: #94a3b8;
+}
+
+/* 模式选择区域及卡片 */
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-section-label {
+  color: #0f172a;
+  font-weight: 600;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-mode-card {
+  background: #ffffff;
+  border: 1px solid #e2e8f0;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-mode-card:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-mode-card.active {
+  background: #f5f3ff;
+  border-color: #7c3aed;
+  box-shadow: 0 0 0 1px #7c3aed;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .mode-card-header {
+  color: #0f172a;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-mode-card p {
+  color: #475569;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-sub-options {
+  border-top: 1px solid #e2e8f0;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .checkbox-row {
+  color: #1e293b;
+  font-weight: 500;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .checkbox-row input[type="checkbox"],
+[data-theme="light"] .confirm-modal.backup-import-modal input[type="radio"] {
+  accent-color: #7c3aed;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .backup-strategy-row {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+}
+
+[data-theme="light"] .confirm-modal.backup-import-modal .radio-label {
+  color: #1e293b;
+  font-weight: 500;
 }
 
 .pick-model-modal {

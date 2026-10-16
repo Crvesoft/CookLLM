@@ -27,8 +27,11 @@ struct ModelAsset {
     display_name: Option<String>,
     path: String,
     size_bytes: u64,
+    #[serde(default)]
     architecture: String,
+    #[serde(default)]
     quantization: String,
+    #[serde(default)]
     parameters: String,
     /// 该模型专属的运行预设。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -39,10 +42,14 @@ struct ModelAsset {
     /// 该模型的默认启动预设 id。
     #[serde(default)]
     default_profile_id: Option<String>,
+    #[serde(default = "default_accent")]
     accent: String,
     /// 自定义标签（如角色扮演、代码、未知量化补录等）
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     tags: Vec<String>,
+    /// 架构/参数量/量化来源（gguf / ninfer / filename）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metadata_source: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,18 +57,25 @@ struct ModelAsset {
 struct Profile {
     id: String,
     name: String,
+    #[serde(default)]
     description: String,
     #[serde(default = "default_host")]
     host: String,
+    #[serde(default = "default_port")]
     port: u16,
+    #[serde(default)]
     gpu_layers: i32,
+    #[serde(default = "default_context_size")]
     context_size: u32,
+    #[serde(default = "default_threads")]
     threads: u16,
     #[serde(default = "default_parallel")]
     parallel: u32,
+    #[serde(default = "default_batch_size")]
     batch_size: u32,
     #[serde(default = "default_ubatch_size")]
     ubatch_size: u32,
+    #[serde(default = "default_flash_attention")]
     flash_attention: bool,
     #[serde(default)]
     ncmoe_layers: i32,
@@ -85,10 +99,15 @@ struct Profile {
     reasoning_budget: Option<i32>,
     #[serde(default = "default_load_mode")]
     load_mode: String,
+    #[serde(default = "default_temperature")]
     temperature: f64,
+    #[serde(default = "default_top_p")]
     top_p: f64,
+    #[serde(default = "default_min_p")]
     min_p: f64,
+    #[serde(default = "default_repeat_penalty")]
     repeat_penalty: f64,
+    #[serde(default)]
     extra_args: String,
     /// 该预设挂载的图像识别视觉模型（mmproj）；非空时以 --mmproj 附加启动。
     #[serde(default)]
@@ -99,7 +118,7 @@ struct Profile {
     /// 该预设关联的 llama.cpp / ninfer 引擎分支 ID；未指定或为空则跟随全局默认主引擎。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     engine_id: Option<String>,
-    /// ninfer / ninfer-kvmem 专属：KV 缓存量化类型（如 rk8v4 / int8 / bf16 / nvfp4）
+    /// ninfer / ninfer-kvmem 专属：KV 缓存量化格式（如 bf16 / int8 / fp8 / rk8v4 / rk4v4 / rk4v4-e8 / rk2v4-e8 / nvfp4 / k8v4）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     kv_dtype: Option<String>,
     /// ninfer 专属：预填充分块 Token 数（128 的倍数，如 256 / 512）
@@ -221,6 +240,16 @@ struct LlamaEngine {
 }
 
 fn default_host() -> String { "0.0.0.0".into() }
+fn default_port() -> u16 { 9931 }
+fn default_context_size() -> u32 { 8192 }
+fn default_threads() -> u16 { 8 }
+fn default_batch_size() -> u32 { 512 }
+fn default_flash_attention() -> bool { true }
+fn default_temperature() -> f64 { 0.7 }
+fn default_top_p() -> f64 { 0.9 }
+fn default_min_p() -> f64 { 0.05 }
+fn default_repeat_penalty() -> f64 { 1.1 }
+fn default_accent() -> String { "violet".into() }
 fn default_parallel() -> u32 { 1 }
 fn default_ubatch_size() -> u32 { 256 }
 fn default_cache_type() -> String { "f32".into() }
@@ -257,11 +286,13 @@ fn log_timing(t: &StartupTiming) {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AppConfig {
+    #[serde(default)]
     server_path: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     active_engine_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     engines: Vec<LlamaEngine>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     models: Vec<ModelAsset>,
     /// 旧版全局预设池，仅兼容旧配置文件；新配置的预设已内置于每个模型。
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -850,33 +881,334 @@ fn save_config(app: AppHandle, config: AppConfig) -> Result<(), String> {
         return Err(error.to_string());
     }
     let _ = fs::remove_file(&backup);
-    update_tray_status(&app, None);
+    if let Ok(mut guard) = CONFIG_CACHE.get_or_init(|| Mutex::new(None)).lock() {
+        *guard = None;
+    }
+    refresh_tray_menu(&app);
     Ok(())
 }
 
-fn update_tray_status(app: &AppHandle, running_model: Option<&str>) {
-    let active_name = if running_model.is_some() {
-        running_model.map(|s| s.to_string())
-    } else {
-        let state = app.try_state::<ProcessState>();
-        if let Some(state) = state {
-            let guard = state.0.lock().ok();
-            guard.and_then(|g| g.as_ref().and_then(|m| m.status.model_name.clone()))
-                 .filter(|name| !name.is_empty())
-        } else {
-            None
-        }
-    };
+#[derive(Debug, Clone, PartialEq)]
+enum TrayServerState {
+    Stopped,
+    Starting { model_name: String, port: u16 },
+    Running { model_name: String, port: u16 },
+    Failed { model_name: String, error: String },
+}
+
+static CURRENT_TRAY_STATE: OnceLock<Mutex<TrayServerState>> = OnceLock::new();
+
+fn get_tray_state() -> TrayServerState {
+    CURRENT_TRAY_STATE
+        .get_or_init(|| Mutex::new(TrayServerState::Stopped))
+        .lock()
+        .map(|g| g.clone())
+        .unwrap_or(TrayServerState::Stopped)
+}
+
+fn set_tray_state(new_state: TrayServerState) {
+    if let Ok(mut g) = CURRENT_TRAY_STATE.get_or_init(|| Mutex::new(TrayServerState::Stopped)).lock() {
+        *g = new_state;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum TrayLightColor {
+    Green,
+    Yellow,
+    Red,
+}
+
+static TRAY_PULSE_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn update_tray_status(app: &AppHandle, _hint_model: Option<&str>) {
+    let tray_state = get_tray_state();
     if let Some(tray) = app.tray_by_id("main-tray") {
-        let tooltip = match active_name.as_deref() {
-            Some(name) => format!("CookLLM · 运行中: {}", name),
-            None => "CookLLM · 本地大模型管理器".to_string(),
+        let tooltip = match &tray_state {
+            TrayServerState::Starting { model_name, port } => {
+                format!("CookLLM · 启动中: {} (http://127.0.0.1:{})", model_name, port)
+            }
+            TrayServerState::Running { model_name, port } => {
+                format!("CookLLM · 运行中: {} (http://127.0.0.1:{})", model_name, port)
+            }
+            TrayServerState::Failed { model_name, error } => {
+                format!("CookLLM · 启动失败: {} ({})", model_name, error)
+            }
+            TrayServerState::Stopped => "CookLLM · 本地大模型管理器".to_string(),
         };
         let _ = tray.set_tooltip(Some(tooltip));
-        if let Ok(menu) = build_tray_menu(app, active_name.as_deref()) {
+        if let Ok(menu) = build_tray_menu(app, &tray_state) {
+            let _ = tray.set_menu(Some(menu));
+        }
+
+        match &tray_state {
+            TrayServerState::Starting { .. } => {
+                start_tray_pulse_animation(app, TrayLightColor::Yellow);
+            }
+            TrayServerState::Running { .. } => {
+                start_tray_pulse_animation(app, TrayLightColor::Green);
+            }
+            TrayServerState::Failed { .. } => {
+                TRAY_PULSE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if let Some(base_icon) = app.default_window_icon() {
+                    let red_icon = create_tray_status_icon(base_icon, 0, TrayLightColor::Red);
+                    let _ = tray.set_icon(Some(red_icon));
+                }
+            }
+            TrayServerState::Stopped => {
+                TRAY_PULSE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if let Some(default_icon) = app.default_window_icon() {
+                    let _ = tray.set_icon(Some(default_icon.clone()));
+                }
+            }
+        }
+    }
+}
+
+/// 仅根据当前状态刷新托盘菜单项（模型列表更新时调用），不重启或打断正在运行的呼吸灯
+fn refresh_tray_menu(app: &AppHandle) {
+    let tray_state = get_tray_state();
+    if let Some(tray) = app.tray_by_id("main-tray") {
+        if let Ok(menu) = build_tray_menu(app, &tray_state) {
             let _ = tray.set_menu(Some(menu));
         }
     }
+}
+
+/// 启动托盘图标右下角呼吸灯动画（按状态切换颜色：启动中琥珀黄，运行中翠绿）
+fn start_tray_pulse_animation(app: &AppHandle, color: TrayLightColor) {
+    let new_gen = TRAY_PULSE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let frames: Vec<tauri::image::Image<'static>> = match app.default_window_icon() {
+        Some(icon) => (0..4).map(|phase| create_tray_status_icon(icon, phase, color)).collect(),
+        None => return,
+    };
+
+    let app_handle = app.clone();
+    std::thread::spawn(move || {
+        let mut phase = 0;
+        loop {
+            if TRAY_PULSE_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != new_gen {
+                break;
+            }
+
+            // 当前状态必须是 Starting 或 Running，若已被置为 Stopped 或 Failed 则立即退出循环
+            match get_tray_state() {
+                TrayServerState::Starting { .. } | TrayServerState::Running { .. } => {},
+                _ => break,
+            }
+
+            // 运行时二次校验，确保子进程存活
+            let is_alive = {
+                let state = app_handle.try_state::<ProcessState>();
+                if let Some(state) = state {
+                    let mut guard = state.0.lock().ok();
+                    if let Some(guard) = guard.as_mut() {
+                        if let Some(managed) = guard.as_mut() {
+                            match managed.child.try_wait() {
+                                Ok(None) => true,
+                                _ => {
+                                    **guard = None;
+                                    false
+                                }
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            };
+
+            if !is_alive {
+                if TRAY_PULSE_GENERATION.load(std::sync::atomic::Ordering::SeqCst) == new_gen {
+                    let cur_state = get_tray_state();
+                    match cur_state {
+                        TrayServerState::Starting { model_name, .. } => {
+                            set_tray_state(TrayServerState::Failed {
+                                model_name,
+                                error: "服务启动中意外退出，请查看日志".to_string(),
+                            });
+                            update_tray_status(&app_handle, None);
+                        }
+                        TrayServerState::Running { model_name, .. } => {
+                            set_tray_state(TrayServerState::Failed {
+                                model_name,
+                                error: "服务异常退出，请查看日志".to_string(),
+                            });
+                            update_tray_status(&app_handle, None);
+                        }
+                        _ => {}
+                    }
+                }
+                break;
+            }
+
+            if let Some(tray) = app_handle.tray_by_id("main-tray") {
+                let _ = tray.set_icon(Some(frames[phase % frames.len()].clone()));
+            }
+
+            phase = (phase + 1) % frames.len();
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+    });
+}
+
+/// 基于原始应用图标在右下角像素级合成抗锯齿高光呼吸状态灯（支持黄/绿/红）
+fn create_tray_status_icon(base_icon: &tauri::image::Image, phase: usize, color: TrayLightColor) -> tauri::image::Image<'static> {
+    let width = base_icon.width();
+    let height = base_icon.height();
+    let mut rgba = base_icon.rgba().to_vec();
+
+    if width < 8 || height < 8 {
+        return tauri::image::Image::new_owned(rgba, width, height);
+    }
+
+    let w_f = width as f32;
+    let h_f = height as f32;
+
+    // 状态点圆心位于右下角
+    let base_r = (w_f * 0.17).max(3.0);
+    let margin = (w_f * 0.06).max(1.5);
+    let cx = w_f - base_r - margin;
+    let cy = h_f - base_r - margin;
+
+    // 4 阶段呼吸光晕节奏：0: 柔暗 -> 1: 渐亮 -> 2: 满亮 -> 3: 渐暗
+    let breathe_factor = match color {
+        TrayLightColor::Red => 0.0,
+        _ => match phase % 4 {
+            0 => 0.25,
+            1 => 0.65,
+            2 => 1.00,
+            _ => 0.65,
+        },
+    };
+
+    let border_r = base_r + (w_f * 0.04).max(1.0);
+    let halo_r = if color == TrayLightColor::Red {
+        base_r * 1.25
+    } else {
+        base_r * (1.18 + 0.38 * breathe_factor)
+    };
+
+    let min_x = ((cx - halo_r - 2.0).floor().max(0.0)) as u32;
+    let max_x = ((cx + halo_r + 2.0).ceil().min(w_f - 1.0)) as u32;
+    let min_y = ((cy - halo_r - 2.0).floor().max(0.0)) as u32;
+    let max_y = ((cy + halo_r + 2.0).ceil().min(h_f - 1.0)) as u32;
+
+    let (main_rgb, halo_rgb) = match color {
+        TrayLightColor::Green => ((34, 197, 94), (34, 197, 94)),
+        TrayLightColor::Yellow => ((234, 179, 8), (245, 158, 11)),
+        TrayLightColor::Red => ((239, 68, 68), (220, 38, 38)),
+    };
+
+    for y in min_y..=max_y {
+        for x in min_x..=max_x {
+            let px = x as f32 + 0.5;
+            let py = y as f32 + 0.5;
+            let dx = px - cx;
+            let dy = py - cy;
+            let dist = (dx * dx + dy * dy).sqrt();
+
+            let idx = ((y * width + x) * 4) as usize;
+            if idx + 3 >= rgba.len() {
+                continue;
+            }
+
+            // 1. 发光外晕 (Halo)
+            if dist <= halo_r && dist > border_r {
+                let t = (dist - border_r) / (halo_r - border_r);
+                let halo_alpha = if color == TrayLightColor::Red {
+                    (1.0 - t).powi(2) * 0.40
+                } else {
+                    (1.0 - t).powi(2) * (0.30 + 0.50 * breathe_factor)
+                };
+                blend_pixel(&mut rgba[idx..idx + 4], halo_rgb.0, halo_rgb.1, halo_rgb.2, halo_alpha);
+            }
+            // 2. 深色外边框 (Border) 确保对比度
+            else if dist <= border_r && dist > base_r {
+                let t = (dist - base_r) / (border_r - base_r);
+                let border_alpha = 0.85 * (1.0 - t * 0.2);
+                blend_pixel(&mut rgba[idx..idx + 4], 15, 23, 42, border_alpha);
+            }
+            // 3. 核心指示灯点 (Core)
+            else if dist <= base_r {
+                let hx = dx + base_r * 0.25;
+                let hy = dy + base_r * 0.25;
+                let h_dist = (hx * hx + hy * hy).sqrt();
+
+                let (r, g, b) = if h_dist < base_r * 0.45 {
+                    let hl = 1.0 - (h_dist / (base_r * 0.45));
+                    match color {
+                        TrayLightColor::Green => {
+                            let r = (46.0 + 180.0 * hl * (0.6 + 0.4 * breathe_factor)).min(255.0) as u8;
+                            let g = (204.0 + 51.0 * hl).min(255.0) as u8;
+                            let b = (113.0 + 142.0 * hl * (0.6 + 0.4 * breathe_factor)).min(255.0) as u8;
+                            (r, g, b)
+                        }
+                        TrayLightColor::Yellow => {
+                            let r = 255;
+                            let g = (210.0 + 45.0 * hl).min(255.0) as u8;
+                            let b = (100.0 + 155.0 * hl).min(255.0) as u8;
+                            (r, g, b)
+                        }
+                        TrayLightColor::Red => {
+                            let r = (245.0 + 10.0 * hl).min(255.0) as u8;
+                            let g = (80.0 + 140.0 * hl).min(255.0) as u8;
+                            let b = (80.0 + 140.0 * hl).min(255.0) as u8;
+                            (r, g, b)
+                        }
+                    }
+                } else {
+                    match color {
+                        TrayLightColor::Green => {
+                            let base_green = (197.0 + 35.0 * breathe_factor).min(255.0) as u8;
+                            (34, base_green, 94)
+                        }
+                        TrayLightColor::Yellow => {
+                            let base_yellow = (179.0 + 35.0 * breathe_factor).min(214.0) as u8;
+                            (234, base_yellow, 8)
+                        }
+                        TrayLightColor::Red => (main_rgb.0, main_rgb.1, main_rgb.2),
+                    }
+                };
+                blend_pixel(&mut rgba[idx..idx + 4], r, g, b, 1.0);
+            }
+        }
+    }
+
+    tauri::image::Image::new_owned(rgba, width, height)
+}
+
+fn blend_pixel(dst: &mut [u8], src_r: u8, src_g: u8, src_b: u8, src_alpha: f32) {
+    if src_alpha <= 0.0 {
+        return;
+    }
+    let sa = src_alpha.min(1.0);
+    let da = (dst[3] as f32) / 255.0;
+    let out_a = sa + da * (1.0 - sa);
+    if out_a <= 0.0 {
+        return;
+    }
+
+    let dr = dst[0] as f32;
+    let dg = dst[1] as f32;
+    let db = dst[2] as f32;
+
+    let sr = src_r as f32;
+    let sg = src_g as f32;
+    let sb = src_b as f32;
+
+    let out_r = (sr * sa + dr * da * (1.0 - sa)) / out_a;
+    let out_g = (sg * sa + dg * da * (1.0 - sa)) / out_a;
+    let out_b = (sb * sa + db * da * (1.0 - sa)) / out_a;
+
+    dst[0] = out_r.round().clamp(0.0, 255.0) as u8;
+    dst[1] = out_g.round().clamp(0.0, 255.0) as u8;
+    dst[2] = out_b.round().clamp(0.0, 255.0) as u8;
+    dst[3] = (out_a * 255.0).round().clamp(0.0, 255.0) as u8;
 }
 
 /// 自动发现官方 device-profiles.json 并智能同步/补全硬件优化路由到隔离缓存中。
@@ -1101,6 +1433,25 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
 }
 
 fn start_server_internal(app: &AppHandle, state: &ProcessState, model_id: &str, profile_id: &str) -> Result<ServerStatus, String> {
+    match start_server_core(app, state, model_id, profile_id) {
+        Ok(status) => Ok(status),
+        Err(err) => {
+            let model_name = read_config(app).ok().and_then(|c| {
+                c.models.iter().find(|m| m.id == model_id).map(|m| {
+                    m.display_name.as_deref().filter(|s| !s.trim().is_empty()).unwrap_or(&m.name).to_string()
+                })
+            }).unwrap_or_else(|| model_id.to_string());
+            set_tray_state(TrayServerState::Failed {
+                model_name,
+                error: err.clone(),
+            });
+            update_tray_status(app, None);
+            Err(err)
+        }
+    }
+}
+
+fn start_server_core(app: &AppHandle, state: &ProcessState, model_id: &str, profile_id: &str) -> Result<ServerStatus, String> {
     let config = read_config(app)?;
     let model = config.models.iter().find(|item| item.id == model_id).cloned().ok_or("未找到模型配置")?;
     let profile = model.profiles.iter().find(|item| item.id == profile_id)
@@ -1155,6 +1506,8 @@ fn start_server_internal(app: &AppHandle, state: &ProcessState, model_id: &str, 
     let lifecycle = PROCESS_LIFECYCLE_LOCK.lock().map_err(|_| "进程生命周期锁已损坏")?;
     let previous = { state.0.lock().map_err(|_| "进程状态锁已损坏")?.take() };
     if let Some(mut running) = previous {
+        // 先递增代数，使旧服务的呼吸灯与端口探测线程立即失效退出，绝不误判旧进程终止为异常退出
+        TRAY_PULSE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         kill_managed_child(&mut running);
     }
 
@@ -1251,8 +1604,12 @@ fn start_server_internal(app: &AppHandle, state: &ProcessState, model_id: &str, 
         }
 
         // 6. KV 数据类型量化
-        let kv_dtype = profile.kv_dtype.as_deref().unwrap_or("rk8v4");
-        command.arg("--kv-dtype").arg(kv_dtype);
+        if !has_extra_arg("--kv-dtype") {
+            let kv_dtype = profile.kv_dtype.as_deref().unwrap_or("k8v4").trim();
+            if !kv_dtype.is_empty() {
+                command.arg("--kv-dtype").arg(kv_dtype.to_lowercase());
+            }
+        }
 
         // 7. GPU 设备索引与硬件调优
         let device = profile.device_index.unwrap_or(0);
@@ -1619,33 +1976,157 @@ fn start_server_internal(app: &AppHandle, state: &ProcessState, model_id: &str, 
         engine_backend: engine_display_backend,
         engine_type: Some(engine_type.to_string()),
     };
-    {
-        let mut guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
-        *guard = Some(ManagedProcess { child, status: status.clone(), request_log: ninfer_request_log_tail });
-    }
-    drop(lifecycle);
-    update_tray_status(app, Some(&model_display_name));
-    Ok(status)
-}
+        let port = profile.port;
+        {
+            let mut guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
+            *guard = Some(ManagedProcess { child, status: status.clone(), request_log: ninfer_request_log_tail });
+        }
+        drop(lifecycle);
 
-#[tauri::command]
-fn stop_server(app: AppHandle, state: State<ProcessState>) -> Result<ServerStatus, String> {
-    stop_server_internal(&app, &state)
-}
+        set_tray_state(TrayServerState::Starting {
+            model_name: model_display_name.clone(),
+            port,
+        });
+        update_tray_status(app, None);
 
-fn stop_server_internal(app: &AppHandle, state: &ProcessState) -> Result<ServerStatus, String> {
-    let lifecycle = PROCESS_LIFECYCLE_LOCK.lock().map_err(|_| "进程生命周期锁已损坏")?;
-    let managed = { state.0.lock().map_err(|_| "进程状态锁已损坏")?.take() };
-    if let Some(mut managed) = managed {
-        kill_managed_child(&mut managed);
-        emit_log(app, "system", "llama-server 已停止");
-    } else {
-        emit_log(app, "system", "llama-server 未在运行");
+        let app_probe = app.clone();
+        let probe_model_name = model_display_name.clone();
+        let probe_port = port;
+        let probe_pid = pid;
+        let probe_gen = TRAY_PULSE_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
+
+        std::thread::spawn(move || {
+            use std::net::{SocketAddr, TcpStream};
+            use std::time::{Duration, Instant};
+
+            let start_time = Instant::now();
+            let timeout = Duration::from_secs(120);
+            let addr: Result<SocketAddr, _> = format!("127.0.0.1:{}", probe_port).parse();
+            let addr = match addr {
+                Ok(a) => a,
+                Err(_) => return,
+            };
+
+            loop {
+                // 若代数已变更或托盘状态不再是本轮匹配的 Starting（如用户已主动停止或切换模型），直接静默退出
+                if TRAY_PULSE_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != probe_gen {
+                    return;
+                }
+                match get_tray_state() {
+                    TrayServerState::Starting { ref model_name, port } if model_name == &probe_model_name && port == probe_port => {},
+                    _ => return,
+                }
+
+                let is_alive = {
+                    let state = app_probe.try_state::<ProcessState>();
+                    if let Some(state) = state {
+                        let mut guard = state.0.lock().ok();
+                        if let Some(guard) = guard.as_mut() {
+                            if let Some(managed) = guard.as_mut() {
+                                if managed.status.pid == Some(probe_pid) {
+                                    match managed.child.try_wait() {
+                                        Ok(None) => true,
+                                        _ => {
+                                            **guard = None;
+                                            false
+                                        }
+                                    }
+                                } else {
+                                    false
+                                }
+                            } else {
+                                false
+                            }
+                        } else {
+                            false
+                        }
+                    } else {
+                        false
+                    }
+                };
+
+                if !is_alive {
+                    if TRAY_PULSE_GENERATION.load(std::sync::atomic::Ordering::SeqCst) == probe_gen {
+                        if let TrayServerState::Starting { ref model_name, port } = get_tray_state() {
+                            if model_name == &probe_model_name && port == probe_port {
+                                set_tray_state(TrayServerState::Failed {
+                                    model_name: probe_model_name,
+                                    error: "服务启动后意外退出，请查看日志".to_string(),
+                                });
+                                update_tray_status(&app_probe, None);
+                            }
+                        }
+                    }
+                    return;
+                }
+
+                if let Ok(stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(300)) {
+                    drop(stream);
+                    if TRAY_PULSE_GENERATION.load(std::sync::atomic::Ordering::SeqCst) == probe_gen {
+                        if let TrayServerState::Starting { ref model_name, port } = get_tray_state() {
+                            if model_name == &probe_model_name && port == probe_port {
+                                set_tray_state(TrayServerState::Running {
+                                    model_name: probe_model_name.clone(),
+                                    port: probe_port,
+                                });
+                                update_tray_status(&app_probe, None);
+                                emit_log(&app_probe, "system", format!("服务已就绪 (http://127.0.0.1:{})", probe_port));
+                            }
+                        }
+                    }
+                    return;
+                }
+
+                if start_time.elapsed() > timeout {
+                    if TRAY_PULSE_GENERATION.load(std::sync::atomic::Ordering::SeqCst) == probe_gen {
+                        if let TrayServerState::Starting { ref model_name, port } = get_tray_state() {
+                            if model_name == &probe_model_name && port == probe_port {
+                                set_tray_state(TrayServerState::Failed {
+                                    model_name: probe_model_name,
+                                    error: "服务启动超时 (端口未就绪)".to_string(),
+                                });
+                                update_tray_status(&app_probe, None);
+                            }
+                        }
+                    }
+                    return;
+                }
+
+                std::thread::sleep(Duration::from_millis(350));
+            }
+        });
+
+        Ok(status)
     }
-    drop(lifecycle);
-    update_tray_status(app, None);
-    Ok(ServerStatus::default())
-}
+
+    #[tauri::command]
+    fn stop_server(app: AppHandle, state: State<ProcessState>) -> Result<ServerStatus, String> {
+        stop_server_internal(&app, &state)
+    }
+
+    fn stop_server_internal(app: &AppHandle, state: &ProcessState) -> Result<ServerStatus, String> {
+        let lifecycle = PROCESS_LIFECYCLE_LOCK.lock().map_err(|_| "进程生命周期锁已损坏")?;
+
+        // 1. 立即重置托盘状态为 Stopped 并递增代数，使正在运行的呼吸灯与端口探测线程瞬间失效退出，
+        //    从时序上彻底杜绝将“主动停止”误判为“意外退出/启动失败”
+        set_tray_state(TrayServerState::Stopped);
+        TRAY_PULSE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        update_tray_status(app, None);
+
+        let managed = { state.0.lock().map_err(|_| "进程状态锁已损坏")?.take() };
+        if let Some(mut managed) = managed {
+            kill_managed_child(&mut managed);
+            emit_log(app, "system", "llama-server 已停止");
+        } else {
+            emit_log(app, "system", "llama-server 未在运行");
+        }
+        drop(lifecycle);
+
+        // 杀完子进程后再次确保托盘处于已停止状态
+        set_tray_state(TrayServerState::Stopped);
+        update_tray_status(app, None);
+        Ok(ServerStatus::default())
+    }
 
 #[tauri::command]
 fn get_server_status(state: State<ProcessState>) -> Result<ServerStatus, String> {
@@ -2210,7 +2691,7 @@ fn extract_quant_from_name(name: &str) -> String {
         "q5_k_s", "q5_k_m", "q5_k", "q5_0", "q5_1",
         "q6_k", "q8_0", "q8_k",
         "fp16", "f16", "bf16", "fp32", "f32",
-        "rk8v4", "k8v4", "nvfp4", "int8", "int4", "gsq"
+        "rk8v4", "rk4v4-e8", "rk4v4_e8", "rk4v4", "rk2v4-e8", "rk2v4_e8", "k8v4", "nvfp4", "fp8", "int8", "int4", "gsq"
     ];
     for &q in QUANTS {
         if let Some(pos) = lower.find(q) {
@@ -2414,28 +2895,31 @@ mod gguf_meta_tests {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct ConfigBackupFile {
+struct ConfigBackupEnvelope {
     kind: String,
     version: u32,
-    exported_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    exported_at: Option<u64>,
     config: AppConfig,
 }
 
-/// 导出当前配置。默认去掉 Hugging Face Token，避免明文令牌跟着备份文件传播。
+
+/// 导出当前配置。去掉 Hugging Face Token 及绑定用户名，避免令牌与隐私信息外泄。
 #[tauri::command]
 fn export_config_backup(app: AppHandle) -> Result<String, String> {
     let mut config = read_config(&app)?;
     config.hf_token = None;
-    let backup = ConfigBackupFile {
+    config.hf_token_user = None;
+    let backup = ConfigBackupEnvelope {
         kind: "cookllm-config".into(),
-        version: 1,
-        exported_at: now_ms(),
+        version: 2,
+        exported_at: Some(now_ms()),
         config,
     };
     let contents = serde_json::to_vec_pretty(&backup).map_err(|error| error.to_string())?;
-    let file_name = format!("CookLLM-config-{}.json", backup.exported_at);
+    let file_name = format!("CookLLM-config-{}.json", backup.exported_at.unwrap_or(0));
     let Some(target) = app.dialog().file().set_file_name(&file_name).add_filter("CookLLM 配置", &["json"]).blocking_save_file() else {
         return Ok(String::new());
     };
@@ -2446,9 +2930,9 @@ fn export_config_backup(app: AppHandle) -> Result<String, String> {
     Ok(path.to_string_lossy().to_string())
 }
 
-/// 读取一份备份。只校验信封，真正合并由前端按当前模型库决定，避免覆盖用户刚改的配置。
+/// 读取一份备份。返回包含信封元数据和配置内容的 Envelope。
 #[tauri::command]
-fn pick_config_backup(app: AppHandle) -> Result<Option<AppConfig>, String> {
+fn pick_config_backup(app: AppHandle) -> Result<Option<ConfigBackupEnvelope>, String> {
     let Some(file_path) = app.dialog().file().add_filter("CookLLM 配置", &["json"]).blocking_pick_file() else {
         return Ok(None);
     };
@@ -2457,15 +2941,32 @@ fn pick_config_backup(app: AppHandle) -> Result<Option<AppConfig>, String> {
     };
     let contents = fs::read_to_string(path).map_err(|error| error.to_string())?;
     let value: serde_json::Value = serde_json::from_str(&contents).map_err(|error| format!("配置文件不是有效 JSON：{}", error))?;
-    let config_value = if value.get("kind").and_then(|item| item.as_str()) == Some("cookllm-config") {
-        value.get("config").cloned().ok_or_else(|| "配置备份缺少 config 字段".to_string())?
+    let (kind, version, exported_at, config_value) = if value.get("kind").and_then(|item| item.as_str()) == Some("cookllm-config") {
+        let v = value.get("version").and_then(|item| item.as_u64()).unwrap_or(1) as u32;
+        let at = value.get("exported_at").or_else(|| value.get("exportedAt")).and_then(|item| item.as_u64());
+        let cfg = value.get("config").cloned().ok_or_else(|| "配置备份缺少 config 字段".to_string())?;
+        ("cookllm-config".to_string(), v, at, cfg)
     } else if value.get("models").is_some() || value.get("serverPath").is_some() {
-        value
+        ("cookllm-config".to_string(), 1, None, value)
     } else {
         return Err("这不是 CookLLM 配置备份".into());
     };
     let config: AppConfig = serde_json::from_value(config_value).map_err(|error| format!("配置备份无法识别：{}", error))?;
-    Ok(Some(config))
+    Ok(Some(ConfigBackupEnvelope {
+        kind,
+        version,
+        exported_at,
+        config,
+    }))
+}
+
+
+/// 弹出系统目录选择框并返回所选路径（取消时返回 None）
+#[tauri::command]
+fn pick_directory(app: AppHandle) -> Option<String> {
+    let folder = app.dialog().file().blocking_pick_folder()?;
+    let path = folder.as_path()?;
+    Some(path.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -3312,57 +3813,107 @@ fn configure_main_window(app: &mut tauri::App) -> tauri::Result<()> {
     Ok(())
 }
 
-fn build_tray_menu(app: &AppHandle, running_model: Option<&str>) -> tauri::Result<Menu<tauri::Wry>> {
+fn build_tray_menu(app: &AppHandle, tray_state: &TrayServerState) -> tauri::Result<Menu<tauri::Wry>> {
     let menu = Menu::new(app)?;
 
     let config = read_config(app).ok();
     let models = config.as_ref().map(|c| c.models.as_slice()).unwrap_or_default();
 
-    // 1. 服务状态项 (只读指示)
-    let status_text = match running_model {
-        Some(name) => {
-            let format_tag = models
-                .iter()
-                .find(|m| {
-                    let dname = m
-                        .display_name
-                        .as_deref()
-                        .map(str::trim)
-                        .filter(|s| !s.is_empty())
-                        .unwrap_or(m.name.as_str());
-                    dname == name || m.name == name
-                })
-                .map(|m| {
-                    let is_ninfer = m.path.to_lowercase().ends_with(".ninfer")
-                        || m.architecture.to_uppercase() == "NINFER";
-                    if is_ninfer { "[Ninfer] " } else { "[GGUF] " }
-                })
-                .unwrap_or("");
-            format!("🟢 运行中: {}{}", format_tag, name)
-        }
-        None => "⚪ 服务未运行".to_string(),
+    let get_format_tag = |name: &str| -> &'static str {
+        models
+            .iter()
+            .find(|m| {
+                let dname = m
+                    .display_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(m.name.as_str());
+                dname == name || m.name == name
+            })
+            .map(|m| {
+                let is_ninfer = m.path.to_lowercase().ends_with(".ninfer")
+                    || m.architecture.to_uppercase() == "NINFER";
+                if is_ninfer { "[Ninfer] " } else { "[GGUF] " }
+            })
+            .unwrap_or("")
     };
-    let status_item = MenuItem::with_id(app, "status_label", &status_text, false, None::<&str>)?;
-    menu.append(&status_item)?;
 
-    let sep1 = PredefinedMenuItem::separator(app)?;
-    menu.append(&sep1)?;
+    // 1. 服务状态项与控制项（仅在启动中、运行中或失败时显示；未运行/停止时保持干净，与刚打开软件时完全一致，无多余任务状态行）
+    match tray_state {
+        TrayServerState::Starting { model_name, port } => {
+            let tag = get_format_tag(model_name);
+            let status_text = format!("🟡 启动中: {}{} (端口: {})", tag, model_name, port);
+            let status_item = MenuItem::with_id(app, "status_label", &status_text, true, None::<&str>)?;
+            menu.append(&status_item)?;
 
-    // 2. 启停控制（服务运行中显示停止与打开 WebUI）
-    if running_model.is_some() {
-        let stop_item = MenuItem::with_id(app, "stop_service", "⏹ 停止服务", true, None::<&str>)?;
-        menu.append(&stop_item)?;
+            let sep_status = PredefinedMenuItem::separator(app)?;
+            menu.append(&sep_status)?;
 
-        let webui_item = MenuItem::with_id(app, "open_webui", "🌐 打开会话界面 (WebUI)", true, None::<&str>)?;
-        menu.append(&webui_item)?;
+            let stop_item = MenuItem::with_id(app, "stop_service", "⏹ 取消启动", true, None::<&str>)?;
+            menu.append(&stop_item)?;
+
+            let copy_item = MenuItem::with_id(app, "copy_endpoint", "📋 复制 API 接口", true, None::<&str>)?;
+            menu.append(&copy_item)?;
+
+            let sep_ctrl = PredefinedMenuItem::separator(app)?;
+            menu.append(&sep_ctrl)?;
+        }
+        TrayServerState::Running { model_name, port } => {
+            let tag = get_format_tag(model_name);
+            let status_text = format!("🟢 运行中: {}{} (端口: {})", tag, model_name, port);
+            let status_item = MenuItem::with_id(app, "status_label", &status_text, true, None::<&str>)?;
+            menu.append(&status_item)?;
+
+            let sep_status = PredefinedMenuItem::separator(app)?;
+            menu.append(&sep_status)?;
+
+            let stop_item = MenuItem::with_id(app, "stop_service", "⏹ 停止服务", true, None::<&str>)?;
+            menu.append(&stop_item)?;
+
+            let webui_item = MenuItem::with_id(app, "open_webui", "🌐 打开会话界面 (WebUI)", true, None::<&str>)?;
+            menu.append(&webui_item)?;
+
+            let copy_item = MenuItem::with_id(app, "copy_endpoint", "📋 复制 API 接口", true, None::<&str>)?;
+            menu.append(&copy_item)?;
+
+            let sep_ctrl = PredefinedMenuItem::separator(app)?;
+            menu.append(&sep_ctrl)?;
+        }
+        TrayServerState::Failed { model_name, .. } => {
+            let status_text = format!("🔴 启动失败: {} (点击查看详情)", model_name);
+            let status_item = MenuItem::with_id(app, "view_error", &status_text, true, None::<&str>)?;
+            menu.append(&status_item)?;
+
+            let sep_status = PredefinedMenuItem::separator(app)?;
+            menu.append(&sep_status)?;
+        }
+        TrayServerState::Stopped => {
+            // 未运行时不显示任何服务状态项，与刚打开软件时完全一致
+        }
     }
 
-    // 3. 启动模型（子菜单）
-    let start_submenu = Submenu::new(app, "▶ 启动模型", true)?;
+    // 3. 模型子菜单：处于启动中或运行中时传达“切换”语义
+    let is_active = matches!(tray_state, TrayServerState::Starting { .. } | TrayServerState::Running { .. });
+    let current_model_name = match tray_state {
+        TrayServerState::Starting { model_name, .. } | TrayServerState::Running { model_name, .. } => Some(model_name.as_str()),
+        _ => None,
+    };
+
+    let submenu_title = if is_active { "▶ 切换模型" } else { "▶ 启动模型" };
+    let model_submenu = Submenu::new(app, submenu_title, true)?;
+
     if models.is_empty() {
         let empty_item = MenuItem::with_id(app, "no_models", "暂无可用模型 (请先导入)", false, None::<&str>)?;
-        start_submenu.append(&empty_item)?;
+        model_submenu.append(&empty_item)?;
     } else {
+        if is_active {
+            let switch_hint = MenuItem::with_id(app, "switch_hint", "💡 点击将先停止当前服务", false, None::<&str>)?;
+            model_submenu.append(&switch_hint)?;
+            let hint_sep = PredefinedMenuItem::separator(app)?;
+            model_submenu.append(&hint_sep)?;
+        }
+
         for model in models {
             let display_name = model
                 .display_name
@@ -3373,7 +3924,7 @@ fn build_tray_menu(app: &AppHandle, running_model: Option<&str>) -> tauri::Resul
             let is_ninfer = model.path.to_lowercase().ends_with(".ninfer")
                 || model.architecture.to_uppercase() == "NINFER";
             let format_tag = if is_ninfer { "[Ninfer]" } else { "[GGUF]" };
-            let is_current = running_model.map(|cur| cur == display_name).unwrap_or(false);
+            let is_current = current_model_name.map(|cur| cur == display_name || cur == model.name).unwrap_or(false);
             let label = if is_current {
                 format!("✓ {} {}", format_tag, display_name)
             } else {
@@ -3381,23 +3932,23 @@ fn build_tray_menu(app: &AppHandle, running_model: Option<&str>) -> tauri::Resul
             };
             let item_id = format!("start_model:{}", model.id);
             let item = MenuItem::with_id(app, &item_id, &label, !is_current, None::<&str>)?;
-            start_submenu.append(&item)?;
+            model_submenu.append(&item)?;
         }
     }
-    menu.append(&start_submenu)?;
+    menu.append(&model_submenu)?;
 
     let sep2 = PredefinedMenuItem::separator(app)?;
     menu.append(&sep2)?;
 
     // 4. 窗口控制
-    let show_item = MenuItem::with_id(app, "show", "显示 CookLLM 窗口", true, None::<&str>)?;
+    let show_item = MenuItem::with_id(app, "show", "显示界面", true, None::<&str>)?;
     menu.append(&show_item)?;
 
     let sep3 = PredefinedMenuItem::separator(app)?;
     menu.append(&sep3)?;
 
     // 5. 退出
-    let quit_item = MenuItem::with_id(app, "quit", "❌ 退出 CookLLM", true, None::<&str>)?;
+    let quit_item = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
     menu.append(&quit_item)?;
 
     Ok(menu)
@@ -3406,7 +3957,7 @@ fn build_tray_menu(app: &AppHandle, running_model: Option<&str>) -> tauri::Resul
 fn handle_tray_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
     let id = event.id.as_ref();
     match id {
-        "show" => {
+        "show" | "status_label" => {
             if let Some(window) = app.get_webview_window("main") {
                 let _ = window.show();
                 let _ = window.unminimize();
@@ -3424,6 +3975,38 @@ fn handle_tray_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
                 guard.and_then(|g| g.as_ref().and_then(|m| m.status.port)).unwrap_or(8080)
             };
             let _ = open_url(app.clone(), format!("http://127.0.0.1:{}", port));
+        }
+        "copy_endpoint" => {
+            let port = match get_tray_state() {
+                TrayServerState::Starting { port, .. } | TrayServerState::Running { port, .. } => port,
+                _ => {
+                    let state = app.state::<ProcessState>();
+                    let guard = state.0.lock().ok();
+                    guard.and_then(|g| g.as_ref().and_then(|m| m.status.port)).unwrap_or(8080)
+                }
+            };
+            let endpoint = format!("http://127.0.0.1:{}/v1", port);
+            if let Err(e) = set_system_clipboard(&endpoint) {
+                emit_log(app, "stderr", &format!("复制 API 接口失败: {}", e));
+            } else {
+                emit_log(app, "system", &format!("已复制 API 接口到剪贴板: {}", endpoint));
+                if let Some(tray) = app.tray_by_id("main-tray") {
+                    let _ = tray.set_tooltip(Some(format!("已复制 API 接口: {}", endpoint)));
+                }
+            }
+        }
+        "view_error" => {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+            let error_msg = if let TrayServerState::Failed { error, .. } = get_tray_state() {
+                error
+            } else {
+                String::new()
+            };
+            let _ = app.emit("tray_view_error", error_msg);
         }
         "quit" => {
             app.exit(0);
@@ -3456,7 +4039,8 @@ fn handle_tray_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
 
 fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
     let handle = app.handle().clone();
-    let menu = build_tray_menu(&handle, None)?;
+    let tray_state = get_tray_state();
+    let menu = build_tray_menu(&handle, &tray_state)?;
 
     let icon = app.default_window_icon().cloned();
 
@@ -3928,7 +4512,7 @@ fn hf_model_from_value(value: &serde_json::Value) -> Option<HuggingFaceModel> {
                 "NVFP4", "NF4", "W4A4", "IQ3_S", "IQ3_XXS", "GSQ", "PQ2", "IQ2_S",
                 "TERNARY", "1.58BIT", "PTQ1", "BONSAI", "FP8", "INT8", "BF16", "FP16",
                 "Q4_K_M", "Q5_K_M", "Q8_0", "Q6_K", "Q4_0", "Q4_1", "Q5_0", "Q5_1",
-                "Q2_K", "Q3_K_M", "Q3_K_S", "Q3_K_L", "RK8V4",
+                "Q2_K", "Q3_K_M", "Q3_K_S", "Q3_K_L", "RK8V4", "RK4V4", "RK4V4-E8", "RK2V4-E8", "K8V4",
             ]
             .iter()
             .find(|candidate| tags.iter().any(|tag| tag.to_uppercase().contains(**candidate)) || id.to_uppercase().contains(**candidate))
@@ -4027,7 +4611,7 @@ fn ms_model_from_value(value: &serde_json::Value) -> Option<HuggingFaceModel> {
                 "NVFP4", "NF4", "W4A4", "IQ3_S", "IQ3_XXS", "GSQ", "PQ2", "IQ2_S",
                 "TERNARY", "1.58BIT", "PTQ1", "BONSAI", "FP8", "INT8", "BF16", "FP16",
                 "Q4_K_M", "Q5_K_M", "Q8_0", "Q6_K", "Q4_0", "Q4_1", "Q5_0", "Q5_1",
-                "Q2_K", "Q3_K_M", "Q3_K_S", "Q3_K_L", "RK8V4",
+                "Q2_K", "Q3_K_M", "Q3_K_S", "Q3_K_L", "RK8V4", "RK4V4", "RK4V4-E8", "RK2V4-E8", "K8V4",
             ]
             .iter()
             .find(|candidate| tags.iter().any(|tag| tag.to_uppercase().contains(**candidate)) || id.to_uppercase().contains(**candidate))
@@ -6651,7 +7235,7 @@ pub fn run() {
             react_mounted_ms: None,
             reported: false,
         })))
-        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_whoami, hf_avatar, hf_download, hf_download_url, hf_cancel_download, hf_pause_download, hf_clear_download, ms_trending, ms_search, ms_list_files, ms_avatar, ms_download, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, check_orphan_server, kill_orphan_server, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, read_ninfer_request_log, pick_files, pick_folder, pick_server_dir, pick_server_file, expand_paths, inspect_gguf, paths_exist, export_config_backup, pick_config_backup, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
+        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_whoami, hf_avatar, hf_download, hf_download_url, hf_cancel_download, hf_pause_download, hf_clear_download, ms_trending, ms_search, ms_list_files, ms_avatar, ms_download, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, check_orphan_server, kill_orphan_server, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, read_ninfer_request_log, pick_files, pick_folder, pick_server_dir, pick_server_file, expand_paths, inspect_gguf, paths_exist, export_config_backup, pick_config_backup, pick_directory, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
         .setup(|app| {
             configure_main_window(app)?;
             setup_tray(app)?;

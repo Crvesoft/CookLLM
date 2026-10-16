@@ -116,6 +116,11 @@ export async function onLlamaLog(handler: (payload: LlamaLogPayload) => void): P
   return listen<LlamaLogPayload>("llama-log", (event) => handler(event.payload));
 }
 
+export async function onTrayViewError(handler: (errorMessage: string) => void): Promise<UnlistenFn | undefined> {
+  if (!isTauri()) return undefined;
+  return listen<string>("tray_view_error", (event) => handler(event.payload));
+}
+
 /** Write to the system clipboard (Tauri fallback when the iframe Clipboard API fails). */
 export async function writeClipboard(text: string): Promise<void> {
   if (!isTauri()) throw new Error("clipboard write is only available in Tauri");
@@ -151,6 +156,13 @@ export async function inspectGguf(path: string): Promise<GgufMeta> {
   return invoke<GgufMeta>("inspect_gguf", { path });
 }
 
+export interface ConfigBackupEnvelope {
+  kind: string;
+  version: number;
+  exportedAt?: number;
+  config: AppConfig;
+}
+
 /** 导出当前配置到用户选择的 JSON 文件；取消时返回空字符串。Token 不会写入备份。 */
 export async function exportConfigBackup(): Promise<string> {
   if (!isTauri()) throw new Error("配置备份仅在桌面端可用");
@@ -158,9 +170,16 @@ export async function exportConfigBackup(): Promise<string> {
 }
 
 /** 选择并解析一份配置备份；用户取消时返回 null。 */
-export async function pickConfigBackup(): Promise<AppConfig | null> {
+export async function pickConfigBackup(): Promise<ConfigBackupEnvelope | null> {
   if (!isTauri()) throw new Error("配置导入仅在桌面端可用");
-  return invoke<AppConfig | null>("pick_config_backup");
+  return invoke<ConfigBackupEnvelope | null>("pick_config_backup");
+}
+
+
+/** 打开系统目录选择对话框；取消时返回 null。 */
+export async function pickDirectory(): Promise<string | null> {
+  if (!isTauri()) return null;
+  return invoke<string | null>("pick_directory");
 }
 
 export async function openConfigDir(): Promise<void> {
