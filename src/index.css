@@ -2798,47 +2798,74 @@ select option:checked {
 
 .settings-stack {
   display: grid;
-  gap: 14px;
-  max-width: 860px
+  gap: 16px;
+  max-width: 860px;
 }
 
 .settings-card {
-  display: grid;
-  grid-template-columns: 36px 1fr;
-  gap: 16px;
-  padding: 18px 20px;
-  border: 1px solid #333333;
-  border-radius: 12px;
-  background: linear-gradient(155deg, #242424, #1e1e1e);
-  transition: border-color .15s, box-shadow .15s
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  border: 1px solid #2e2e34;
+  border-radius: 16px;
+  background: #18181b;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+  transition: border-color .15s, box-shadow .15s;
+  overflow: hidden;
+}
+
+.settings-card-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 22px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.settings-card-header h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #f4f4f5;
+  line-height: 1.2;
+}
+
+.settings-card-header-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .settings-card-icon {
   display: grid;
   place-items: center;
-  width: 36px;
-  height: 36px;
-  border-radius: 9px;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
   color: #94a3b8;
-  background: #222222;
-  border: 1px solid #333333;
-  flex: none
+  background: rgba(255, 255, 255, 0.06);
+  border: none;
+  flex: none;
 }
 
 .settings-card-body {
-  min-width: 0
+  min-width: 0;
+  padding: 18px 22px;
+  display: flex;
+  flex-direction: column;
 }
 
 .settings-card-body h3 {
   margin: 0 0 6px;
   font-size: 15px;
-  font-weight: 600
+  font-weight: 600;
 }
 
 .settings-card-body p {
   margin: 0 0 12px;
   color: #717c8e;
-  font-size: 13px
+  font-size: 13px;
 }
 
 .path-field {
@@ -3871,144 +3898,167 @@ select option:checked {
   border: 1px solid #4b2a35
 }
 
-.hf-token-head {
+/* ==================== 下载授权卡片 (全新单行结构，严格对齐参考图) ==================== */
+.auth-unified-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin: 2px 0 10px
+  gap: 16px;
+  width: 100%;
 }
 
-.hf-token-title {
+.auth-platform-side {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+  width: 105px;
+  min-width: 105px;
 }
 
-.hf-token-title strong {
-  font-size: 14px;
+.auth-platform-name {
+  font-size: 13.5px;
   font-weight: 600;
-  color: #cbd2de
+  color: #0f172a;
+  letter-spacing: -0.1px;
 }
 
-.hf-token-title span {
-  color: #5f6a7c;
-  font-size: 12px
+[data-theme="dark"] .auth-platform-name {
+  color: #f4f4f5;
 }
 
-.hf-token-pill {
+.auth-status-pill {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  flex: none;
-  padding: 3px 10px;
+  font-size: 11.5px;
+  padding: 1.5px 8px;
   border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.1px;
 }
 
-.hf-token-pill.ok {
-  color: #62dca7;
-  background: #13231c;
-  border: 1px solid #2b5948
+.auth-status-pill.unconfigured {
+  background: #f1f5f9;
+  color: #64748b;
+  border: 1px solid #e2e8f0;
 }
 
-.hf-token-pill.err {
-  color: #f0939f;
-  background: #20131a;
-  border: 1px solid #4b2a35
+[data-theme="dark"] .auth-status-pill.unconfigured {
+  background: rgba(255, 255, 255, 0.08);
+  color: #94a3b8;
+  border: 1px solid rgba(255, 255, 255, 0.12);
 }
 
-.hf-token-pill.idle {
-  color: #6f7a8d;
-  background: #272727;
-  border: 1px solid #333333
+.auth-status-pill.ok {
+  background: rgba(34, 197, 94, 0.1);
+  color: #16a34a;
+  border: 1px solid rgba(34, 197, 94, 0.25);
 }
 
-.hf-token-controls {
+[data-theme="dark"] .auth-status-pill.ok {
+  background: rgba(34, 197, 94, 0.16);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.auth-status-pill.err {
+  background: rgba(239, 68, 68, 0.1);
+  color: #dc2626;
+  border: 1px solid rgba(239, 68, 68, 0.25);
+}
+
+[data-theme="dark"] .auth-status-pill.err {
+  background: rgba(239, 68, 68, 0.16);
+  color: #f87171;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+}
+
+.auth-input-wrapper {
+  flex: 1;
+  position: relative;
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-width: 0
+  min-width: 0;
 }
 
-.hf-token-field {
-  position: relative;
-  flex: 1;
-  min-width: 0
-}
-
-.hf-token-field .net-input {
+.auth-token-input {
   width: 100%;
-  padding-right: 34px
+  height: 36px;
+  padding: 0 38px 0 14px;
+  font-size: 13px;
+  border-radius: 8px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  color: #0f172a;
+  outline: none;
+  transition: all 0.15s ease;
 }
 
-.hf-token-eye {
+[data-theme="dark"] .auth-token-input {
+  background: #18181b;
+  border-color: #27272a;
+  color: #f4f4f5;
+}
+
+.auth-token-input:focus {
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.12);
+}
+
+.auth-token-input::placeholder {
+  color: #94a3b8;
+  font-size: 12.5px;
+}
+
+.auth-token-eye {
   position: absolute;
+  right: 8px;
   top: 50%;
-  right: 6px;
   transform: translateY(-50%);
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
   padding: 0;
   border: 0;
-  border-radius: 6px;
-  color: #697487;
+  border-radius: 4px;
   background: transparent;
+  color: #94a3b8;
   cursor: pointer;
-  transition: color .15s, background .15s
+  transition: color 0.15s, background 0.15s;
 }
 
-.hf-token-eye:hover {
-  color: #cbd2de;
-  background: #2c2c2c
+.auth-token-eye:hover {
+  color: #475569;
+  background: #f1f5f9;
 }
 
-.hf-token-test,
-.hf-token-save {
-  flex: none;
-  height: 32px;
-  padding: 0 12px;
-  font-size: 12px;
-  white-space: nowrap
+[data-theme="dark"] .auth-token-eye:hover {
+  color: #e2e8f0;
+  background: #27272a;
 }
 
-.hf-token-save {
-  color: #d1d5db;
-  border: 1px solid #404040;
-  background: #272727;
-  transition: .15s ease
+.auth-btn-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
 }
 
-.hf-token-save:hover:not(:disabled) {
-  border-color: #dd8239;
-  color: #ffd3a0
-}
-
-.hf-token-btn-label {
-  white-space: nowrap
+.auth-action-btn {
+  height: 36px !important;
+  padding: 0 16px !important;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  border-radius: 8px !important;
+  white-space: nowrap !important;
 }
 
 .hf-token-error {
-  margin: 9px 0 0;
-  color: #f0939f;
-  font-size: 12px
-}
-
-[data-theme="light"] .hf-token-save {
-  color: #374151;
-  border: 1px solid #d1d5db;
-  background: #ffffff
-}
-
-[data-theme="light"] .hf-token-save:hover:not(:disabled) {
-  border-color: #dd8239;
-  color: #b96a10;
-  background: #fdfaf6
+  margin: 10px 0 0;
+  color: #ef4444;
+  font-size: 12px;
 }
 
 [data-theme="light"] .hf-token-title strong {
@@ -4086,55 +4136,56 @@ select option:checked {
 /* ---- 常规偏好：列表项合并卡片 ---- */
 .settings-group .settings-card-body h3 {
   margin: 0 0 10px;
-  font-size: 15px
+  font-size: 15px;
 }
 
 .settings-group .settings-card-body>p {
   margin: 0 0 10px;
   color: #717c8e;
-  font-size: 13px
+  font-size: 13px;
 }
 
 .settings-list {
-  display: grid;
+  display: flex;
+  flex-direction: column;
   gap: 0;
-  border: 1px solid #333333;
-  border-radius: 10px;
-  overflow: hidden;
-  background: #1f1f1f
+  border: none;
+  border-radius: 0;
+  overflow: visible;
+  background: transparent;
 }
 
 .settings-row {
   display: flex;
   align-items: center;
-  gap: 14px;
-  min-height: 48px;
+  gap: 16px;
+  min-height: 54px;
   min-width: 0;
-  padding: 10px 14px;
-  border-bottom: 1px solid #2e2e2e
+  padding: 14px 24px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
 }
 
 .settings-row:last-child {
-  border-bottom: 0
+  border-bottom: 0;
 }
 
 .settings-row-label {
   flex: none;
-  min-width: 110px;
-  color: #cbd2de;
-  font-size: 13px;
-  font-weight: 600
+  min-width: 140px;
+  color: #e4e4e7;
+  font-size: 13.5px;
+  font-weight: 500;
 }
 
 .settings-row-desc {
   flex: 1;
   min-width: 0;
-  color: #6f7a8d;
-  font-size: 12px;
-  line-height: 1.4;
+  color: #94a3b8;
+  font-size: 13px;
+  line-height: 1.45;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap
+  white-space: nowrap;
 }
 
 .settings-control {
@@ -4143,7 +4194,6 @@ select option:checked {
   align-items: center;
   justify-content: flex-end;
   min-width: 140px;
-  max-width: 220px
 }
 
 .backup-menu {
@@ -4159,104 +4209,118 @@ select option:checked {
 
 .mini-seg {
   display: inline-flex;
+  align-items: center;
   padding: 3px;
-  border: 1px solid #3c3c3c;
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 8px;
-  background: #1f1f1f
+  background: #1f1f23;
+  gap: 2px;
 }
 
 .mini-seg button {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  padding: 5px 10px;
+  gap: 6px;
+  padding: 5px 12px;
   border: 0;
   border-radius: 6px;
-  color: #7a8598;
+  color: #94a3b8;
   background: transparent;
-  font-size: 12px;
+  font-size: 12.5px;
+  font-weight: 500;
   cursor: pointer;
-  transition: .15s
+  transition: all .15s ease;
 }
 
 .mini-seg button.active {
-  color: #ffd3a0;
-  background: #2b1c10
+  color: #fb923c;
+  background: #272730;
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
 }
 
 .mini-seg button:hover:not(.active) {
-  color: #cbd2de
+  color: #e4e4e7;
 }
 
 .switch {
   position: relative;
-  width: 40px;
-  height: 22px;
+  width: 42px;
+  height: 24px;
   border: 0;
   border-radius: 999px;
-  background: #3c3c3c;
+  background: #3f3f46;
   cursor: pointer;
-  transition: .2s;
-  flex: none
+  transition: background .2s cubic-bezier(0.4, 0, 0.2, 1);
+  flex: none;
 }
 
 .switch.on {
-  background: #dd8239
+  background: #f97316;
 }
 
 .switch-knob {
   position: absolute;
-  top: 2px;
-  left: 2px;
+  top: 3px;
+  left: 3px;
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  background: #fff;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, .35);
-  transition: transform .2s
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, .25);
+  transition: transform .2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .switch.on .switch-knob {
-  transform: translateX(18px)
+  transform: translateX(18px);
 }
 
 [data-theme="light"] .settings-list {
-  background: #ffffff;
-  border-color: #e5e9f1
+  background: transparent;
+  border: none;
 }
 
 [data-theme="light"] .settings-row {
-  border-color: #eef1f6
+  border-bottom-color: #f1f5f9;
 }
 
 [data-theme="light"] .settings-row-label {
-  color: #1f2937
+  color: #1e293b;
 }
 
 [data-theme="light"] .settings-row-desc {
-  color: #8a94a6
+  color: #64748b;
 }
 
 [data-theme="light"] .mini-seg {
-  background: #f4f6fa;
-  border-color: #d3dbe6
+  background: #f1f5f9;
+  border-color: #e2e8f0;
 }
 
 [data-theme="light"] .mini-seg button {
-  color: #6b7384
+  color: #475569;
+}
+
+[data-theme="light"] .mini-seg button:hover:not(.active) {
+  color: #0f172a;
 }
 
 [data-theme="light"] .mini-seg button.active {
-  color: #b96a10;
-  background: #fdf1dd
+  color: #ea580c;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+[data-theme="light"] .mini-seg button.active svg {
+  color: #ea580c;
 }
 
 [data-theme="light"] .switch {
-  background: #d3dbe6
+  background: #cbd5e1;
 }
 
 [data-theme="light"] .switch.on {
-  background: #dd8239
+  background: #f97316;
 }
 
 .engine-card .settings-card-body h3 {
@@ -4584,36 +4648,50 @@ select option:checked {
   margin-left: 3px;
 }
 
-/* 单一聚合主卡片容器 */
-.engine-unified-card {
+/* ==================== 引擎管理卡片 (两行对齐结构，严格对齐参考图) ==================== */
+.engine-card-row {
   display: flex;
-  flex-direction: column;
-  background: #18181b;
-  border: 1px solid #27272a;
-  border-radius: 10px;
-  overflow: visible;
-  position: relative;
-  z-index: 20;
-  margin-top: 2px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 42px;
 }
 
-/* 第一行：当前运行分支与规格徽章 (无路径，呼吸感强) */
-.engine-unified-branch-row {
+.engine-card-row + .engine-card-row {
+  margin-top: 14px;
+}
+
+.engine-nonllama-hint-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #94a3b8;
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+
+.engine-nonllama-hint-inline .engine-nonllama-inline-icon {
+  flex-shrink: 0;
+  color: #64748b;
+}
+
+.engine-row-label {
+  width: 105px;
+  font-size: 13.5px;
+  font-weight: 500;
+  color: #94a3b8;
+  flex-shrink: 0;
+}
+
+.engine-row-main {
   display: flex;
   align-items: center;
   gap: 10px;
-  padding: 12px 16px;
-  flex-wrap: wrap;
-  border-radius: 10px 10px 0 0;
+  flex: 1;
+  min-width: 0;
 }
 
-.engine-unified-label {
-  font-size: 13px;
-  color: #cbd5e1;
-  font-weight: 500;
-}
-
-.engine-unified-name {
+.engine-name-text {
   font-size: 13.5px;
   font-weight: 600;
   color: #f4f4f5;
@@ -4623,9 +4701,9 @@ select option:checked {
 .engine-pill-tag {
   display: inline-flex;
   align-items: center;
-  padding: 1.5px 7px;
-  border-radius: 4px;
-  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 11.5px;
   font-weight: 600;
   font-family: JetBrains Mono, monospace;
   line-height: 1.4;
@@ -4643,22 +4721,65 @@ select option:checked {
   color: #38bdf8;
 }
 
-/* 中间细腻分割线 */
-.engine-unified-divider {
-  height: 1px;
-  background: #27272a;
-  width: 100%;
+.engine-status-text {
+  font-size: 13px;
+  color: #a1a1aa;
+  font-family: JetBrains Mono, monospace;
+  letter-spacing: 0.1px;
 }
 
-/* 第二行：加速单选标签与版本信息状态对齐 */
-.engine-unified-status-row {
+.engine-row-right {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 10px 16px;
-  flex-wrap: wrap;
-  border-radius: 0 0 10px 10px;
+  gap: 8px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.engine-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.engine-row-actions button {
+  height: 34px !important;
+  padding: 0 14px !important;
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  border-radius: 8px !important;
+  white-space: nowrap !important;
+}
+
+.engine-header-hub-btn {
+  height: 32px !important;
+  padding: 0 12px !important;
+  font-size: 12.5px !important;
+  font-weight: 500 !important;
+  border-radius: 8px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+.engine-header-hub-btn .engine-kbd {
+  font-family: inherit;
+  font-size: 11px;
+  padding: 1.5px 6px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #94a3b8;
+  margin-left: 4px;
+  font-weight: 400;
+}
+
+.engine-nonllama-hint {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: #94a3b8;
 }
 
 .engine-backend-control-group {
@@ -4677,20 +4798,20 @@ select option:checked {
 .engine-nonllama-update-hint {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 7px;
   width: 100%;
-  padding: 9px 12px;
-  border-radius: 8px;
-  background: rgba(56, 189, 248, 0.08);
-  border: 1px solid rgba(56, 189, 248, 0.22);
-  color: #a5b4c8;
+  padding: 4px 2px;
+  background: transparent;
+  border: none;
+  color: #8b949e;
   font-size: 12.5px;
   line-height: 1.45;
 }
 
 .engine-nonllama-update-hint svg {
-  color: #38bdf8;
+  color: #8b949e;
   flex-shrink: 0;
+  opacity: 0.85;
 }
 
 /* 组合胶囊分段栏与 CUDA 复合下拉 (方案 B) */
@@ -5767,17 +5888,19 @@ select option:checked {
   color: #64748b;
 }
 
-[data-theme="light"] .engine-unified-card {
-  background: #ffffff;
-  border-color: #e2e8f0;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.02);
+[data-theme="light"] .engine-nonllama-hint-inline {
+  color: #64748b;
 }
 
-[data-theme="light"] .engine-unified-label {
+[data-theme="light"] .engine-nonllama-hint-inline .engine-nonllama-inline-icon {
+  color: #94a3b8;
+}
+
+[data-theme="light"] .engine-row-label {
   color: #334155;
 }
 
-[data-theme="light"] .engine-unified-name {
+[data-theme="light"] .engine-name-text {
   color: #0f172a;
 }
 
@@ -5793,18 +5916,18 @@ select option:checked {
   color: #0284c7;
 }
 
-[data-theme="light"] .engine-unified-divider {
-  background: #f1f5f9;
-}
-
-[data-theme="light"] .engine-nonllama-update-hint {
-  background: #f0f9ff;
-  border-color: #bae6fd;
+[data-theme="light"] .engine-status-text {
   color: #475569;
 }
 
-[data-theme="light"] .engine-nonllama-update-hint svg {
-  color: #0284c7;
+[data-theme="light"] .engine-header-hub-btn .engine-kbd {
+  background: #f1f5f9;
+  border-color: #e2e8f0;
+  color: #64748b;
+}
+
+[data-theme="light"] .engine-nonllama-hint {
+  color: #64748b;
 }
 
 [data-theme="light"] .mini-seg-divider {
@@ -5813,8 +5936,9 @@ select option:checked {
 }
 
 [data-theme="light"] .cuda-compound-pill.active {
-  color: #b96a10;
-  background: #fdf1dd;
+  color: #ea580c;
+  background: #fff7ed;
+  border: 1px solid #fed7aa;
 }
 
 [data-theme="light"] .cuda-compound-pill:not(.active) {
@@ -11965,6 +12089,14 @@ select option:checked {
 
 [data-theme="light"] .settings-card {
   box-shadow: 0 1px 3px rgba(0, 0, 0, .03), 0 4px 14px rgba(15, 23, 42, .03);
+}
+
+[data-theme="light"] .settings-card-header {
+  border-bottom-color: #f1f5f9;
+}
+
+[data-theme="light"] .settings-card-header h3 {
+  color: #0f172a;
 }
 
 [data-theme="light"] .settings-card-icon {
@@ -18134,3 +18266,872 @@ body.reordering .profile-card:hover {
   background: #f0f9ff;
   border-color: #bae6fd;
 }
+
+/* ==================== 全局快捷键设置与弹窗样式 (QQ风格) ==================== */
+.shortcuts-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.shortcuts-open-modal-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.shortcuts-modal-backdrop {
+  z-index: 1050;
+}
+
+.shortcuts-modal-card {
+  width: min(480px, 92vw);
+  background: var(--bg-card, #16181d);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 12px;
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.45);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  animation: import-fade 0.16s ease;
+}
+
+.shortcuts-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 14px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.shortcuts-modal-title h2 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #f4f4f5;
+  letter-spacing: -0.2px;
+}
+
+.shortcuts-modal-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  color: #a1a1aa;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  transition: all 0.15s ease;
+}
+
+.shortcuts-modal-close:hover {
+  color: #f4f4f5;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+/* 弹窗顶部总开关条 */
+.shortcuts-enable-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 20px;
+  background: rgba(255, 255, 255, 0.02);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.shortcuts-enable-info {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.shortcuts-enable-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #f4f4f5;
+}
+
+.shortcuts-enable-hint {
+  font-size: 12px;
+  color: #71717a;
+}
+
+/* 快捷键列表区 */
+.shortcuts-list-container {
+  padding: 12px 20px 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.shortcuts-container-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.shortcuts-table-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 9px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s ease;
+  user-select: none;
+}
+
+.shortcuts-table-row:hover {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.shortcuts-table-row.row-active {
+  background: rgba(99, 102, 241, 0.08);
+}
+
+.shortcuts-row-left {
+  display: flex;
+  align-items: center;
+  flex: 1;
+  min-width: 0;
+  padding-right: 12px;
+}
+
+.shortcuts-row-label {
+  font-size: 13.5px;
+  font-weight: 500;
+  color: #e4e4e7;
+}
+
+.shortcuts-row-right {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+/* 仿 QQ 快捷键居中输入框 */
+.shortcut-input-box {
+  position: relative;
+  width: 196px;
+  height: 32px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 28px 0 12px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+  box-sizing: border-box;
+}
+
+.shortcut-input-box:hover:not(.disabled) {
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.shortcut-input-box.placeholder {
+  padding: 0 12px;
+}
+
+.shortcut-input-box.recording {
+  border-color: #6366f1;
+  background: rgba(99, 102, 241, 0.08);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+  padding: 0 12px;
+}
+
+.shortcut-input-box.disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.shortcut-input-text {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: #f4f4f5;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shortcut-input-placeholder {
+  font-size: 12px;
+  color: #71717a;
+}
+
+/* 圆形清除叉号 (仿 QQ 风格) */
+.shortcut-input-clear {
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #52525b;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.15s ease;
+}
+
+.shortcut-input-clear:hover {
+  background: #ef4444;
+}
+
+.shortcut-input-recording {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: #a5b4fc;
+}
+
+.shortcut-input-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #6366f1;
+  animation: shortcut-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes shortcut-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.85); }
+}
+
+/* 错误提示 */
+.shortcuts-modal-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 20px 0;
+  padding: 6px 12px;
+  border-radius: 6px;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.25);
+  color: #f87171;
+  font-size: 12px;
+}
+
+/* 底部操作栏：右下角胶囊按钮 */
+.shortcuts-modal-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 14px 20px 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  margin-top: 8px;
+}
+
+.shortcuts-reset-pill-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 16px;
+  border-radius: 9999px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: #e4e4e7;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.shortcuts-reset-pill-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.25);
+  color: #ffffff;
+}
+
+/* 亮色模式适配 (与参考截图完美契合) */
+[data-theme="light"] .shortcuts-modal-card {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.12);
+}
+
+[data-theme="light"] .shortcuts-modal-header {
+  border-bottom-color: #f1f5f9;
+}
+
+[data-theme="light"] .shortcuts-modal-title h2 {
+  color: #0f172a;
+}
+
+[data-theme="light"] .shortcuts-modal-close {
+  color: #64748b;
+}
+
+[data-theme="light"] .shortcuts-modal-close:hover {
+  color: #0f172a;
+  background: #f1f5f9;
+}
+
+[data-theme="light"] .shortcuts-enable-bar {
+  background: #f8fafc;
+  border-bottom-color: #f1f5f9;
+}
+
+[data-theme="light"] .shortcuts-enable-label {
+  color: #1e293b;
+}
+
+[data-theme="light"] .shortcuts-enable-hint {
+  color: #94a3b8;
+}
+
+[data-theme="light"] .shortcuts-table-row:hover {
+  background: #f8fafc;
+}
+
+[data-theme="light"] .shortcuts-table-row.row-active {
+  background: #eef2ff;
+}
+
+[data-theme="light"] .shortcuts-row-label {
+  color: #1e293b;
+}
+
+[data-theme="light"] .shortcut-input-box {
+  background: #ffffff;
+  border-color: #d1d5db;
+}
+
+[data-theme="light"] .shortcut-input-box:hover:not(.disabled) {
+  border-color: #9ca3af;
+}
+
+[data-theme="light"] .shortcut-input-box.recording {
+  border-color: #6366f1;
+  background: #f5f3ff;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.2);
+}
+
+[data-theme="light"] .shortcut-input-text {
+  color: #1e293b;
+}
+
+[data-theme="light"] .shortcut-input-placeholder {
+  color: #9ca3af;
+}
+
+[data-theme="light"] .shortcut-input-clear {
+  background: #9ca3af;
+  color: #ffffff;
+}
+
+[data-theme="light"] .shortcut-input-clear:hover {
+  background: #ef4444;
+}
+
+[data-theme="light"] .shortcuts-modal-footer {
+  border-top-color: #f1f5f9;
+}
+
+[data-theme="light"] .shortcuts-reset-pill-btn {
+  background: #ffffff;
+  border-color: #cbd5e1;
+  color: #334155;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+
+[data-theme="light"] .shortcuts-reset-pill-btn:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+  color: #0f172a;
+}
+
+/* ==================== 快捷键独立卡片样式 ==================== */
+.shortcuts-status-badge {
+  font-size: 11px;
+  font-weight: 500;
+  padding: 1px 7px;
+  border-radius: 9999px;
+  line-height: 1.3;
+}
+
+/* ==================== 设置页主题与语言分段栏对齐 ==================== */
+.settings-mini-seg {
+  width: 172px !important;
+  display: flex !important;
+}
+
+.settings-mini-seg button {
+  flex: 1 !important;
+  justify-content: center !important;
+  padding: 5px 6px !important;
+  text-align: center !important;
+  white-space: nowrap !important;
+}
+
+/* ==================== 快捷键 2x2 网格卡片 (参考图风格) ==================== */
+.shortcuts-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px;
+}
+
+.shortcuts-header-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.shortcuts-title-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.shortcuts-header-desc {
+  margin: 0;
+  font-size: 13px;
+  color: #71717a;
+  line-height: 1.45;
+}
+
+[data-theme="light"] .shortcuts-header-desc {
+  color: #64748b;
+}
+
+.shortcuts-status-badge {
+  font-size: 11.5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: 0.2px;
+}
+
+.shortcuts-status-badge.enabled {
+  background: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+  border: 1px solid rgba(34, 197, 94, 0.3);
+}
+
+.shortcuts-status-badge.disabled {
+  background: rgba(148, 163, 184, 0.12);
+  color: #94a3b8;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+}
+
+.shortcuts-grid-body {
+  padding: 16px 20px 20px;
+}
+
+.shortcuts-2x2-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+@media (max-width: 680px) {
+  .shortcuts-2x2-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.shortcut-grid-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  background: #18181b;
+  border: 1px solid #27272a;
+  cursor: pointer;
+  transition: all 0.16s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
+}
+
+.shortcut-grid-card:hover {
+  border-color: #38383f;
+  background: #1f1f23;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.28);
+}
+
+.shortcut-grid-card:active {
+  transform: translateY(0);
+}
+
+.shortcut-card-left {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+}
+
+.shortcut-icon-badge {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+/* 深色模式：低饱和雅致淡彩 */
+.shortcut-icon-badge.amber {
+  background: #23211d;
+  color: #b59f84;
+  border: 1px solid #332f26;
+}
+
+.shortcut-icon-badge.emerald {
+  background: #1c2420;
+  color: #7da590;
+  border: 1px solid #27372d;
+}
+
+.shortcut-icon-badge.rose {
+  background: #251e20;
+  color: #a87d84;
+  border: 1px solid #38292c;
+}
+
+.shortcut-icon-badge.indigo {
+  background: #1e2028;
+  color: #8692b3;
+  border: 1px solid #2a2e3d;
+}
+
+.shortcut-card-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: #e4e4e7;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.shortcut-card-right {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-shrink: 0;
+}
+
+.shortcut-card-pencil {
+  color: #71717a;
+  opacity: 0.6;
+  transition: all 0.15s ease;
+  margin-left: 1px;
+}
+
+.shortcut-grid-card:hover .shortcut-card-pencil {
+  color: #d4d4d8;
+  opacity: 0.95;
+}
+
+.keycaps-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 3.5px;
+}
+
+.keycap-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 3.5px;
+}
+
+/* 性冷淡轻量键帽：极简微投影、素雅边框 */
+.keycap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 23px;
+  padding: 0 6.5px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+  font-size: 11.5px;
+  font-weight: 500;
+  border-radius: 5px;
+  line-height: 1;
+  user-select: none;
+  background: #222226;
+  color: #d4d4d8;
+  border: 1px solid #323238;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  transition: all 0.15s ease;
+}
+
+.shortcut-grid-card:hover .keycap {
+  background: #27272c;
+  border-color: #52525b;
+  color: #ffffff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.32);
+}
+
+.keycap-sep {
+  font-size: 11px;
+  color: #52525b;
+  font-weight: 400;
+  user-select: none;
+  line-height: 1;
+}
+
+.keycap-empty {
+  font-size: 11.5px;
+  color: #71717a;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px dashed rgba(255, 255, 255, 0.1);
+}
+
+/* 亮色模式：干净素雅、微灰色调、性冷淡风格 */
+[data-theme="light"] .shortcuts-status-badge.enabled {
+  background: #f0fdf4;
+  color: #15803d;
+  border-color: #dcfce7;
+}
+
+[data-theme="light"] .shortcuts-status-badge.disabled {
+  background: #f8fafc;
+  color: #64748b;
+  border-color: #e2e8f0;
+}
+
+[data-theme="light"] .shortcut-grid-card {
+  background: #ffffff;
+  border: 1px solid #e8ecf2;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.03);
+}
+
+[data-theme="light"] .shortcut-grid-card:hover {
+  border-color: #cbd5e1;
+  background: #fafbfc;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.05);
+}
+
+[data-theme="light"] .shortcut-card-label {
+  color: #334155;
+}
+
+/* 浅淡色徽章：柔和素雅低饱和 */
+[data-theme="light"] .shortcut-icon-badge.amber {
+  background: #fcf9f2;
+  color: #8c7a6b;
+  border: 1px solid #f1eae0;
+}
+
+[data-theme="light"] .shortcut-icon-badge.emerald {
+  background: #f2f7f4;
+  color: #52796f;
+  border: 1px solid #e0ece5;
+}
+
+[data-theme="light"] .shortcut-icon-badge.rose {
+  background: #faf4f5;
+  color: #8e6a71;
+  border: 1px solid #eedfe2;
+}
+
+[data-theme="light"] .shortcut-icon-badge.indigo {
+  background: #f3f5f9;
+  color: #5b6782;
+  border: 1px solid #e1e5f0;
+}
+
+[data-theme="light"] .shortcut-card-pencil {
+  color: #94a3b8;
+}
+
+[data-theme="light"] .shortcut-grid-card:hover .shortcut-card-pencil {
+  color: #475569;
+}
+
+/* 浅淡色极简键帽：柔和白灰底、精致细微边框 */
+[data-theme="light"] .keycap {
+  background: #f8fafc;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+[data-theme="light"] .shortcut-grid-card:hover .keycap {
+  background: #ffffff;
+  border-color: #94a3b8;
+  color: #0f172a;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+
+[data-theme="light"] .keycap-sep {
+  color: #94a3b8;
+}
+
+[data-theme="light"] .keycap-empty {
+  color: #94a3b8;
+  background: #f8fafc;
+  border: 1px dashed #cbd5e1;
+}
+
+/* 卡片行内录制状态高亮 */
+.shortcut-grid-card.is-recording {
+  border-color: #6366f1;
+  background: rgba(99, 102, 241, 0.08);
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.22);
+  cursor: default;
+}
+
+[data-theme="light"] .shortcut-grid-card.is-recording {
+  border-color: #6366f1;
+  background: #f5f6ff;
+  box-shadow: 0 0 0 2px rgba(99, 102, 241, 0.15);
+}
+
+/* 录制状态胶囊提示 */
+.shortcut-card-recording-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(99, 102, 241, 0.14);
+  color: #a5b4fc;
+  font-size: 11.5px;
+  font-weight: 500;
+  user-select: none;
+}
+
+[data-theme="light"] .shortcut-card-recording-pill {
+  background: #ebeeff;
+  color: #4f46e5;
+}
+
+.shortcut-card-recording-pill.has-error {
+  background: rgba(239, 68, 68, 0.14);
+  color: #f87171;
+}
+
+[data-theme="light"] .shortcut-card-recording-pill.has-error {
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.shortcut-card-recording-pill .recording-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #818cf8;
+  animation: shortcut-pulse 1.2s ease-in-out infinite;
+  flex-shrink: 0;
+}
+
+.shortcut-card-recording-pill.has-error .recording-dot {
+  background: #ef4444;
+}
+
+.recording-cancel-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  margin-left: 2px;
+  background: rgba(255, 255, 255, 0.1);
+  color: #d4d4d8;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  transition: all 0.15s ease;
+}
+
+.recording-cancel-btn:hover {
+  background: rgba(239, 68, 68, 0.8);
+  color: #ffffff;
+}
+
+/* 右侧数值组合与快捷清空按钮 */
+.shortcut-card-val-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.shortcut-card-action-btn.clear-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  background: transparent;
+  color: #71717a;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  opacity: 0;
+  transform: scale(0.9);
+  transition: all 0.15s ease;
+}
+
+.shortcut-grid-card:hover .shortcut-card-action-btn.clear-btn {
+  opacity: 0.75;
+  transform: scale(1);
+}
+
+.shortcut-card-action-btn.clear-btn:hover {
+  opacity: 1 !important;
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.12);
+}
+
+[data-theme="light"] .shortcut-card-action-btn.clear-btn {
+  color: #94a3b8;
+}
+
+[data-theme="light"] .shortcut-card-action-btn.clear-btn:hover {
+  color: #dc2626;
+  background: #fee2e2;
+}
+
+/* 快捷键卡片头部重置按钮 */
+.shortcuts-header-reset-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: #a1a1aa;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.03);
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+
+.shortcuts-header-reset-btn:hover {
+  color: #f4f4f5;
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.15);
+}
+
+[data-theme="light"] .shortcuts-header-reset-btn {
+  color: #64748b;
+  border-color: #e2e8f0;
+  background: #f8fafc;
+}
+
+[data-theme="light"] .shortcuts-header-reset-btn:hover {
+  color: #0f172a;
+  background: #f1f5f9;
+  border-color: #cbd5e1;
+}

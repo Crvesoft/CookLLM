@@ -1,4 +1,4 @@
-import type { InferenceMetrics, LlamaLogPayload, ModelAsset } from "./types";
+import type { InferenceMetrics, LlamaLogPayload, ModelAsset, ShortcutsConfig } from "./types";
 import { formatMessage, getLocale } from "./i18n";
 import { writeClipboard } from "./tauri";
 
@@ -1354,4 +1354,108 @@ export function formatLogsPlainText(logs: LlamaLogPayload[]): string {
     })
     .join("\n");
 }
+
+export const DEFAULT_SHORTCUTS: Required<ShortcutsConfig> = {
+  enabled: false,
+  toggleWindow: "Alt+Shift+C",
+  startServer: "Alt+Shift+S",
+  stopServer: "Alt+Shift+X",
+  switchEngine: "Alt+Shift+E",
+};
+
+/** 将 "Alt+Shift+C" 格式化为参考图片风格的 "Alt + Shift + C" */
+export function formatShortcutDisplay(shortcut?: string): string {
+  if (!shortcut || !shortcut.trim()) return "";
+  return shortcut
+    .split("+")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => (s === "Super" ? "Win" : s))
+    .join(" + ");
+}
+
+/** 把组合键拆分为数组，如 "Alt+Shift+C" -> ["Alt", "Shift", "C"] */
+export function parseShortcutParts(shortcut?: string): string[] {
+  if (!shortcut || !shortcut.trim()) return [];
+  return shortcut
+    .split("+")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((s) => (s === "Super" ? "Win" : s));
+}
+
+/** 检查键盘事件是否匹配指定的快捷键字符串（不区分大小写，规范修饰键） */
+export function isKeyboardEventMatchingShortcut(e: KeyboardEvent, shortcutStr?: string): boolean {
+  if (!shortcutStr || !shortcutStr.trim()) return false;
+  const { shortcut } = formatShortcutFromEvent(e);
+  if (!shortcut) return false;
+  return shortcut.toLowerCase() === shortcutStr.trim().toLowerCase();
+}
+
+/** 规范化键盘事件为主按键名（不含修饰键） */
+export function getBaseKeyFromEvent(e: KeyboardEvent): string | null {
+  const code = e.code;
+  if (/^F([1-9]|1[0-2])$/.test(code)) {
+    return code;
+  }
+  if (code.startsWith("Key") && code.length === 4) {
+    return code.slice(3).toUpperCase();
+  }
+  if (code.startsWith("Digit") && code.length === 6) {
+    return code.slice(5);
+  }
+  if (code.startsWith("Numpad") && code.length === 7) {
+    return code.slice(6);
+  }
+  switch (code) {
+    case "Space": return "Space";
+    case "Enter": case "NumpadEnter": return "Enter";
+    case "Tab": return "Tab";
+    case "Backspace": return "Backspace";
+    case "Delete": return "Delete";
+    case "ArrowUp": return "Up";
+    case "ArrowDown": return "Down";
+    case "ArrowLeft": return "Left";
+    case "ArrowRight": return "Right";
+    case "Home": return "Home";
+    case "End": return "End";
+    case "PageUp": return "PageUp";
+    case "PageDown": return "PageDown";
+    case "Insert": return "Insert";
+    case "Escape": return "Escape";
+    default:
+      if (e.key && e.key.length === 1 && !["Control", "Alt", "Shift", "Meta"].includes(e.key)) {
+        return e.key.toUpperCase();
+      }
+      return null;
+  }
+}
+
+/** 从键盘事件解析标准快捷键组合字符串，修饰键按 Ctrl+Alt+Shift+Super 顺序排列 */
+export function formatShortcutFromEvent(e: KeyboardEvent): { shortcut: string | null; isModifierOnly: boolean; keyName?: string } {
+  const isModifierKey = ["Control", "Alt", "Shift", "Meta"].includes(e.key);
+  if (isModifierKey) {
+    return { shortcut: null, isModifierOnly: true };
+  }
+
+  const baseKey = getBaseKeyFromEvent(e);
+  if (!baseKey) {
+    return { shortcut: null, isModifierOnly: false };
+  }
+
+  const modifiers: string[] = [];
+  if (e.ctrlKey) modifiers.push("Ctrl");
+  if (e.altKey) modifiers.push("Alt");
+  if (e.shiftKey) modifiers.push("Shift");
+  if (e.metaKey) modifiers.push("Super");
+
+  const isFunctionKey = /^F([1-9]|1[0-2])$/.test(baseKey);
+  if (!isFunctionKey && modifiers.length === 0) {
+    return { shortcut: null, isModifierOnly: false, keyName: baseKey };
+  }
+
+  modifiers.push(baseKey);
+  return { shortcut: modifiers.join("+"), isModifierOnly: false, keyName: baseKey };
+}
+
 

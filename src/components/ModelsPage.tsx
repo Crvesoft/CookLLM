@@ -9,7 +9,7 @@ import ModelTagModal from "./ModelTagModal";
 import { ModelFormatBadge } from "./ModelFormatBadge";
 
 interface Props {
-  config: AppConfig; models: ModelAsset[]; status: ServerStatus; selectedProfiles: Record<string, string>; busy: boolean; serviceStarting?: boolean; query: string; onQuery: (value: string) => void;
+  config: AppConfig; models: ModelAsset[]; status: ServerStatus; selectedProfiles: Record<string, string>; busy: boolean; serviceStarting?: boolean; startingModelId?: string | null; query: string; onQuery: (value: string) => void;
   onAddModel: () => void; onSelectProfile: (modelId: string, profileId: string) => void; onStart: (model: ModelAsset) => void; onStop: () => void;
   onEditProfile: (model: ModelAsset, profile: Profile) => void; onAddProfile: (model: ModelAsset) => void; onRenameModel: (modelId: string, displayName: string) => void;
   onUpdateModelTags: (modelId: string, quantization: string, tags: string[], nextPool?: string[]) => void;
@@ -135,7 +135,44 @@ export default function ModelsPage(props: Props) {
       </div>
     </div>
     {selectMode && selectedIds.size > 0 && <div className="bulk-bar"><span>{t("bulkSelectedPrefix")}<strong>{selectedIds.size}</strong>{t("models.unitModels")}</span><button className="text-button" onClick={selectAll}>{t("selectAll")}</button><div className="bulk-spacer" /><button className="secondary-button compact" disabled={!selectedIds.size} onClick={() => setSelectedIds(new Set())}>{t("clearSelection")}</button><button className="danger-button" disabled={!selectedIds.size} onClick={() => setConfirmDelete(true)}><Trash2 size={14} />{t("deleteSelected", { count: selectedIds.size })}</button></div>}
-    {props.models.length ? <section className={viewMode === "list" ? "model-list" : "model-grid"}>{modelOrder.map((id) => { const model = modelById.get(id); if (!model) return null; const selectedProf = model.profiles.find((p) => p.id === props.selectedProfiles[model.id]) || model.profiles[0]; const itemProps: ModelItemProps = { model, profiles: model.profiles, selectedProfileId: props.selectedProfiles[model.id], isDefaultModel: model.id === props.config.preferredModelId, isRunning: props.status.running && props.status.modelId === model.id, busy: props.busy, serviceStarting: Boolean(props.serviceStarting), menuOpen: props.menuModelId === model.id, onMenu: () => props.onMenuModel(props.menuModelId === model.id ? null : model.id), onSelectProfile: (profileId) => props.onSelectProfile(model.id, profileId), onStart: () => props.onStart(model), onStop: props.onStop, onEditProfile: props.onEditProfile, onAddProfile: props.onAddProfile, onRenameModel: props.onRenameModel, onOpenTagModal: () => setTagModalModel(model), onSetDefaultModel: props.onSetDefaultModel, onRemove: () => props.onRemoveModel(model.id), selectMode, isSelected: selectedIds.has(model.id), isJustImported: props.justImportedIds.has(model.id), isDragging: reorder.dragId?.itemId === model.id, cardHandlers: reorder.cardProps("models", id), onToggleSelect: () => toggleSelected(model.id), onCopyApiEndpoint: () => void handleCopyEndpoint(model, selectedProf) }; return viewMode === "list" ? <ModelRow key={id} {...itemProps} /> : <ModelCard key={id} {...itemProps} />; })}</section> : <div className="empty-state">{searching ? <><div><Search size={28} /></div><h3>{t("noMatchTitle")}</h3><p>{t("noMatchDesc", { query: props.query.trim() })}</p><div className="empty-actions"><button className="secondary-button" onClick={() => props.onQuery("")}>{t("clearSearch")}</button></div></> : <><div><Box size={28} /></div><h3>{t("emptyModelsTitle")}</h3><p>{t("emptyModelsDesc")}</p><div className="empty-actions"><button className="secondary-button" onClick={props.onAddModel}><Plus size={16} />{t("addModel")}</button></div></>}</div>}
+    {props.models.length ? <section className={viewMode === "list" ? "model-list" : "model-grid"}>{modelOrder.map((id) => {
+      const model = modelById.get(id);
+      if (!model) return null;
+      const selectedProf = model.profiles.find((p) => p.id === props.selectedProfiles[model.id]) || model.profiles[0];
+      const isThisModelRunning = props.status.running && props.status.modelId === model.id;
+      const isThisModelStarting = Boolean(
+        (props.serviceStarting || (props.busy && props.startingModelId === model.id)) &&
+        (props.startingModelId ? props.startingModelId === model.id : isThisModelRunning)
+      );
+      const itemProps: ModelItemProps = {
+        model,
+        profiles: model.profiles,
+        selectedProfileId: props.selectedProfiles[model.id],
+        isDefaultModel: model.id === props.config.preferredModelId,
+        isRunning: isThisModelRunning,
+        isStarting: isThisModelStarting,
+        busy: props.busy || Boolean(props.serviceStarting),
+        menuOpen: props.menuModelId === model.id,
+        onMenu: () => props.onMenuModel(props.menuModelId === model.id ? null : model.id),
+        onSelectProfile: (profileId) => props.onSelectProfile(model.id, profileId),
+        onStart: () => props.onStart(model),
+        onStop: props.onStop,
+        onEditProfile: props.onEditProfile,
+        onAddProfile: props.onAddProfile,
+        onRenameModel: props.onRenameModel,
+        onOpenTagModal: () => setTagModalModel(model),
+        onSetDefaultModel: props.onSetDefaultModel,
+        onRemove: () => props.onRemoveModel(model.id),
+        selectMode,
+        isSelected: selectedIds.has(model.id),
+        isJustImported: props.justImportedIds.has(model.id),
+        isDragging: reorder.dragId?.itemId === model.id,
+        cardHandlers: reorder.cardProps("models", id),
+        onToggleSelect: () => toggleSelected(model.id),
+        onCopyApiEndpoint: () => void handleCopyEndpoint(model, selectedProf)
+      };
+      return viewMode === "list" ? <ModelRow key={id} {...itemProps} /> : <ModelCard key={id} {...itemProps} />;
+    })}</section> : <div className="empty-state">{searching ? <><div><Search size={28} /></div><h3>{t("noMatchTitle")}</h3><p>{t("noMatchDesc", { query: props.query.trim() })}</p><div className="empty-actions"><button className="secondary-button" onClick={() => props.onQuery("")}>{t("clearSearch")}</button></div></> : <><div><Box size={28} /></div><h3>{t("emptyModelsTitle")}</h3><p>{t("emptyModelsDesc")}</p><div className="empty-actions"><button className="secondary-button" onClick={props.onAddModel}><Plus size={16} />{t("addModel")}</button></div></>}</div>}
     {confirmDelete && <ConfirmModal title={t("confirm.removeModelsTitle")} description={<>{t("confirm.removeModelsPre")}<strong>{selectedIds.size}</strong>{t("confirm.removeModelsMid")}</>} onConfirm={handleBulkDelete} onClose={() => setConfirmDelete(false)} />}
     {tagModalModel && (
       <ModelTagModal
@@ -152,7 +189,7 @@ export default function ModelsPage(props: Props) {
 }
 
 interface ModelItemProps {
-  model: ModelAsset; profiles: Profile[]; selectedProfileId?: string; isDefaultModel: boolean; isRunning: boolean; busy: boolean; serviceStarting: boolean; menuOpen: boolean;
+  model: ModelAsset; profiles: Profile[]; selectedProfileId?: string; isDefaultModel: boolean; isRunning: boolean; isStarting: boolean; busy: boolean; menuOpen: boolean;
   onMenu: () => void; onSelectProfile: (id: string) => void; onStart: () => void; onStop: () => void; onEditProfile: (model: ModelAsset, profile: Profile) => void; onAddProfile: (model: ModelAsset) => void;
   onRenameModel: (modelId: string, displayName: string) => void; onOpenTagModal: () => void; onSetDefaultModel: (modelId: string) => void; onRemove: () => void;
   selectMode: boolean; isSelected: boolean; isJustImported: boolean; isDragging: boolean; cardHandlers: CardHandlers;
@@ -160,13 +197,11 @@ interface ModelItemProps {
   onCopyApiEndpoint: () => void;
 }
 
-function ModelCard({ model, profiles, selectedProfileId, isDefaultModel, isRunning, busy, serviceStarting, menuOpen, onMenu, onSelectProfile, onStart, onStop, onEditProfile, onAddProfile, onRenameModel, onOpenTagModal, onSetDefaultModel, onRemove, selectMode, isSelected, isJustImported, isDragging, cardHandlers, onToggleSelect, onCopyApiEndpoint }: ModelItemProps) {
+function ModelCard({ model, profiles, selectedProfileId, isDefaultModel, isRunning, isStarting, busy, menuOpen, onMenu, onSelectProfile, onStart, onStop, onEditProfile, onAddProfile, onRenameModel, onOpenTagModal, onSetDefaultModel, onRemove, selectMode, isSelected, isJustImported, isDragging, cardHandlers, onToggleSelect, onCopyApiEndpoint }: ModelItemProps) {
   const { t } = useI18n();
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState("");
   const selected = profiles.find((profile) => profile.id === selectedProfileId) || profiles[0];
-  /** 启停请求进行中或服务尚未就绪：按钮显示旋转过渡，避免生硬地直接切换停止图标 */
-  const starting = busy || serviceStarting;
   const commitRename = () => { onRenameModel(model.id, draftName); setRenaming(false); };
   const isUnknownQuant = model.quantization === t("model.unknownQuant");
   const isNinfer = Boolean(model.path?.toLowerCase().endsWith(".ninfer") || model.metadataSource === "ninfer" || model.architecture?.toUpperCase() === "NINFER");
@@ -226,16 +261,14 @@ function ModelCard({ model, profiles, selectedProfileId, isDefaultModel, isRunni
     </div>
     <div className="model-specs"><div><HardDrive size={15} /><span>{t("specFileLabel")}</span><strong>{formatBytes(model.sizeBytes)}</strong></div><div><Layers3 size={15} /><span>{t("specProfilesLabel")}</span><strong>{t("cards.profilesCount", { count: profiles.length })}</strong></div></div>
     <div className="profile-preview"><div className="profile-preview-head"><span>{t("launchProfile")}</span>{selected ? <button className="profile-edit-btn" onClick={() => { if (menuOpen) onMenu(); onEditProfile(model, selected); }}>{t("editParams")}</button> : <button className="profile-edit-btn new" onClick={() => { if (menuOpen) onMenu(); onAddProfile(model); }}><Plus size={13} />{t("newProfile")}</button>}</div>{selected ? <div className="profile-pills"><span><MemoryStick size={13} /><strong>{model.path.toLowerCase().endsWith(".ninfer") ? (selected.kvDtype?.toUpperCase() || "K8V4") : selected.gpuLayers}</strong> {model.path.toLowerCase().endsWith(".ninfer") ? "KV" : t("cards.pillLayers")}</span><span><Gauge size={13} /><strong>{(selected.contextSize / 1024).toFixed(0)}K</strong> {t("cards.pillContext")}</span><span><Cpu size={13} /><strong>{model.path.toLowerCase().endsWith(".ninfer") ? (selected.parallel || 1) : selected.threads}</strong> {model.path.toLowerCase().endsWith(".ninfer") ? "Slots" : t("cards.pillThreads")}</span></div> : <p className="no-profile">{t("noProfileBound")}</p>}</div>
-    <div className="launch-row" onClick={(event) => event.stopPropagation()}><div className="launch-split"><button className={cn("launch-button", isRunning && "active")} disabled={busy || !selected} onClick={() => (isRunning ? onStop() : onStart())}>{starting ? <><Loader2 size={15} className="spin" />{t("statusStarting")}</> : isRunning ? <><Square size={15} fill="currentColor" />{t("stopService")}</> : <><Play size={15} fill="currentColor" />{t("startService")}</>}</button><label className="profile-select" title={t("launchProfile")}><select value={selected?.id || ""} onChange={(event) => onSelectProfile(event.target.value)} disabled={!profiles.length}>{profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name}</option>)}</select><ChevronDown size={15} /></label></div></div>
+    <div className="launch-row" onClick={(event) => event.stopPropagation()}><div className="launch-split"><button className={cn("launch-button", (isRunning || isStarting) && "active", isStarting && "starting")} disabled={!selected} onClick={() => ((isRunning || isStarting) ? onStop() : onStart())} title={isStarting ? t("stopService") : isRunning ? t("stopService") : t("startService")}>{isStarting ? <><Loader2 size={15} className="spin" />{t("statusStarting")}</> : isRunning ? <><Square size={15} fill="currentColor" />{t("stopService")}</> : <><Play size={15} fill="currentColor" />{t("startService")}</>}</button><label className="profile-select" title={t("launchProfile")}><select value={selected?.id || ""} onChange={(event) => onSelectProfile(event.target.value)} disabled={!profiles.length}>{profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name}</option>)}</select><ChevronDown size={15} /></label></div></div>
   </article>;
 }
 
-function ModelRow({ model, profiles, selectedProfileId, isDefaultModel, isRunning, busy, serviceStarting, menuOpen, onMenu, onSelectProfile, onStart, onStop, onEditProfile, onAddProfile, onRenameModel, onOpenTagModal, onSetDefaultModel, onRemove, selectMode, isSelected, isJustImported, isDragging, cardHandlers, onToggleSelect, onCopyApiEndpoint }: ModelItemProps) {
+function ModelRow({ model, profiles, selectedProfileId, isDefaultModel, isRunning, isStarting, busy, menuOpen, onMenu, onSelectProfile, onStart, onStop, onEditProfile, onAddProfile, onRenameModel, onOpenTagModal, onSetDefaultModel, onRemove, selectMode, isSelected, isJustImported, isDragging, cardHandlers, onToggleSelect, onCopyApiEndpoint }: ModelItemProps) {
   const { t } = useI18n();
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState("");
-  /** 启停请求进行中或服务尚未就绪：按钮显示旋转过渡，避免生硬地直接切换停止图标 */
-  const starting = busy || serviceStarting;
   const selected = profiles.find((profile) => profile.id === selectedProfileId) || profiles[0];
   const commitRename = () => { onRenameModel(model.id, draftName); setRenaming(false); };
   const isUnknownQuant = model.quantization === t("model.unknownQuant");
@@ -311,7 +344,7 @@ function ModelRow({ model, profiles, selectedProfileId, isDefaultModel, isRunnin
     </div>
     <div className="model-row-actions" onClick={(event) => event.stopPropagation()}>
       <div className="launch-split compact">
-        <button className={cn("launch-button", isRunning && "active")} disabled={busy || !selected} onClick={() => (isRunning ? onStop() : onStart())}>{starting ? <><Loader2 size={14} className="spin" />{t("statusStarting")}</> : isRunning ? <><Square size={14} fill="currentColor" />{t("stopService")}</> : <><Play size={14} fill="currentColor" />{t("startService")}</>}</button>
+        <button className={cn("launch-button", (isRunning || isStarting) && "active", isStarting && "starting")} disabled={!selected} onClick={() => ((isRunning || isStarting) ? onStop() : onStart())} title={isStarting ? t("stopService") : isRunning ? t("stopService") : t("startService")}>{isStarting ? <><Loader2 size={14} className="spin" />{t("statusStarting")}</> : isRunning ? <><Square size={14} fill="currentColor" />{t("stopService")}</> : <><Play size={14} fill="currentColor" />{t("startService")}</>}</button>
         <label className="profile-select" title={t("launchProfile")}><select value={selected?.id || ""} onChange={(event) => onSelectProfile(event.target.value)} disabled={!profiles.length}>{profiles.map((profile) => <option value={profile.id} key={profile.id}>{profile.name}</option>)}</select><ChevronDown size={14} /></label>
       </div>
       <div className="model-menu-wrap">

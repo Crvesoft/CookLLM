@@ -193,6 +193,23 @@ export interface AppConfig {
   llamaBackend?: "cuda" | "vulkan" | "cpu";
   /** llama.cpp 选定的 CUDA 版本偏好（如 "13"、"13.4"、"12" 等） */
   llamaCudaVersion?: string;
+  /** 全局快捷键自定义配置 */
+  shortcuts?: ShortcutsConfig;
+}
+
+export type ShortcutActionKey = "toggleWindow" | "startServer" | "stopServer" | "switchEngine";
+
+export interface ShortcutsConfig {
+  /** 全局快捷键总开关（默认关闭） */
+  enabled?: boolean;
+  /** 后台打开主界面快捷键，如 "Alt+Shift+C" */
+  toggleWindow?: string;
+  /** 开启服务快捷键，如 "Alt+Shift+S" */
+  startServer?: string;
+  /** 关闭服务快捷键，如 "Alt+Shift+X" */
+  stopServer?: string;
+  /** 切换引擎快捷键，如 "Alt+Shift+E" */
+  switchEngine?: string;
 }
 
 export interface ServerStatus {

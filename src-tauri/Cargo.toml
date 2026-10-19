@@ -23,6 +23,7 @@ reqwest = { version = "0.13", default-features = false, features = ["blocking", 
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tauri-plugin-single-instance = "2.4.4"
+tauri-plugin-global-shortcut = "2"
 
 [profile.release]
 opt-level = "z"

@@ -1772,91 +1772,6 @@ export default function ExplorePage(props: Props) {
           );
         })}
 
-        {/* 已完成任务分段 */}
-        {(taskFilter === "all" || taskFilter === "done") && tasksDone.length > 0 && (
-          <div className="tasks-section-title">
-            <h2>{t("explore.tasksDone")} ({tasksDone.length})</h2>
-          </div>
-        )}
-        {taskFilter === "done" && tasksDone.length === 0 && (
-          <div className="tasks-empty"><span>{t("explore.noDoneTasks")}</span></div>
-        )}
-        {(taskFilter === "all" || taskFilter === "done") && tasksDone.map((item) => (
-          <div className="task-card task-card-done" key={item.taskId}>
-            <div className="task-card-head">
-              {batchMode && (
-                <label className="task-card-check" title={t("explore.selectTask")}>
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.has(item.taskId)}
-                    onChange={() => toggleSelect(item.taskId)}
-                  />
-                </label>
-              )}
-              <span className="task-file-icon ok"><Check size={16} /></span>
-              <div className="task-file-info">
-                <div className="task-file-title-row">
-                  <strong>{item.file}</strong>
-                  {item.source === "ms" ? (
-                    <span className="task-source-pill ms" title="ModelScope">
-                      <ModelScopeLogo size={11} />
-                      <span>MS</span>
-                    </span>
-                  ) : item.repo !== "direct-url" ? (
-                    <span className="task-source-pill hf" title="HuggingFace">HF</span>
-                  ) : null}
-                </div>
-                <span>{t("explore.syncedToLibrary")}</span>
-              </div>
-              <div className="task-card-actions task-active-actions">
-                {item.finishedAt ? <span className="task-done-time">{new Date(item.finishedAt).toLocaleString()}</span> : null}
-                {item.path && (
-                  <button
-                    type="button"
-                    className="task-circle-btn"
-                    title={t("explore.openFolder")}
-                    aria-label={t("explore.openFolder")}
-                    onClick={() => void props.onReveal(item.path!)}
-                  >
-                    <FolderOpen size={15} />
-                  </button>
-                )}
-                {(item.repo !== "direct-url" || item.url) && (
-                  <button
-                    type="button"
-                    className="task-circle-btn"
-                    title={item.source === "ms" ? t("explore.openOnMs") : t("explore.openOnHf")}
-                    aria-label={item.source === "ms" ? t("explore.openOnMs") : t("explore.openOnHf")}
-                    onClick={() => {
-                      if (item.source === "ms" && item.repo !== "direct-url") {
-                        openMs(item.repo);
-                      } else if (item.repo !== "direct-url") {
-                        openHf(item.repo);
-                      } else if (item.url) {
-                        void openExternal(item.url);
-                      }
-                    }}
-                  >
-                    <ExternalLink size={15} />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="task-circle-btn danger"
-                  title={t("explore.delete")}
-                  aria-label={t("explore.delete")}
-                  onClick={() => {
-                    setTaskToDelete(item);
-                    setDeleteLocalFile(false);
-                  }}
-                >
-                  <Trash2 size={15} />
-                </button>
-              </div>
-            </div>
-          </div>
-        ))}
-
         {/* 失败/暂停任务分段 */}
         {(taskFilter === "all" || taskFilter === "failed") && tasksFailed.length > 0 && (
           <div className="tasks-section-title">
@@ -1928,6 +1843,91 @@ export default function ExplorePage(props: Props) {
                       if (item.errorKind === "no-permission" && item.repo) {
                         void openExternal(hfLicenseUrl(item.repo));
                       } else if (item.source === "ms" && item.repo !== "direct-url") {
+                        openMs(item.repo);
+                      } else if (item.repo !== "direct-url") {
+                        openHf(item.repo);
+                      } else if (item.url) {
+                        void openExternal(item.url);
+                      }
+                    }}
+                  >
+                    <ExternalLink size={15} />
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="task-circle-btn danger"
+                  title={t("explore.delete")}
+                  aria-label={t("explore.delete")}
+                  onClick={() => {
+                    setTaskToDelete(item);
+                    setDeleteLocalFile(false);
+                  }}
+                >
+                  <Trash2 size={15} />
+                </button>
+              </div>
+            </div>
+          </div>
+        ))}
+
+        {/* 已完成任务分段 */}
+        {(taskFilter === "all" || taskFilter === "done") && tasksDone.length > 0 && (
+          <div className="tasks-section-title">
+            <h2>{t("explore.tasksDone")} ({tasksDone.length})</h2>
+          </div>
+        )}
+        {taskFilter === "done" && tasksDone.length === 0 && (
+          <div className="tasks-empty"><span>{t("explore.noDoneTasks")}</span></div>
+        )}
+        {(taskFilter === "all" || taskFilter === "done") && tasksDone.map((item) => (
+          <div className="task-card task-card-done" key={item.taskId}>
+            <div className="task-card-head">
+              {batchMode && (
+                <label className="task-card-check" title={t("explore.selectTask")}>
+                  <input
+                    type="checkbox"
+                    checked={selectedIds.has(item.taskId)}
+                    onChange={() => toggleSelect(item.taskId)}
+                  />
+                </label>
+              )}
+              <span className="task-file-icon ok"><Check size={16} /></span>
+              <div className="task-file-info">
+                <div className="task-file-title-row">
+                  <strong>{item.file}</strong>
+                  {item.source === "ms" ? (
+                    <span className="task-source-pill ms" title="ModelScope">
+                      <ModelScopeLogo size={11} />
+                      <span>MS</span>
+                    </span>
+                  ) : item.repo !== "direct-url" ? (
+                    <span className="task-source-pill hf" title="HuggingFace">HF</span>
+                  ) : null}
+                </div>
+                <span>{t("explore.syncedToLibrary")}</span>
+              </div>
+              <div className="task-card-actions task-active-actions">
+                {item.finishedAt ? <span className="task-done-time">{new Date(item.finishedAt).toLocaleString()}</span> : null}
+                {item.path && (
+                  <button
+                    type="button"
+                    className="task-circle-btn"
+                    title={t("explore.openFolder")}
+                    aria-label={t("explore.openFolder")}
+                    onClick={() => void props.onReveal(item.path!)}
+                  >
+                    <FolderOpen size={15} />
+                  </button>
+                )}
+                {(item.repo !== "direct-url" || item.url) && (
+                  <button
+                    type="button"
+                    className="task-circle-btn"
+                    title={item.source === "ms" ? t("explore.openOnMs") : t("explore.openOnHf")}
+                    aria-label={item.source === "ms" ? t("explore.openOnMs") : t("explore.openOnHf")}
+                    onClick={() => {
+                      if (item.source === "ms" && item.repo !== "direct-url") {
                         openMs(item.repo);
                       } else if (item.repo !== "direct-url") {
                         openHf(item.repo);

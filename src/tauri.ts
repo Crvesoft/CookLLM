@@ -121,6 +121,34 @@ export async function onTrayViewError(handler: (errorMessage: string) => void): 
   return listen<string>("tray_view_error", (event) => handler(event.payload));
 }
 
+/** 服务生命周期事件载荷：托盘 / 主界面任一侧发生启动、停止、失败时由后端广播 */
+export interface ServerLifecyclePayload {
+  /** starting = 进程已拉起（端口尚未就绪）；stopped = 主动停止；failed = 启动失败 / 进程意外退出 */
+  phase: "starting" | "stopped" | "failed";
+  /** starting 时携带新服务的完整状态（running: true） */
+  status?: ServerStatus | null;
+  /** failed 时携带错误信息 */
+  error?: string | null;
+}
+
+/** 订阅服务生命周期事件：保证托盘操作与主界面状态、过渡动画严格同步 */
+export async function onServerLifecycle(handler: (payload: ServerLifecyclePayload) => void): Promise<UnlistenFn | undefined> {
+  if (!isTauri()) return undefined;
+  return listen<ServerLifecyclePayload>("server-lifecycle", (event) => handler(event.payload));
+}
+
+/** 订阅后台配置更新事件 */
+export async function onConfigUpdated(handler: (config: AppConfig) => void): Promise<UnlistenFn | undefined> {
+  if (!isTauri()) return undefined;
+  return listen<AppConfig>("config-updated", (event) => handler(event.payload));
+}
+
+/** 订阅全局快捷键呼出引擎管理界面事件 */
+export async function onShortcutOpenEngineHub(handler: () => void): Promise<UnlistenFn | undefined> {
+  if (!isTauri()) return undefined;
+  return listen<void>("shortcut-open-engine-hub", () => handler());
+}
+
 /** Write to the system clipboard (Tauri fallback when the iframe Clipboard API fails). */
 export async function writeClipboard(text: string): Promise<void> {
   if (!isTauri()) throw new Error("clipboard write is only available in Tauri");
@@ -543,4 +571,10 @@ export async function revealInFolder(path: string): Promise<void> {
 export async function onModelDownloadProgress(handler: (payload: ModelDownloadProgress) => void): Promise<UnlistenFn | undefined> {
   if (!isTauri()) return undefined;
   return listen<ModelDownloadProgress>("model-download-progress", (event) => handler(event.payload));
+}
+
+/** 快捷键录制/弹窗模式切换：录制中临时解绑全局快捷键，避免与系统热键冲突与拦截 */
+export async function setShortcutsRecordingMode(recording: boolean): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("set_shortcuts_recording_mode", { recording });
 }

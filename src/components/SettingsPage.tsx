@@ -1,10 +1,10 @@
-import { Activity, AlertTriangle, ArrowRight, Check, ChevronDown, ChevronRight, Cpu, Download, Eye, EyeOff, FolderOpen, Github, Info, KeyRound, Languages, Loader2, Moon, Pencil, Plus, RefreshCw, RotateCw, Search, SlidersHorizontal, Sparkles, Star, Sun, Trash2, Upload, Wifi, Wrench, X, Zap } from "lucide-react";
+import { Activity, AlertTriangle, AppWindow, ArrowRight, Check, ChevronDown, ChevronRight, Cpu, Download, Eye, EyeOff, FolderOpen, Github, Info, Keyboard, KeyRound, Languages, Loader2, Moon, Pencil, Play, Plus, RefreshCw, Repeat, RotateCcw, RotateCw, Search, Settings, SlidersHorizontal, Sparkles, Square, Star, Sun, Trash2, Upload, Wifi, Wrench, X, Zap } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { APP_REPO, PROJECT_URL } from "../data";
 import { useI18n } from "../i18n";
-import { cn, formatBytes, formatMB, formatEngineBackend, getEngineTypeDisplay } from "../utils";
-import { cancelLlamaCppUpdate, checkLlamaCppUpdate, checkOrphanServer, detectHardware, downloadLlamaCpp, getAppVersion, getGpuInfo, getLlamaCppStatus, getModelsDir, getSystemProxy, hfWhoami, onDownloadProgress, openConfigDir, openExternal, pickModelsDir, pickServerDir, pickServerFile, revealInFolder, testProxyConnection, type DownloadProgress, type GpuInfo, type HardwareSuggestion, type LlamaCppLocalStatus, type LlamaCppRelease, type OrphanProcessItem, type ProxyTestResult, type ServerCandidate, type UpdateCheckResult } from "../tauri";
-import type { AppConfig, DiskUsage, LlamaEngine, LlamaLogPayload } from "../types";
+import { cn, formatBytes, formatMB, formatEngineBackend, getEngineTypeDisplay, DEFAULT_SHORTCUTS, formatShortcutDisplay, parseShortcutParts, formatShortcutFromEvent } from "../utils";
+import { cancelLlamaCppUpdate, checkLlamaCppUpdate, checkOrphanServer, detectHardware, downloadLlamaCpp, getAppVersion, getGpuInfo, getLlamaCppStatus, getModelsDir, getSystemProxy, hfWhoami, onDownloadProgress, openConfigDir, openExternal, pickModelsDir, pickServerDir, pickServerFile, revealInFolder, testProxyConnection, setShortcutsRecordingMode, type DownloadProgress, type GpuInfo, type HardwareSuggestion, type LlamaCppLocalStatus, type LlamaCppRelease, type OrphanProcessItem, type ProxyTestResult, type ServerCandidate, type UpdateCheckResult } from "../tauri";
+import type { AppConfig, DiskUsage, LlamaEngine, LlamaLogPayload, ShortcutActionKey, ShortcutsConfig } from "../types";
 import ConfirmModal from "./ConfirmModal";
 import EngineModal from "./EngineModal";
 
@@ -21,6 +21,8 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
   const [engineModalOpen, setEngineModalOpen] = useState(false);
   const [editingEngine, setEditingEngine] = useState<LlamaEngine | null>(null);
   const [deletingEngine, setDeletingEngine] = useState<LlamaEngine | null>(null);
+  const [recordingKey, setRecordingKey] = useState<ShortcutActionKey | null>(null);
+  const [shortcutError, setShortcutError] = useState<string | null>(null);
 
   useEffect(() => {
     setServerPath(config.serverPath);
@@ -109,6 +111,108 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
   const saveServerPath = (value: string) => {
     setServerPath(value);
     if (value.trim() && value !== config.serverPath) void onPersist({ ...config, serverPath: value.trim() }, t("toast.settingsSaved"));
+  };
+
+  const shortcutsConfig: ShortcutsConfig = config.shortcuts ?? DEFAULT_SHORTCUTS;
+
+  useEffect(() => {
+    if (!recordingKey) return;
+    void setShortcutsRecordingMode(true);
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+
+      // Escape 退出录制
+      if (e.key === "Escape") {
+        setRecordingKey(null);
+        setShortcutError(null);
+        return;
+      }
+
+      // Backspace / Delete 清除当前项
+      if (e.key === "Backspace" || e.key === "Delete") {
+        const next = { ...shortcutsConfig, [recordingKey]: "" };
+        void onPersist({ ...config, shortcuts: next }, t("toast.shortcutsSaved"));
+        setRecordingKey(null);
+        setShortcutError(null);
+        return;
+      }
+
+      const { shortcut, isModifierOnly, keyName } = formatShortcutFromEvent(e);
+      if (isModifierOnly) return;
+
+      if (!shortcut) {
+        if (keyName) {
+          setShortcutError(t("st.shortcutsNeedModifier"));
+        }
+        return;
+      }
+
+      // 冲突检测
+      const otherKeys = (["toggleWindow", "startServer", "stopServer", "switchEngine"] as const).filter(
+        (k) => k !== recordingKey
+      );
+      const isConflict = otherKeys.some((k) => {
+        const val = config.shortcuts?.[k] !== undefined ? config.shortcuts[k] : DEFAULT_SHORTCUTS[k];
+        return (val || "").toLowerCase() === shortcut.toLowerCase();
+      });
+      if (isConflict) {
+        setShortcutError(t("st.shortcutsConflict"));
+        return;
+      }
+
+      // 保存
+      const next = { ...shortcutsConfig, [recordingKey]: shortcut };
+      void onPersist({ ...config, shortcuts: next }, t("toast.shortcutsSaved"));
+      setRecordingKey(null);
+      setShortcutError(null);
+    };
+
+    window.addEventListener("keydown", handleKeyDown, true);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown, true);
+      void setShortcutsRecordingMode(false);
+    };
+  }, [recordingKey, shortcutsConfig, config, onPersist, t]);
+
+  useEffect(() => {
+    if (!recordingKey) return;
+    const handleClickOutside = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (!target?.closest(".shortcut-grid-card.is-recording")) {
+        setRecordingKey(null);
+        setShortcutError(null);
+      }
+    };
+    const timer = setTimeout(() => {
+      window.addEventListener("pointerdown", handleClickOutside);
+    }, 50);
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener("pointerdown", handleClickOutside);
+    };
+  }, [recordingKey]);
+
+  useEffect(() => {
+    if (!shortcutError) return;
+    const timer = setTimeout(() => setShortcutError(null), 3000);
+    return () => clearTimeout(timer);
+  }, [shortcutError]);
+
+  const handleClearShortcut = async (keyName: ShortcutActionKey, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setShortcutError(null);
+    if (recordingKey === keyName) setRecordingKey(null);
+    const next = { ...shortcutsConfig, [keyName]: "" };
+    await onPersist({ ...config, shortcuts: next }, t("toast.shortcutsSaved"));
+  };
+
+  const handleResetShortcutDefaults = async () => {
+    setShortcutError(null);
+    setRecordingKey(null);
+    const next = { ...DEFAULT_SHORTCUTS, enabled: Boolean(config.shortcuts?.enabled) };
+    await onPersist({ ...config, shortcuts: next }, t("toast.shortcutsSaved"));
   };
 
   const chooseModelsDir = async () => {
@@ -269,11 +373,12 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
     { value: "cpu", label: "CPU" },
   ];
 
-  const refreshEngine = async () => {
+  const refreshEngine = async (targetPath?: string) => {
     try {
+      const p = targetPath ?? activeEngine?.path ?? config.serverPath;
       const [hw, st, orphan] = await Promise.all([
         detectHardware(),
-        getLlamaCppStatus(),
+        getLlamaCppStatus(p || undefined),
         checkOrphanServer().catch(() => null),
       ]);
       setHardware(hw);
@@ -300,9 +405,9 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
     } catch { /* 非 Tauri 环境忽略 */ }
   };
   useEffect(() => {
-    void refreshEngine();
+    void refreshEngine(activeEngine?.path);
     void ensureRemote(undefined, undefined, true);
-  }, []);
+  }, [config.serverPath, config.activeEngineId]);
 
   /** 检查远程最新版本并与本地版本比对；检查更新 / 一键更新 / 强制重装三处共用的前置步骤 */
   const ensureRemote = async (
@@ -316,7 +421,7 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
     if (!silent) setEngineError(null);
     try {
       const result = await checkLlamaCppUpdate(useBackend, useCuda);
-      const local = engineStatus?.localVersion ?? "";
+      const local = activeEngine?.version || engineStatus?.localVersion || "";
       const isSameBackend = engineStatus?.localBackend ? engineStatus.localBackend === useBackend : true;
       const upToDate = !!local && isSameBackend && result.tag.toLowerCase().endsWith(local.toLowerCase());
       const next = { ...result, upToDate };
@@ -479,15 +584,34 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
 
   const progressPercent = progress ? Math.min(100, progress.percent) : 0;
 
+  const renderShortcutKeycaps = (shortcut?: string) => {
+    const parts = parseShortcutParts(shortcut);
+    if (parts.length === 0) {
+      return <span className="keycap-empty">{t("st.shortcutsNone")}</span>;
+    }
+    return (
+      <div className="keycaps-wrapper">
+        {parts.map((part, idx) => (
+          <span key={idx} className="keycap-item">
+            {idx > 0 && <span className="keycap-sep">+</span>}
+            <kbd className="keycap">{part}</kbd>
+          </span>
+        ))}
+      </div>
+    );
+  };
+
   return (
     <div hidden={!visible}>
       <section className="settings-stack">
 
-                        {/* 网络与代理 */}
+        {/* 网络与代理 */}
         <div className="settings-card">
-          <div className="settings-card-icon"><Wifi size={18} /></div>
-          <div className="settings-card-body">
+          <div className="settings-card-header">
+            <div className="settings-card-icon"><Wifi size={16} /></div>
             <h3>{t("net.title")}</h3>
+          </div>
+          <div className="settings-card-body">
             <div className="net-row">
               <span className="net-mode-label">{t("net.mode")}</span>
               <select
@@ -517,84 +641,94 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
           </div>
         </div>
         {/* 下载授权：Hugging Face Gated 模型下载凭据 */}
-        <div className="settings-card">
-          <div className="settings-card-icon"><KeyRound size={18} /></div>
-          <div className="settings-card-body">
+        <div className="settings-card auth-management-card">
+          <div className="settings-card-header">
+            <div className="settings-card-icon"><KeyRound size={16} /></div>
             <h3>{t("st.hfTokenTitle")}</h3>
-            <p className="about-desc">{t("st.hfTokenDesc")}</p>
-            {/* 第一行：平台标题 + 状态胶囊（两端对齐） */}
-            <div className="hf-token-head">
-              <div className="hf-token-title">
-                <strong>{t("st.hfTokenLabel")}</strong>
-                <span>{t("st.hfTokenNeedRead")}</span>
-              </div>
-              <span className={cn("hf-token-pill", hfTestResult?.ok || (config.hfToken && !hfTestResult) ? "ok" : hfTestResult && !hfTestResult.ok ? "err" : "idle")}>
-                {hfTestResult?.ok ? <Check size={12} /> : hfTestResult && !hfTestResult.ok ? <AlertTriangle size={12} /> : config.hfToken ? <Check size={12} /> : null}
+            <div className="settings-card-header-actions">
+              <span className={cn("auth-status-pill", (hfTestResult?.ok || (config.hfToken && !hfTestResult)) ? "ok" : (hfTestResult && !hfTestResult.ok) ? "err" : "unconfigured")}>
                 {hfTestResult?.ok
                   ? t("st.hfTokenBound", { user: hfTestResult.username || "…" })
                   : hfTestResult && !hfTestResult.ok
                     ? t("st.hfTokenInvalid")
                     : config.hfToken
-                      ? t("st.hfTokenBound", { user: config.hfTokenUser || "…" })
+                      ? (config.hfTokenUser ? t("st.hfTokenBound", { user: config.hfTokenUser }) : t("st.hfTokenNotSet") === "未配置" ? "已配置" : "Configured")
                       : t("st.hfTokenNotSet")}
               </span>
             </div>
-            {/* 第二行：输入框 + 测试 + 保存（水平并排） */}
-            <div className="hf-token-controls">
-              <div className="hf-token-field">
+          </div>
+          <div className="settings-card-body">
+            <div className="auth-unified-row">
+              <div className="auth-platform-side">
+                <strong className="auth-platform-name">{t("st.hfTokenLabel")}</strong>
+              </div>
+              <div className="auth-input-wrapper">
                 <input
                   type={hfShowToken ? "text" : "password"}
-                  className="net-input"
+                  className="auth-token-input"
                   value={hfTokenDraft}
                   onChange={(e) => { setHfTokenDraft(e.target.value); setHfTestResult(null); setHfError(null); }}
                   placeholder={t("st.hfTokenPlaceholder")}
                   spellCheck={false}
                   autoComplete="off"
                 />
-                <button className="hf-token-eye" type="button" title={hfShowToken ? t("st.hfTokenHide") : t("st.hfTokenShow")} onClick={() => setHfShowToken((value) => !value)}>
+                <button
+                  className="auth-token-eye"
+                  type="button"
+                  title={hfShowToken ? t("st.hfTokenHide") : t("st.hfTokenShow")}
+                  onClick={() => setHfShowToken((value) => !value)}
+                >
                   {hfShowToken ? <EyeOff size={15} /> : <Eye size={15} />}
                 </button>
               </div>
-              <button className="secondary-button compact hf-token-test" onClick={() => void runHfTokenTest()} disabled={hfTesting}>
-                {hfTesting ? <Loader2 size={14} className="spin" /> : <KeyRound size={14} />}
-                <span className="hf-token-btn-label">{hfTesting ? t("st.hfTokenTesting") : t("st.hfTokenTest")}</span>
-              </button>
-              <button className="secondary-button compact hf-token-save" onClick={saveHfToken} disabled={hfTesting}>
-                {hfSaved ? <Check size={14} /> : null}
-                <span className="hf-token-btn-label">{t("st.hfTokenSave")}</span>
-              </button>
+              <div className="auth-btn-group">
+                <button
+                  type="button"
+                  className="secondary-button compact auth-action-btn"
+                  onClick={() => void runHfTokenTest()}
+                  disabled={hfTesting}
+                >
+                  {hfTesting ? <Loader2 size={13} className="spin" /> : <KeyRound size={13} />}
+                  <span>{hfTesting ? t("st.hfTokenTesting") : t("st.hfTokenTest")}</span>
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button compact auth-action-btn"
+                  onClick={saveHfToken}
+                  disabled={hfTesting}
+                >
+                  {hfSaved ? <Check size={13} /> : null}
+                  <span>{t("st.hfTokenSave")}</span>
+                </button>
+              </div>
             </div>
             {hfError && <p className="hf-token-error">{hfError}</p>}
           </div>
         </div>
+
         {/* 引擎管理及更新 */}
-        <div className="settings-card settings-group engine-management-card">
-          <div className="settings-card-icon"><Cpu size={18} /></div>
-          <div className="settings-card-body">
-            {/* 顶栏：标题 + 描述 + 右侧管理版本全局入口 */}
-            <div className="engine-card-header">
-              <div className="engine-card-header-left">
-                <h3>{t("llama.title")}</h3>
-                <p className="about-desc">{t("llama.desc")}</p>
-              </div>
+        <div className="settings-card engine-management-card">
+          <div className="settings-card-header">
+            <div className="settings-card-icon"><Settings size={16} /></div>
+            <h3>{t("llama.title")}</h3>
+            <div className="settings-card-header-actions">
               <button
                 type="button"
                 className="secondary-button compact engine-header-hub-btn"
                 onClick={() => onOpenEngineHub?.()}
-                title="Ctrl+E"
+                title={t("llama.manageHubBtn")}
               >
                 <Wrench size={13} />
                 <span>{t("llama.manageHubBtn")}</span>
-                <kbd className="engine-kbd">Ctrl+E</kbd>
               </button>
             </div>
-
-            {/* 单一聚合主卡片 */}
-            <div className="engine-unified-card">
-              {/* 第一行：当前运行分支 */}
-              <div className="engine-unified-branch-row">
-                <span className="engine-unified-label">{t("llama.currentBranchPrefix")}</span>
-                <span className="engine-unified-name">{activeEngine?.name || "llama.cpp"}</span>
+          </div>
+          <div className="settings-card-body">
+            {/* 行 1：当前运行分支 */}
+            <div className="engine-card-row">
+              <span className="engine-row-label">{t("llama.currentBranchTitle")}</span>
+              <div className="engine-row-main">
+                <span className="engine-name-text">{activeEngine?.name || "llama.cpp"}</span>
                 <span className="engine-pill-tag backend">
                   {formatEngineBackend(
                     activeEngine?.backend,
@@ -607,19 +741,8 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
                   </span>
                 )}
               </div>
-
-              {/* 分割线 */}
-              <div className="engine-unified-divider" />
-
-              {/* 第二行：硬件加速环境单选 + 版本信息状态（仅 llama.cpp 官方构建可在线更新） */}
-              <div className={cn("engine-unified-status-row", !isLlamaCppEngine && "official-update-unavailable")}>
-                {!isLlamaCppEngine && (
-                  <div className="engine-nonllama-update-hint">
-                    <Info size={14} />
-                    <span>{t("llama.nonLlamaUpdateHint", { engine: activeEngineType.label })}</span>
-                  </div>
-                )}
-                <div className="engine-backend-control-group">
+              <div className="engine-row-right">
+                {isLlamaCppEngine ? (
                   <div className="mini-seg engine-backend-seg" ref={cudaMenuRef}>
                     {/* CUDA 复合胶囊按钮 */}
                     <div className={cn("mini-seg-item cuda-compound-pill", backend === "cuda" && "active")}>
@@ -630,7 +753,6 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
                           setBackend("cuda");
                           void onPersist({ ...config, llamaBackend: "cuda", llamaCudaVersion: cudaVersion }, "");
                           if (backend === "cuda") {
-                            // 若已处于 CUDA 分支，再次点击 CUDA 文本也可顺畅触发/收起版本菜单
                             setCudaMenuOpen((prev) => !prev);
                           } else {
                             setCudaMenuOpen(false);
@@ -719,138 +841,287 @@ export default function SettingsPage({ visible, config, appUpdate, checkingUpdat
                       CPU
                     </button>
                   </div>
-                </div>
-
-                <div className="engine-unified-version-group">
-                  <span className="engine-ver-item">
-                    <span className="ver-key">{t("llama.localVersionLabel")}</span>
-                    <span className="ver-val">{engineStatus?.localVersion || t("llama.localVersionNone")}</span>
-                  </span>
-                  <span className="engine-ver-item">
-                    <span className="ver-key">{t("llama.remoteVersionLabel")}</span>
-                    <span className={cn("ver-val", hasNewVersion && "new")}>
-                      {remote?.tag || (checking ? t("llama.checking") : "--")}
-                    </span>
-                  </span>
-                </div>
+                ) : null}
               </div>
             </div>
 
-            {/* 右下角操作聚合（仅 llama.cpp 官方构建可在线更新） */}
-            {isLlamaCppEngine && (
-              <div className="engine-unified-actions">
-                <button
-                  type="button"
-                  className="secondary-button compact"
-                  disabled={checking || updating}
-                  onClick={() => void runCheck()}
-                >
-                  <RefreshCw size={13} className={checking ? "spin" : ""} />
-                  <span>{t("llama.checkUpdateBtn")}</span>
-                </button>
-
-                {isUpToDate ? (
-                  <button
-                    type="button"
-                    className="secondary-button compact"
-                    disabled={updating || checking}
-                    onClick={() => void forceReinstall()}
-                  >
-                    <RotateCw size={13} className={updating ? "spin" : ""} />
-                    <span>{t("llama.forceReinstall")}</span>
-                  </button>
+            {/* 行 2：版本状态 */}
+            <div className="engine-card-row">
+              <span className="engine-row-label">{t("llama.versionStatusTitle")}</span>
+              <div className="engine-row-main">
+                {isLlamaCppEngine ? (
+                  <span className="engine-status-text">
+                    {t("llama.localVersionLabel")} {activeEngine?.version || engineStatus?.localVersion || t("llama.localVersionNone")}
+                    {"  ·  "}
+                    {t("llama.remoteVersionLabel")} {remote?.tag || (checking ? t("llama.checking") : "--")}
+                  </span>
                 ) : (
-                  <button
-                    type="button"
-                    className="engine-primary-btn compact"
-                    disabled={updating || checking}
-                    onClick={() => void startUpdate()}
-                  >
-                    {updating ? <Loader2 size={13} className="spin" /> : <Download size={13} />}
-                    <span>{remote?.tag ? t("llama.updateBtnTag", { tag: remote.tag }) : t("llama.checkAndUpdate")}</span>
-                  </button>
+                  <span className="engine-status-text">
+                    {t("llama.localVersionLabel")} {activeEngine?.version || engineStatus?.localVersion || t("llama.localVersionNone")}
+                    {"  ·  "}
+                    <span className="engine-nonllama-hint-inline">
+                      <Info size={13} className="engine-nonllama-inline-icon" />
+                      {t("llama.nonLlamaUpdateHint", { engine: activeEngineType.label })}
+                    </span>
+                  </span>
                 )}
               </div>
-            )}
+              <div className="engine-row-right">
+                {isLlamaCppEngine && (
+                  <div className="engine-row-actions">
+                    <button
+                      type="button"
+                      className="secondary-button compact"
+                      disabled={checking || updating}
+                      onClick={() => void runCheck()}
+                    >
+                      <RefreshCw size={13} className={checking ? "spin" : ""} />
+                      <span>{t("llama.checkUpdateBtn")}</span>
+                    </button>
+
+                    {isUpToDate ? (
+                      <button
+                        type="button"
+                        className="secondary-button compact"
+                        disabled={updating || checking}
+                        onClick={() => void forceReinstall()}
+                      >
+                        <RotateCw size={13} className={updating ? "spin" : ""} />
+                        <span>{t("llama.forceReinstall")}</span>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="engine-primary-btn compact"
+                        disabled={updating || checking}
+                        onClick={() => void startUpdate()}
+                      >
+                        {updating ? <Loader2 size={13} className="spin" /> : <Download size={13} />}
+                        <span>{remote?.tag ? t("llama.updateBtnTag", { tag: remote.tag }) : t("llama.checkAndUpdate")}</span>
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
 
             {serverBrowseError && <p className="import-error">{serverBrowseError}</p>}
             {engineError && <p className="import-error">{engineError}</p>}
           </div>
         </div>
-{/* 常规偏好：列表项合并卡片 */}
-        <div className="settings-card settings-group">
-          <div className="settings-card-icon"><SlidersHorizontal size={18} /></div>
-          <div className="settings-card-body">
+        {/* 常规偏好：列表项合并卡片 */}
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <div className="settings-card-icon"><SlidersHorizontal size={16} /></div>
             <h3>{t("st.preferencesTitle")}</h3>
-            <div className="settings-list">
-              <div className="settings-row">
-                <span className="settings-row-label">{t("st.themeTitle")}</span>
-                <span className="settings-row-desc">{t("st.themeDesc")}</span>
-                <div className="settings-control">
-                  <div className="mini-seg">
-                    <button className={config.theme === "light" ? "active" : ""} onClick={() => void onPersist({ ...config, theme: "light" }, t("toast.lightTheme"))}><Sun size={13} />{t("lightLabel")}</button>
-                    <button className={config.theme !== "light" ? "active" : ""} onClick={() => void onPersist({ ...config, theme: "dark" }, t("toast.darkTheme"))}><Moon size={13} />{t("darkLabel")}</button>
-                  </div>
+          </div>
+          <div className="settings-list">
+            <div className="settings-row">
+              <span className="settings-row-label">{t("st.themeTitle")}</span>
+              <span className="settings-row-desc">{t("st.themeDesc")}</span>
+              <div className="settings-control">
+                <div className="mini-seg settings-mini-seg">
+                  <button className={config.theme === "light" ? "active" : ""} onClick={() => void onPersist({ ...config, theme: "light" }, t("toast.lightTheme"))}><Sun size={13} />{t("lightLabel")}</button>
+                  <button className={config.theme !== "light" ? "active" : ""} onClick={() => void onPersist({ ...config, theme: "dark" }, t("toast.darkTheme"))}><Moon size={13} />{t("darkLabel")}</button>
                 </div>
               </div>
-              <div className="settings-row">
-                <span className="settings-row-label">{t("st.langTitle")}</span>
-                <span className="settings-row-desc">{t("st.langDesc")}</span>
-                <div className="settings-control">
-                  <div className="mini-seg">
-                    <button className={config.language === "en" ? "" : "active"} onClick={() => void onPersist({ ...config, language: "zh" }, t("toast.languageSet", { label: "简体中文" }))}><Languages size={13} />简体中文</button>
-                    <button className={config.language === "en" ? "active" : ""} onClick={() => void onPersist({ ...config, language: "en" }, t("toast.languageSet", { label: "English" }))}><Languages size={13} />English</button>
-                  </div>
+            </div>
+            <div className="settings-row">
+              <span className="settings-row-label">{t("st.langTitle")}</span>
+              <span className="settings-row-desc">{t("st.langDesc")}</span>
+              <div className="settings-control">
+                <div className="mini-seg settings-mini-seg">
+                  <button className={config.language === "en" ? "" : "active"} onClick={() => void onPersist({ ...config, language: "zh" }, t("toast.languageSet", { label: "简体中文" }))}><Languages size={13} />中文</button>
+                  <button className={config.language === "en" ? "active" : ""} onClick={() => void onPersist({ ...config, language: "en" }, t("toast.languageSet", { label: "English" }))}><Languages size={13} />EN</button>
                 </div>
               </div>
-              <div className="settings-row">
-                <span className="settings-row-label">{t("st.storageTitle")}</span>
-                <span className="settings-row-desc">{t("st.storageDesc")}</span>
-                <div className="settings-control">
-                  <div className="backup-menu" onClick={(event) => event.stopPropagation()}>
-                    <button className="secondary-button compact" onClick={() => setBackupMenuOpen((open) => !open)}><FolderOpen size={14} />{t("st.manageBackup")}<ChevronDown size={13} /></button>
-                    {backupMenuOpen && <div className="context-menu backup-menu-list">
-                      <button onClick={() => { setBackupMenuOpen(false); void onExportBackup(); }}><Download size={14} />{t("st.exportBackup")}</button>
-                      <button onClick={() => { setBackupMenuOpen(false); void onImportBackup(); }}><Upload size={14} />{t("st.importBackup")}</button>
-                      <button onClick={() => { setBackupMenuOpen(false); void openConfigDir().catch(() => undefined); }}><FolderOpen size={14} />{t("st.openConfigDir")}</button>
-                    </div>}
-                  </div>
+            </div>
+            <div className="settings-row">
+              <span className="settings-row-label">{t("st.storageTitle")}</span>
+              <span className="settings-row-desc">{t("st.storageDesc")}</span>
+              <div className="settings-control">
+                <div className="backup-menu" onClick={(event) => event.stopPropagation()}>
+                  <button className="secondary-button compact" onClick={() => setBackupMenuOpen((open) => !open)}><FolderOpen size={14} />{t("st.manageBackup")}<ChevronDown size={13} /></button>
+                  {backupMenuOpen && <div className="context-menu backup-menu-list">
+                    <button onClick={() => { setBackupMenuOpen(false); void onExportBackup(); }}><Download size={14} />{t("st.exportBackup")}</button>
+                    <button onClick={() => { setBackupMenuOpen(false); void onImportBackup(); }}><Upload size={14} />{t("st.importBackup")}</button>
+                    <button onClick={() => { setBackupMenuOpen(false); void openConfigDir().catch(() => undefined); }}><FolderOpen size={14} />{t("st.openConfigDir")}</button>
+                  </div>}
                 </div>
               </div>
-              <div className="settings-row">
-                <span className="settings-row-label">{t("st.modelsDirTitle")}</span>
-                <span className="settings-row-desc">{modelsDisk ? t("st.modelsDirDesc", { free: formatBytes(modelsDisk.freeBytes) }) : t("st.modelsDirDesc", { free: "--" })}</span>
-                <div className="settings-control">
-                  <button className="secondary-button compact" onClick={() => void chooseModelsDir()}><FolderOpen size={14} />{t("st.changeDir")}</button>
-                </div>
+            </div>
+            <div className="settings-row">
+              <span className="settings-row-label">{t("st.modelsDirTitle")}</span>
+              <span className="settings-row-desc">{modelsDisk ? t("st.modelsDirDesc", { free: formatBytes(modelsDisk.freeBytes) }) : t("st.modelsDirDesc", { free: "--" })}</span>
+              <div className="settings-control">
+                <button className="secondary-button compact" onClick={() => void chooseModelsDir()}><FolderOpen size={14} />{t("st.changeDir")}</button>
               </div>
-              <div className="settings-row">
-                <span className="settings-row-label">{t("st.gpuTitle")}</span>
-                <span className="settings-row-desc">{gpuInfo === null ? t("gpu.detecting") : gpuInfo.vendor === "nvidia" ? t("gpu.nvidia") : gpuInfo.vendor === "amd" ? t("gpu.amd") : t("gpu.none")}</span>
-                <div className="settings-control">
-                  <button className={"switch" + (gpuOn ? " on" : "")} onClick={() => void onPersist({ ...config, gpuMonitorEnabled: !gpuOn }, gpuOn ? t("toast.gpuOff") : t("toast.gpuOn"))} role="switch" aria-checked={gpuOn}>
-                    <span className="switch-knob" />
-                  </button>
-                </div>
+            </div>
+            <div className="settings-row">
+              <span className="settings-row-label">{t("st.gpuTitle")}</span>
+              <span className="settings-row-desc">{gpuInfo === null ? t("gpu.detecting") : gpuInfo.vendor === "nvidia" ? t("gpu.nvidia") : gpuInfo.vendor === "amd" ? t("gpu.amd") : t("gpu.none")}</span>
+              <div className="settings-control">
+                <button className={"switch" + (gpuOn ? " on" : "")} onClick={() => void onPersist({ ...config, gpuMonitorEnabled: !gpuOn }, gpuOn ? t("toast.gpuOff") : t("toast.gpuOn"))} role="switch" aria-checked={gpuOn}>
+                  <span className="switch-knob" />
+                </button>
               </div>
-              <div className="settings-row">
-                <span className="settings-row-label">{t("st.trayTitle")}</span>
-                <span className="settings-row-desc">{t("st.trayDesc")}</span>
-                <div className="settings-control">
-                  <button className={"switch" + (trayOn ? " on" : "")} onClick={() => void onPersist({ ...config, minimizeToTrayOnClose: !trayOn }, trayOn ? t("toast.trayOff") : t("toast.trayOn"))} role="switch" aria-checked={trayOn}>
-                    <span className="switch-knob" />
-                  </button>
-                </div>
+            </div>
+            <div className="settings-row">
+              <span className="settings-row-label">{t("st.trayTitle")}</span>
+              <span className="settings-row-desc">{t("st.trayDesc")}</span>
+              <div className="settings-control">
+                <button className={"switch" + (trayOn ? " on" : "")} onClick={() => void onPersist({ ...config, minimizeToTrayOnClose: !trayOn }, trayOn ? t("toast.trayOff") : t("toast.trayOn"))} role="switch" aria-checked={trayOn}>
+                  <span className="switch-knob" />
+                </button>
               </div>
             </div>
           </div>
         </div>
 
+        {/* 全局快捷键 / 热键配置独立卡片 (2x2 网格卡片风格) */}
+        <div className="settings-card shortcuts-management-card">
+          <div className="settings-card-header shortcuts-card-header">
+            <div className="shortcuts-header-main">
+              <div className="shortcuts-title-line">
+                <div className="settings-card-icon"><Keyboard size={16} /></div>
+                <h3>{t("st.shortcutsTitle")}</h3>
+              </div>
+            </div>
+            <div className="settings-card-header-actions">
+              <button
+                type="button"
+                className="ghost-button compact shortcuts-header-reset-btn"
+                onClick={handleResetShortcutDefaults}
+                title={t("st.shortcutsReset")}
+              >
+                <RotateCcw size={12} />
+                <span>{t("st.shortcutsReset")}</span>
+              </button>
+              <button
+                className={"switch" + (config.shortcuts?.enabled ? " on" : "")}
+                onClick={() =>
+                  void onPersist(
+                    { ...config, shortcuts: { ...(config.shortcuts ?? DEFAULT_SHORTCUTS), enabled: !config.shortcuts?.enabled } },
+                    !config.shortcuts?.enabled ? t("toast.shortcutsSaved") : t("toast.settingsSaved")
+                  )
+                }
+                role="switch"
+                aria-checked={Boolean(config.shortcuts?.enabled)}
+                title={t("st.shortcutsEnable")}
+              >
+                <span className="switch-knob" />
+              </button>
+            </div>
+          </div>
+          <div className="shortcuts-grid-body">
+            <div className="shortcuts-2x2-grid">
+              {[
+                {
+                  key: "toggleWindow" as ShortcutActionKey,
+                  label: t("st.shortcutsToggleWindow"),
+                  icon: <AppWindow size={15} />,
+                  color: "amber",
+                  value: config.shortcuts?.toggleWindow !== undefined ? config.shortcuts.toggleWindow : DEFAULT_SHORTCUTS.toggleWindow,
+                },
+                {
+                  key: "startServer" as ShortcutActionKey,
+                  label: t("st.shortcutsStartServer"),
+                  icon: <Play size={13} fill="currentColor" />,
+                  color: "emerald",
+                  value: config.shortcuts?.startServer !== undefined ? config.shortcuts.startServer : DEFAULT_SHORTCUTS.startServer,
+                },
+                {
+                  key: "stopServer" as ShortcutActionKey,
+                  label: t("st.shortcutsStopServer"),
+                  icon: <Square size={13} fill="currentColor" />,
+                  color: "rose",
+                  value: config.shortcuts?.stopServer !== undefined ? config.shortcuts.stopServer : DEFAULT_SHORTCUTS.stopServer,
+                },
+                {
+                  key: "switchEngine" as ShortcutActionKey,
+                  label: t("st.shortcutsSwitchEngine"),
+                  icon: <Repeat size={14} />,
+                  color: "indigo",
+                  value: config.shortcuts?.switchEngine !== undefined ? config.shortcuts.switchEngine : DEFAULT_SHORTCUTS.switchEngine,
+                },
+              ].map((item) => {
+                const isRecording = recordingKey === item.key;
+                const hasValue = Boolean(item.value && item.value.trim().length > 0);
+
+                return (
+                  <div
+                    key={item.key}
+                    className={cn(
+                      "shortcut-grid-card",
+                      isRecording && "is-recording"
+                    )}
+                    onClick={() => {
+                      if (isRecording) return;
+                      setShortcutError(null);
+                      setRecordingKey(item.key);
+                    }}
+                    title={isRecording ? "按 Esc 取消 · 按 Backspace/Delete 清空" : t("st.shortcutsClickToSet")}
+                  >
+                    <div className="shortcut-card-left">
+                      <div className={cn("shortcut-icon-badge", item.color)}>
+                        {item.icon}
+                      </div>
+                      <span className="shortcut-card-label">{item.label}</span>
+                    </div>
+                    <div className="shortcut-card-right">
+                      {isRecording ? (
+                        <div className={cn("shortcut-card-recording-pill", shortcutError && "has-error")}>
+                          <span className="recording-dot" />
+                          <span className="recording-text">
+                            {shortcutError || t("st.shortcutsRecording")}
+                          </span>
+                          <button
+                            type="button"
+                            className="recording-cancel-btn"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setRecordingKey(null);
+                              setShortcutError(null);
+                            }}
+                            title="取消 (Esc)"
+                          >
+                            <X size={11} />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="shortcut-card-val-group">
+                          {renderShortcutKeycaps(item.value)}
+                          {hasValue && (
+                            <button
+                              type="button"
+                              className="shortcut-card-action-btn clear-btn"
+                              onClick={(e) => void handleClearShortcut(item.key, e)}
+                              title={t("st.shortcutsClear")}
+                              aria-label={t("st.shortcutsClear")}
+                            >
+                              <X size={12} />
+                            </button>
+                          )}
+                          <span className="shortcut-card-pencil" title={t("st.shortcutsClickToSet")}>
+                            <Pencil size={12} />
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
+
         {/* 关于与调试：项目信息为信息展示，检查更新靠右，测试日志幽灵化 */}
-        <div className="settings-card settings-group">
-          <div className="settings-card-icon"><Github size={18} /></div>
-          <div className="settings-card-body">
+        <div className="settings-card">
+          <div className="settings-card-header">
+            <div className="settings-card-icon"><Github size={16} /></div>
             <h3>{t("st.aboutTitle")}</h3>
+          </div>
+          <div className="settings-card-body">
             <p className="about-desc">{t("st.aboutDesc")}</p>
             <div className="about-layout">
               <div className="about-info">

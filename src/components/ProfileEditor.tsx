@@ -421,16 +421,16 @@ export default function ProfileEditor({
                 {isNinferKvmem ? (
                   <>
                     <Field label={t("f.kvmemBudget")} hint="--kvmem-budget">
-                      <input type="number" min="1024" step="1024" value={draft.kvmemBudget ?? 16384} onChange={number("kvmemBudget")} />
+                      <input type="number" min="1024" step="1024" value={draft.kvmemBudget ?? 36864} onChange={number("kvmemBudget")} />
                     </Field>
                     <Field label={t("f.kvmemGenReserve")} hint="--kvmem-gen-reserve">
-                      <input type="number" min="512" step="512" value={draft.kvmemGenReserve ?? 4096} onChange={number("kvmemGenReserve")} />
+                      <input type="number" min="512" step="512" value={draft.kvmemGenReserve ?? 16384} onChange={number("kvmemGenReserve")} />
                     </Field>
                     <Field label={t("f.kvmemHostMib")} hint="--kvmem-host-mib">
                       <input type="number" min="1024" step="1024" value={draft.kvmemHostMib ?? 16384} onChange={number("kvmemHostMib")} />
                     </Field>
                     <Field label={t("f.kvmemSessions")} hint="--kvmem-sessions">
-                      <input type="number" min="1" max="16" step="1" value={draft.kvmemSessions ?? 4} onChange={number("kvmemSessions")} />
+                      <input type="number" min="1" max="16" step="1" value={draft.kvmemSessions ?? 1} onChange={number("kvmemSessions")} />
                     </Field>
                     <Field label={t("f.gdnStateFp16")} hint="--gdn-state-fp16" tooltip={t("f.gdnStateFp16Tooltip")}>
                       <ToggleBox
@@ -898,10 +898,10 @@ export default function ProfileEditor({
                         mediaPreprocessThreads: typeof draft.mediaPreprocessThreads === "number" && draft.mediaPreprocessThreads >= 0 ? Math.trunc(draft.mediaPreprocessThreads) : undefined,
                         ...(isNinferKvmem
                           ? {
-                            kvmemBudget: draft.kvmemBudget ?? 16384,
-                            kvmemGenReserve: draft.kvmemGenReserve ?? 4096,
+                            kvmemBudget: draft.kvmemBudget ?? 36864,
+                            kvmemGenReserve: draft.kvmemGenReserve ?? 16384,
                             kvmemHostMib: draft.kvmemHostMib ?? 16384,
-                            kvmemSessions: draft.kvmemSessions ?? 4,
+                            kvmemSessions: draft.kvmemSessions ?? 1,
                           }
                           : {
                             hostCacheMib: draft.hostCacheMib ?? 8192,

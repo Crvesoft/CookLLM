@@ -114,10 +114,10 @@ export function Topbar({ page, status, busy, serviceStarting, onToggleService, m
             <span className="capsule-divider" aria-hidden="true" />
             <button
               className={cn("capsule-btn", status.running && "running", pending && "busy")}
-              disabled={busy}
+              disabled={busy && !serviceStarting}
               onClick={onToggleService}
-              title={t(status.running ? "stopService" : "startService")}
-              aria-label={t(status.running ? "stopService" : "startService")}
+              title={t(status.running || serviceStarting ? "stopService" : "startService")}
+              aria-label={t(status.running || serviceStarting ? "stopService" : "startService")}
             >
               {pending ? (
                 <Loader2 size={12} className="spin" />

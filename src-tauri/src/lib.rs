@@ -16,6 +16,7 @@ use tauri::{
     AppHandle, Emitter, Manager, State,
 };
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, ShortcutState};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -341,6 +342,40 @@ struct AppConfig {
     /// 用户选定的 CUDA 版本偏好（如 "13"、"13.4"、"12" 等）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     llama_cuda_version: Option<String>,
+    /// 全局快捷键自定义配置
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    shortcuts: Option<ShortcutsConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ShortcutsConfig {
+    #[serde(default = "default_false")]
+    enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    toggle_window: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    start_server: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stop_server: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    switch_engine: Option<String>,
+}
+
+fn default_false() -> bool {
+    false
+}
+
+impl Default for ShortcutsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            toggle_window: Some("Alt+Shift+C".to_string()),
+            start_server: Some("Alt+Shift+S".to_string()),
+            stop_server: Some("Alt+Shift+X".to_string()),
+            switch_engine: Some("Alt+Shift+E".to_string()),
+        }
+    }
 }
 
 impl Default for AppConfig {
@@ -432,6 +467,7 @@ impl Default for AppConfig {
             minimize_to_tray_on_close: None,
             llama_backend: None,
             llama_cuda_version: None,
+            shortcuts: Some(ShortcutsConfig::default()),
         }
     }
 }
@@ -531,6 +567,11 @@ fn read_config(app: &AppHandle) -> Result<AppConfig, String> {
             }
         }
     }
+    if let Some(ref mut sc) = config.shortcuts {
+        if sc.switch_engine.as_deref() == Some("Ctrl+E") {
+            sc.switch_engine = Some("Alt+Shift+E".to_string());
+        }
+    }
     if let Ok(mut guard) = CONFIG_CACHE.get_or_init(|| Mutex::new(None)).lock() {
         *guard = Some(ConfigCacheEntry { path: path.clone(), modified, config: config.clone() });
     }
@@ -539,6 +580,23 @@ fn read_config(app: &AppHandle) -> Result<AppConfig, String> {
 
 fn emit_log(app: &AppHandle, stream: &str, line: impl Into<String>) {
     let _ = app.emit("llama-log", LogPayload { stream: stream.into(), line: line.into(), timestamp: now_ms() });
+}
+
+/// 服务生命周期广播（事件名 server-lifecycle）：托盘或主界面任一侧发生
+/// 启动（starting）/ 主动停止（stopped）/ 启动失败与意外退出（failed）时通知前端，
+/// 使主界面与托盘操作严格同步：启动过渡动画、异常标记清除、主动停止绝不误判为「服务异常」。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ServerLifecyclePayload {
+    phase: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status: Option<ServerStatus>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+fn emit_server_lifecycle(app: &AppHandle, phase: &str, status: Option<ServerStatus>, error: Option<String>) {
+    let _ = app.emit("server-lifecycle", ServerLifecyclePayload { phase: phase.to_string(), status, error });
 }
 
 fn stream_reader<R: std::io::Read + Send + 'static>(app: AppHandle, stream: &'static str, reader: R) {
@@ -865,12 +923,11 @@ fn set_window_theme(window: tauri::WebviewWindow, dark: bool) -> Result<(), Stri
     Ok(())
 }
 
-#[tauri::command]
-fn save_config(app: AppHandle, config: AppConfig) -> Result<(), String> {
-    let path = config_path(&app)?;
+fn save_config_internal(app: &AppHandle, config: &AppConfig, sync_shortcuts: bool) -> Result<(), String> {
+    let path = config_path(app)?;
     let temporary = path.with_extension("json.tmp");
     let backup = path.with_extension("json.bak");
-    let contents = serde_json::to_vec_pretty(&config).map_err(|error| error.to_string())?;
+    let contents = serde_json::to_vec_pretty(config).map_err(|error| error.to_string())?;
     fs::write(&temporary, &contents).map_err(|error| error.to_string())?;
     // Windows 的 rename 不能覆盖已存在目标：旧文件先挪为 .bak，rename 失败立即回滚，任何一步中断都不会丢配置
     if path.exists() {
@@ -884,7 +941,27 @@ fn save_config(app: AppHandle, config: AppConfig) -> Result<(), String> {
     if let Ok(mut guard) = CONFIG_CACHE.get_or_init(|| Mutex::new(None)).lock() {
         *guard = None;
     }
-    refresh_tray_menu(&app);
+    refresh_tray_menu(app);
+    if sync_shortcuts {
+        sync_global_shortcuts(app, config);
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn save_config(app: AppHandle, config: AppConfig) -> Result<(), String> {
+    save_config_internal(&app, &config, true)
+}
+
+/// 录制快捷键或打开快捷键弹窗时临时暂停全局热键，避免冲突与按键拦截
+#[tauri::command]
+fn set_shortcuts_recording_mode(app: AppHandle, recording: bool) -> Result<(), String> {
+    if recording {
+        let gs = app.global_shortcut();
+        let _ = gs.unregister_all();
+    } else if let Ok(config) = read_config(&app) {
+        sync_global_shortcuts(&app, &config);
+    }
     Ok(())
 }
 
@@ -1434,7 +1511,11 @@ fn start_server(app: AppHandle, state: State<ProcessState>, model_id: String, pr
 
 fn start_server_internal(app: &AppHandle, state: &ProcessState, model_id: &str, profile_id: &str) -> Result<ServerStatus, String> {
     match start_server_core(app, state, model_id, profile_id) {
-        Ok(status) => Ok(status),
+        Ok(status) => {
+            // 广播 starting：无论从主界面还是托盘启动，前端都立即进入启动过渡动画并同步状态
+            emit_server_lifecycle(app, "starting", Some(status.clone()), None);
+            Ok(status)
+        }
         Err(err) => {
             let model_name = read_config(app).ok().and_then(|c| {
                 c.models.iter().find(|m| m.id == model_id).map(|m| {
@@ -1446,6 +1527,8 @@ fn start_server_internal(app: &AppHandle, state: &ProcessState, model_id: &str, 
                 error: err.clone(),
             });
             update_tray_status(app, None);
+            // 广播 failed：主界面立即结束过渡动画并标记服务异常（托盘启动失败同样可见）
+            emit_server_lifecycle(app, "failed", None, Some(err.clone()));
             Err(err)
         }
     }
@@ -1504,7 +1587,16 @@ fn start_server_core(app: &AppHandle, state: &ProcessState, model_id: &str, prof
 
     // 进程生命周期串行化：kill 旧进程的等待在专用锁内进行，ProcessState 锁只做短暂存取
     let lifecycle = PROCESS_LIFECYCLE_LOCK.lock().map_err(|_| "进程生命周期锁已损坏")?;
-    let previous = { state.0.lock().map_err(|_| "进程状态锁已损坏")?.take() };
+    let previous = {
+        let mut guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
+        let prev = guard.take();
+        // 旧服务切换终止同样属于主动停止：在 take() 生效前广播 stopped，
+        // 避免前端 2s 轮询在 kill 等待窗口内捕捉到 running=false 误判为「服务异常」
+        if prev.is_some() {
+            emit_server_lifecycle(app, "stopped", Some(ServerStatus::default()), None);
+        }
+        prev
+    };
     if let Some(mut running) = previous {
         // 先递增代数，使旧服务的呼吸灯与端口探测线程立即失效退出，绝不误判旧进程终止为异常退出
         TRAY_PULSE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1755,7 +1847,7 @@ fn start_server_core(app: &AppHandle, state: &ProcessState, model_id: &str, prof
 
         // 12. 引擎特有显存/KVMem 分层管理
         if engine_type == "ninfer_kvmem" {
-            let budget = profile.kvmem_budget.unwrap_or(32768);
+            let budget = profile.kvmem_budget.unwrap_or(36864);
             let budget_aligned = (budget / 64) * 64;
             let gen_reserve = profile.kvmem_gen_reserve.unwrap_or(16384);
             let gen_reserve_aligned = (gen_reserve / 64) * 64;
@@ -2054,6 +2146,8 @@ fn start_server_core(app: &AppHandle, state: &ProcessState, model_id: &str, prof
                                     error: "服务启动后意外退出，请查看日志".to_string(),
                                 });
                                 update_tray_status(&app_probe, None);
+                                // 广播 failed：前端立即结束启动过渡动画并标记服务异常（无需等 2s 轮询）
+                                emit_server_lifecycle(&app_probe, "failed", None, Some("服务启动后意外退出，请查看日志".to_string()));
                             }
                         }
                     }
@@ -2112,6 +2206,9 @@ fn start_server_core(app: &AppHandle, state: &ProcessState, model_id: &str, prof
         set_tray_state(TrayServerState::Stopped);
         TRAY_PULSE_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         update_tray_status(app, None);
+        // 2. 广播 stopped（先于 take() 生效：保证事件先于任何轮询观察到 running=false），
+        //    前端据此把本次退出标记为主动停止，绝不误判为「服务异常」
+        emit_server_lifecycle(app, "stopped", Some(ServerStatus::default()), None);
 
         let managed = { state.0.lock().map_err(|_| "进程状态锁已损坏")?.take() };
         if let Some(mut managed) = managed {
@@ -3954,14 +4051,46 @@ fn build_tray_menu(app: &AppHandle, tray_state: &TrayServerState) -> tauri::Resu
     Ok(menu)
 }
 
+/// 唤起主窗口的统一入口：显示 + 还原最小化 + 聚焦，并确保窗口落在当前可见屏幕内。
+///
+/// Windows 在显示器拓扑变化（拔插外接屏、改分辨率/DPI、睡眠唤醒、远程桌面）时只搬移
+/// 可见窗口，隐藏中的窗口仍停留在旧坐标——从托盘 show() 后任务栏出现图标但屏幕上
+/// 看不到主窗口，只能杀进程重开。这里在显示后校验窗口与现有显示器的可见重叠，
+/// 不足时强制居中到最近的可见显示器，彻底规避该类问题。
+fn show_window_onscreen(window: &tauri::WebviewWindow) {
+    let _ = window.show();
+    if window.is_minimized().unwrap_or(false) {
+        let _ = window.unminimize();
+    }
+    let _ = window.set_focus();
+
+    // 与任一显示器的可见重叠都小于一条可拖拽的边条（96x40 物理像素）时判定"不可见"，
+    // 交由 center() 落回最近的显示器。center() 会以窗口当前所属（最近的）显示器为基准。
+    let pos = window.outer_position().ok();
+    let size = window.outer_size().ok();
+    let monitors = window.available_monitors().ok();
+    if let (Some(pos), Some(size), Some(monitors)) = (pos, size, monitors) {
+        const MIN_VISIBLE_W: i32 = 96;
+        const MIN_VISIBLE_H: i32 = 40;
+        let enough = monitors.iter().any(|m| {
+            let mp = m.position();
+            let ms = m.size();
+            let overlap_w = (pos.x + size.width as i32).min(mp.x + ms.width as i32) - pos.x.max(mp.x);
+            let overlap_h = (pos.y + size.height as i32).min(mp.y + ms.height as i32) - pos.y.max(mp.y);
+            overlap_w >= MIN_VISIBLE_W && overlap_h >= MIN_VISIBLE_H
+        });
+        if !enough {
+            let _ = window.center();
+        }
+    }
+}
+
 fn handle_tray_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
     let id = event.id.as_ref();
     match id {
         "show" | "status_label" => {
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
+                show_window_onscreen(&window);
             }
         }
         "stop_service" => {
@@ -3997,9 +4126,7 @@ fn handle_tray_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
         }
         "view_error" => {
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
+                show_window_onscreen(&window);
             }
             let error_msg = if let TrayServerState::Failed { error, .. } = get_tray_state() {
                 error
@@ -4060,12 +4187,14 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
             {
                 let app = tray.app_handle();
                 if let Some(window) = app.get_webview_window("main") {
-                    if window.is_visible().unwrap_or(false) {
+                    // 最小化状态下 is_visible() 也为 true：优先还原而不是隐藏，
+                    // 同时避免产生"隐藏且最小化"的叠加态（该状态下还原容易出边角问题）。
+                    if window.is_minimized().unwrap_or(false) {
+                        show_window_onscreen(&window);
+                    } else if window.is_visible().unwrap_or(false) {
                         let _ = window.hide();
                     } else {
-                        let _ = window.show();
-                        let _ = window.unminimize();
-                        let _ = window.set_focus();
+                        show_window_onscreen(&window);
                     }
                 }
             }
@@ -4079,6 +4208,182 @@ fn setup_tray(app: &mut tauri::App) -> tauri::Result<()> {
 
     Ok(())
 }
+
+/* ==================== 全局快捷键自定义功能 ==================== */
+
+#[derive(Default, Clone)]
+struct RegisteredShortcuts {
+    toggle_window: Option<Shortcut>,
+    start_server: Option<Shortcut>,
+    stop_server: Option<Shortcut>,
+    switch_engine: Option<Shortcut>,
+}
+
+static REGISTERED_SHORTCUTS: OnceLock<Mutex<RegisteredShortcuts>> = OnceLock::new();
+
+fn get_registered_shortcuts() -> &'static Mutex<RegisteredShortcuts> {
+    REGISTERED_SHORTCUTS.get_or_init(|| Mutex::new(RegisteredShortcuts::default()))
+}
+
+fn resolve_default_model_and_profile(config: &AppConfig) -> Option<(String, String)> {
+    if let Some(ref model_id) = config.preferred_model_id {
+        if let Some(model) = config.models.iter().find(|m| &m.id == model_id) {
+            let profile_id = if let Some(ref pid) = config.preferred_profile_id {
+                pid.clone()
+            } else if let Some(p) = model.profiles.first() {
+                p.id.clone()
+            } else if let Some(p) = config.profiles.first() {
+                p.id.clone()
+            } else {
+                String::new()
+            };
+            if !profile_id.is_empty() {
+                return Some((model.id.clone(), profile_id));
+            }
+        }
+    }
+    for model in &config.models {
+        let profile_id = if let Some(p) = model.profiles.first() {
+            p.id.clone()
+        } else if let Some(p) = config.profiles.first() {
+            p.id.clone()
+        } else {
+            String::new()
+        };
+        if !profile_id.is_empty() {
+            return Some((model.id.clone(), profile_id));
+        }
+    }
+    None
+}
+
+fn sync_global_shortcuts(app: &AppHandle, config: &AppConfig) {
+    let gs = app.global_shortcut();
+    let _ = gs.unregister_all();
+
+    let mut registered = RegisteredShortcuts::default();
+    let sc = config.shortcuts.clone().unwrap_or_default();
+
+    if !sc.enabled {
+        if let Ok(mut g) = get_registered_shortcuts().lock() {
+            *g = registered;
+        }
+        return;
+    }
+
+    let try_register = |key_str: &str, _action_name: &str| -> Option<Shortcut> {
+        let trimmed = key_str.trim();
+        if trimmed.is_empty() {
+            return None;
+        }
+        match trimmed.parse::<Shortcut>() {
+            Ok(shortcut) => {
+                match gs.register(shortcut.clone()) {
+                    Ok(()) => Some(shortcut),
+                    Err(_e) => {
+                        eprintln!("注册快捷键 [{}] ({}) 失败: {}", _action_name, trimmed, _e);
+                        None
+                    }
+                }
+            }
+            Err(_e) => {
+                eprintln!("解析快捷键 [{}] ({}) 格式错误: {}", _action_name, trimmed, _e);
+                None
+            }
+        }
+    };
+
+    if let Some(ref s) = sc.toggle_window {
+        registered.toggle_window = try_register(s, "后台打开主界面");
+    }
+    if let Some(ref s) = sc.start_server {
+        registered.start_server = try_register(s, "开启服务");
+    }
+    if let Some(ref s) = sc.stop_server {
+        registered.stop_server = try_register(s, "关闭服务");
+    }
+    if let Some(ref s) = sc.switch_engine {
+        registered.switch_engine = try_register(s, "打开引擎管理");
+    }
+
+    if let Ok(mut g) = get_registered_shortcuts().lock() {
+        *g = registered;
+    }
+}
+
+fn handle_global_shortcut(app: &AppHandle, shortcut: &Shortcut, event: ShortcutEvent) {
+    if event.state() != ShortcutState::Pressed {
+        return;
+    }
+    let (is_toggle, is_start, is_stop, is_switch_engine) = {
+        if let Ok(guard) = get_registered_shortcuts().lock() {
+            (
+                guard.toggle_window.as_ref() == Some(shortcut),
+                guard.start_server.as_ref() == Some(shortcut),
+                guard.stop_server.as_ref() == Some(shortcut),
+                guard.switch_engine.as_ref() == Some(shortcut),
+            )
+        } else {
+            (false, false, false, false)
+        }
+    };
+
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if is_toggle {
+            if let Some(window) = app.get_webview_window("main") {
+                let is_minimized = window.is_minimized().unwrap_or(false);
+                let is_visible = window.is_visible().unwrap_or(false);
+                let is_focused = window.is_focused().unwrap_or(false);
+                if !is_visible || is_minimized {
+                    show_window_onscreen(&window);
+                } else if is_focused {
+                    let _ = window.hide();
+                } else {
+                    show_window_onscreen(&window);
+                }
+            }
+        }
+
+        if is_start {
+            let state = app.state::<ProcessState>();
+            let is_running = {
+                let guard = state.0.lock().ok();
+                guard.as_ref().map(|g| g.is_some()).unwrap_or(false)
+            };
+            if !is_running {
+                if let Ok(config) = read_config(&app) {
+                    if let Some((model_id, profile_id)) = resolve_default_model_and_profile(&config) {
+                        if let Err(err) = start_server_internal(&app, &state, &model_id, &profile_id) {
+                            emit_log(&app, "stderr", &format!("启动服务失败: {}", err));
+                        }
+                    }
+                }
+            }
+        }
+
+        if is_stop {
+            let state = app.state::<ProcessState>();
+            let is_running = {
+                let guard = state.0.lock().ok();
+                guard.as_ref().map(|g| g.is_some()).unwrap_or(false)
+            };
+            if is_running {
+                let _ = stop_server_internal(&app, &state);
+            }
+        }
+
+        if is_switch_engine {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.show();
+                let _ = window.set_focus();
+            }
+            let _ = app.emit("shortcut-open-engine-hub", ());
+        }
+    });
+}
+
 
 
 /* ==================== 阶段四：社区探索（HuggingFace & 魔塔社区 热门 / 搜索 / 下载） ==================== */
@@ -6157,16 +6462,33 @@ fn get_llamacpp_status(app: AppHandle, custom_path: Option<String>) -> Result<Ll
             (None, p)
         }
     } else {
-        let install_dir = llamacpp_root(&app, &config)?;
-        let configured_path = config.server_path.trim();
-        let server_path = if !configured_path.is_empty() && PathBuf::from(configured_path).is_file() {
-            Some(PathBuf::from(configured_path))
-        } else if install_dir.exists() {
-            find_server_executable(&install_dir, 0)
+        // 先检查配置中当前激活引擎的路径
+        let active_engine_path = {
+            let active_id = config.active_engine_id.as_deref().unwrap_or_default();
+            config.engines.iter().find(|e| e.id == active_id).map(|e| e.path.trim().to_string())
+        }.filter(|s| !s.is_empty());
+
+        let target_str = active_engine_path.unwrap_or_else(|| config.server_path.trim().to_string());
+        if !target_str.is_empty() {
+            let p = PathBuf::from(&target_str);
+            if p.is_file() {
+                let parent = p.parent().map(|dir| dir.to_path_buf()).unwrap_or_else(|| p.clone());
+                (Some(p), parent)
+            } else if p.is_dir() {
+                let exe = find_server_executable(&p, 0);
+                (exe, p)
+            } else {
+                (None, p)
+            }
         } else {
-            None
-        };
-        (server_path, install_dir)
+            let install_dir = llamacpp_root(&app, &config)?;
+            let server_path = if install_dir.exists() {
+                find_server_executable(&install_dir, 0)
+            } else {
+                None
+            };
+            (server_path, install_dir)
+        }
     };
 
     let mut local_backend = "cpu".into();
@@ -6217,6 +6539,17 @@ fn get_llamacpp_status(app: AppHandle, custom_path: Option<String>) -> Result<Ll
         }
 
         local_version = local_llamacpp_version(&bin_dir);
+        // 如果未通过目录提取到构建版本号，尝试读取匹配引擎配置中的 version
+        if local_version.is_none() {
+            if let Some(matched) = config.engines.iter().find(|e| {
+                if let Some(active_id) = config.active_engine_id.as_deref() {
+                    if e.id == active_id { return true; }
+                }
+                e.path.eq_ignore_ascii_case(&exe_str)
+            }) {
+                local_version = matched.version.clone();
+            }
+        }
         // 优先读安装时写入的 backend.txt，回退按路径名与 DLL 推断
         if let Ok(text) = fs::read_to_string(bin_dir.join("backend.txt")) {
             let value = text.trim().to_lowercase();
@@ -6232,6 +6565,16 @@ fn get_llamacpp_status(app: AppHandle, custom_path: Option<String>) -> Result<Ll
         let mut local_cuda_version = None;
         if local_backend == "cuda" {
             local_cuda_version = get_installed_cuda_version(&bin_dir);
+            if local_cuda_version.is_none() {
+                if let Some(matched) = config.engines.iter().find(|e| {
+                    if let Some(active_id) = config.active_engine_id.as_deref() {
+                        if e.id == active_id { return true; }
+                    }
+                    e.path.eq_ignore_ascii_case(&exe_str)
+                }) {
+                    local_cuda_version = matched.cuda_version.clone();
+                }
+            }
         }
         return Ok(LlamaCppLocalStatus {
             install_dir: install_dir.to_string_lossy().to_string(),
@@ -7218,9 +7561,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
             if let Some(window) = app.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
+                show_window_onscreen(&window);
             }
         }))
         .plugin(tauri_plugin_dialog::init())
@@ -7235,10 +7576,18 @@ pub fn run() {
             react_mounted_ms: None,
             reported: false,
         })))
-        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_whoami, hf_avatar, hf_download, hf_download_url, hf_cancel_download, hf_pause_download, hf_clear_download, ms_trending, ms_search, ms_list_files, ms_avatar, ms_download, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, check_orphan_server, kill_orphan_server, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, read_ninfer_request_log, pick_files, pick_folder, pick_server_dir, pick_server_file, expand_paths, inspect_gguf, paths_exist, export_config_backup, pick_config_backup, pick_directory, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing])
+        .invoke_handler(tauri::generate_handler![hf_trending, hf_search, hf_list_files, hf_whoami, hf_avatar, hf_download, hf_download_url, hf_cancel_download, hf_pause_download, hf_clear_download, ms_trending, ms_search, ms_list_files, ms_avatar, ms_download, remove_local_file, reveal_in_folder, get_models_dir, pick_models_dir, load_config, save_config, start_server, stop_server, get_server_status, check_orphan_server, kill_orphan_server, get_gpu_stats, get_gpu_info, hardware_info, detect_hardware, test_proxy_connection, get_system_proxy, get_llamacpp_status, check_llamacpp_update, download_llamacpp, cancel_llamacpp_update, check_app_update, download_app_update, cancel_app_update, install_app_update, read_ninfer_request_log, pick_files, pick_folder, pick_server_dir, pick_server_file, expand_paths, inspect_gguf, paths_exist, export_config_backup, pick_config_backup, pick_directory, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing, set_shortcuts_recording_mode])
         .setup(|app| {
+            app.handle().plugin(
+                tauri_plugin_global_shortcut::Builder::new()
+                    .with_handler(handle_global_shortcut)
+                    .build(),
+            )?;
             configure_main_window(app)?;
             setup_tray(app)?;
+            if let Ok(config) = read_config(app.handle()) {
+                sync_global_shortcuts(app.handle(), &config);
+            }
             Ok(())
         });
 

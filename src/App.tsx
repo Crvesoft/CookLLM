@@ -2,13 +2,13 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { DEMO_CONFIG, DEFAULT_PROFILES, DEFAULT_NINFER_PROFILES, defaultProfilesForModel, INITIAL_LOGS, mergeImportedConfig, migrateConfig, uid } from "./data";
 import { setLocale, useI18n } from "./i18n";
-import { checkForUpdate, checkOrphanServer, exportConfigBackup, getGpuStats, getModelsDir, getServerStatus, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, msDownload, inspectGguf, isTauri, killOrphanServer, loadConfig, onLlamaLog, onTrayViewError, openExternal, pathsExist, pickConfigBackup, pickDirectory, pickModelsDir, readNinferRequestLog, removeLocalFile, revealInFolder, saveConfig, setWindowTheme, startServer, stopServer, type ConfigBackupEnvelope, type OrphanProcessItem, type UpdateCheckResult } from "./tauri";
+import { checkForUpdate, checkOrphanServer, exportConfigBackup, getGpuStats, getModelsDir, getServerStatus, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, msDownload, inspectGguf, isTauri, killOrphanServer, loadConfig, onConfigUpdated, onShortcutOpenEngineHub, onLlamaLog, onServerLifecycle, onTrayViewError, openExternal, pathsExist, pickConfigBackup, pickDirectory, pickModelsDir, readNinferRequestLog, removeLocalFile, revealInFolder, saveConfig, setWindowTheme, startServer, stopServer, type ConfigBackupEnvelope, type OrphanProcessItem, type ServerLifecyclePayload, type UpdateCheckResult } from "./tauri";
 import type { ActiveDownload } from "./components/ExplorePage";
 import type { PickedFile } from "./tauri";
 import { onModelDownloadProgress } from "./tauri";
 import type { DiskUsage, ModelDownloadProgress } from "./types";
 import { PAGE_LOG_MODE, type AppConfig, type CommunitySource, type GpuStats, type InferenceMetrics, type LlamaLogPayload, type ModelAsset, type Page, type Profile, type ServerStatus, type TokSample } from "./types";
-import { ACCENTS, EMPTY_STATUS, cn, fileName, modelTitle, newLog, parseQuantization, parseTokPerSec, shallowEqualFields, InferenceTracker } from "./utils";
+import { ACCENTS, EMPTY_STATUS, cn, fileName, modelTitle, newLog, parseQuantization, parseTokPerSec, shallowEqualFields, InferenceTracker, isKeyboardEventMatchingShortcut, DEFAULT_SHORTCUTS } from "./utils";
 import LogDock from "./components/LogDock";
 import { LogsPage, Sidebar, Toast, Topbar } from "./components/Layout";
 import ImportModelModal from "./components/ImportModelModal";
@@ -59,6 +59,9 @@ export default function App() {
   /** GPU 性能监测开关（默认开启，设置页可关闭） */
   const gpuMonitorEnabled = config.gpuMonitorEnabled !== false;
   const [page, setPage] = useState<Page>("models");
+  /** page 镜像：生命周期事件等一次性注册的监听器读取实时页面，避免闭包过期 */
+  const pageRef = useRef(page);
+  pageRef.current = page;
   const [status, setStatus] = useState<ServerStatus>(EMPTY_STATUS);
   const [logs, setLogs] = useState<LlamaLogPayload[]>(INITIAL_LOGS);
   const [query, setQuery] = useState("");
@@ -93,6 +96,9 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   /** 启动中：进程已拉起但服务端口尚未就绪（按钮显示旋转过渡，避免生硬地直接切为停止图标） */
   const [serviceStarting, setServiceStarting] = useState(false);
+  const [startingModelId, setStartingModelId] = useState<string | null>(null);
+  /** 最近一次启动（UI 或托盘）的时间戳：启动后短暂窗口内 running=false 的轮询结果视为 spawn 前采样的过期数据 */
+  const lifecycleStartingAtRef = useRef(0);
   const serviceStartingRef = useRef(false);
   const serviceStartingTimerRef = useRef<number | null>(null);
   const endServiceStarting = () => {
@@ -102,10 +108,12 @@ export default function App() {
     }
     serviceStartingRef.current = false;
     setServiceStarting(false);
+    setStartingModelId(null);
   };
-  const beginServiceStarting = () => {
+  const beginServiceStarting = (modelId?: string | null) => {
     serviceStartingRef.current = true;
     setServiceStarting(true);
+    if (modelId) setStartingModelId(modelId);
     if (serviceStartingTimerRef.current) window.clearTimeout(serviceStartingTimerRef.current);
     // 安全兜底：即便就绪日志缺失，也不会让按钮无限旋转（远超大型模型加载耗时）
     serviceStartingTimerRef.current = window.setTimeout(() => endServiceStarting(), 900000);
@@ -170,7 +178,7 @@ export default function App() {
   /** 配置加载完成前不启用 GPU/状态轮询，避免「关闭监测」用户首次挂载闪现图表 */
   const [configReady, setConfigReady] = useState(false);
 
-  /** llama.cpp 运行时管理中心（Ctrl+E） */
+  /** llama.cpp 运行时管理中心（Alt+Shift+E） */
   const [engineHubOpen, setEngineHubOpen] = useState(false);
   const [engineAddModalOpen, setEngineAddModalOpen] = useState(false);
   /** 配置备份导入向导弹窗 */
@@ -178,14 +186,23 @@ export default function App() {
 
   useEffect(() => {
     const handleGlobalKeyDown = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "e") {
+      const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+      if (tag === "input" || tag === "textarea") return;
+
+      const rawShortcut = config.shortcuts?.switchEngine;
+      const configuredShortcut = rawShortcut !== undefined ? rawShortcut : DEFAULT_SHORTCUTS.switchEngine;
+      if (!configuredShortcut || !configuredShortcut.trim()) {
+        return;
+      }
+
+      if (isKeyboardEventMatchingShortcut(e, configuredShortcut)) {
         e.preventDefault();
         setEngineHubOpen((prev) => !prev);
       }
     };
     window.addEventListener("keydown", handleGlobalKeyDown);
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
-  }, []);
+  }, [config.shortcuts?.switchEngine]);
 
   const appEngines = useMemo<LlamaEngine[]>(() => {
     return config.engines && config.engines.length > 0
@@ -287,7 +304,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    let active = true; let unlisten: (() => void) | undefined;
+    let active = true; let unlisten: (() => void) | undefined; let unlistenLifecycle: (() => void) | undefined; let unlistenConfig: (() => void) | undefined; let unlistenEngineHub: (() => void) | undefined;
     void (async () => {
       try {
         if (isTauri()) {
@@ -310,6 +327,18 @@ export default function App() {
               appendLog(t("orphan.detectedLog", { pids: orphanInfo.pids.join(", ") }), "system");
             }
           }).catch(() => undefined);
+          // 服务生命周期事件：托盘启动/停止时同步主界面过渡动画与异常标记（ref 转发读取最新闭包）
+          unlistenLifecycle = await onServerLifecycle((payload) => {
+            if (active) serverLifecycleHandlerRef.current(payload);
+          });
+          // 快捷键等后台操作触发的配置变更事件
+          unlistenConfig = await onConfigUpdated((updated) => {
+            if (active && updated) adopt(updated);
+          });
+          // 全局快捷键呼出引擎管理界面事件
+          unlistenEngineHub = await onShortcutOpenEngineHub(() => {
+            if (active) setEngineHubOpen((prev) => !prev);
+          });
           unlisten = await onLlamaLog((payload) => {
             if (!active) return;
             queueLogs([payload]);
@@ -344,7 +373,7 @@ export default function App() {
       // 无论成功失败，配置读取阶段结束 → 解锁轮询
       if (active) setConfigReady(true);
     })();
-    return () => { active = false; unlisten?.(); };
+    return () => { active = false; unlisten?.(); unlistenLifecycle?.(); unlistenConfig?.(); unlistenEngineHub?.(); };
   }, []);
 
   useEffect(() => {
@@ -354,9 +383,14 @@ export default function App() {
       // 浅比较后去重：数据未变化时保持旧引用，避免每 2s 的轮询触发全树重渲染
       void getServerStatus().then((st) => {
         if (!active) return;
-        setStatus((prev) => (shallowEqualFields(prev, st) ? prev : st));
-        // 服务已停止（含启动失败 / 进程意外退出）：结束启动中的旋转过渡
-        if (!st.running && serviceStartingRef.current) endServiceStarting();
+        // 启动后宽限窗口内的 running=false 是 spawn 前采样的过期轮询结果：
+        // 直接应用会误杀刚点亮的过渡动画，甚至把成功启动误判为「意外退出」（真实失败由 failed 事件 / 下一轮轮询兜底）
+        const staleDuringStart = !st.running && serviceStartingRef.current && Date.now() - lifecycleStartingAtRef.current < 4000;
+        if (!staleDuringStart) {
+          setStatus((prev) => (shallowEqualFields(prev, st) ? prev : st));
+          // 服务已停止（含启动失败 / 进程意外退出）：结束启动中的旋转过渡
+          if (!st.running && serviceStartingRef.current) endServiceStarting();
+        }
         // 当服务处于运行状态时，同步底层实时指标（针对不同引擎自动自适应）
         if (st.running && st.port) {
           const isNinfer = st.engineType === "ninfer" || st.engineType === "ninfer_kvmem";
@@ -495,6 +529,49 @@ export default function App() {
     }
     prevRunningRef.current = status.running;
   }, [status.running]);
+
+  /**
+   * 服务生命周期事件：托盘 / 主界面任一侧的启动、停止、失败都会广播到此处，
+   * 保证两侧状态完全同步（过渡动画、异常标记、意外退出判定），与 handleStart / handleStop 行为对齐。
+   * 通过 ref 转发以读取最新闭包（监听器仅注册一次，避免捕获过期的 page / t）。
+   */
+  const handleServerLifecycle = (payload: ServerLifecyclePayload) => {
+    if (payload.phase === "starting" && payload.status) {
+      const next = payload.status;
+      // 与 handleStart 对齐：进入启动过渡动画 + 清除异常标记 + 武装就绪后自动收起 Dock + 就绪提示
+      lifecycleStartingAtRef.current = Date.now();
+      setServiceAbnormal(false);
+      inferenceTrackerRef.current.reset();
+      setLatestInference(null);
+      setInferenceHistory([]);
+      setTokSample(null);
+      dockAutoCollapseRef.current = true;
+      pendingStartedToastRef.current = next.modelName || null;
+      if (next.modelId) setStartingModelId(next.modelId);
+      setStatus((prev) => (shallowEqualFields(prev, next) ? prev : next));
+      if (!serviceStartingRef.current) beginServiceStarting(next.modelId);
+      if (pageRef.current !== "logs") setLogDockOpen(true);
+    } else if (payload.phase === "stopped") {
+      // 主动停止（含托盘）：立即结束过渡动画、撤销就绪提示；状态仍在运行时同步为停止并放行意外退出判定
+      endServiceStarting();
+      setStartingModelId(null);
+      pendingStartedToastRef.current = null;
+      dockAutoCollapseRef.current = false;
+      if (prevRunningRef.current) {
+        stopIntendedRef.current = true;
+        setStatus(EMPTY_STATUS);
+      }
+    } else if (payload.phase === "failed") {
+      // 启动失败 / 进程意外退出：结束过渡动画并标记服务异常（错误详情由后端日志另行输出）
+      endServiceStarting();
+      pendingStartedToastRef.current = null;
+      dockAutoCollapseRef.current = false;
+      setServiceAbnormal(true);
+      if (pageRef.current !== "logs") setLogDockOpen(true);
+    }
+  };
+  const serverLifecycleHandlerRef = useRef(handleServerLifecycle);
+  serverLifecycleHandlerRef.current = handleServerLifecycle;
 
   /** 默认亮色主题；同时把标题栏同步给系统（Windows：暗色=黑，亮色=默认） */
   const theme = config.theme || "light";
@@ -991,6 +1068,28 @@ export default function App() {
     const profile = model.profiles.find((item) => item.id === profileId);
     if (!profile) return setToast(t("toast.addProfileFirst"));
 
+    // 1. 若点击的是当前正在运行或正在启动中的同一个模型 -> 视为停止/暂停
+    if ((status.running && status.modelId === model.id) || (startingModelId === model.id)) {
+      return handleStop();
+    }
+
+    // 2. 若当前有其他模型正在运行或处于启动中 -> 立马停止旧模型，再切换启动新选择的模型
+    if (status.running || serviceStarting || startingModelId) {
+      stopIntendedRef.current = true;
+      endServiceStarting();
+      pendingStartedToastRef.current = null;
+      appendLog("正在停止当前服务并切换启动新模型…", "system");
+      try {
+        if (isTauri()) {
+          await stopServer();
+        } else {
+          setStatus(EMPTY_STATUS);
+        }
+      } catch (err) {
+        console.warn("停止前序服务失败", err);
+      }
+    }
+
     // 启动前安全检测：检查后台是否有未被托管的残留 llama-server，防止双模型并发占用显存
     if (isTauri()) {
       try {
@@ -1007,7 +1106,7 @@ export default function App() {
     const engineName = profile.engineId
       ? config.engines?.find((e) => e.id === profile.engineId)?.name || profile.engineId
       : config.engines?.find((e) => e.id === config.activeEngineId)?.name || "默认引擎";
-    setBusy(true); beginServiceStarting(); setMenuModelId(null); appendLog(t("toast.starting", { model: modelTitle(model), profile: `${profile.name} [${engineName}]` }));
+    setBusy(true); setStartingModelId(model.id); beginServiceStarting(model.id); lifecycleStartingAtRef.current = Date.now(); setMenuModelId(null); appendLog(t("toast.starting", { model: modelTitle(model), profile: `${profile.name} [${engineName}]` }));
     try {
       if (isTauri()) setStatus(await startServer(model.id, profile.id));
       else {
@@ -1045,12 +1144,12 @@ export default function App() {
       // 「已启动」提示延迟到服务真正就绪后再播报（与 Dock 收起、旋转动画结束同步）；若就绪日志已提前到达则立即补播报
       pendingStartedToastRef.current = modelTitle(model);
       if (!serviceStartingRef.current) markServiceReady();
-    } catch (error) { pendingStartedToastRef.current = null; appendLog(t("log.startFailed", { error: String(error) }), "stderr"); setServiceAbnormal(true); dockAutoCollapseRef.current = false; endServiceStarting(); if (page !== "logs") setLogDockOpen(true); setToast(t("toast.startFailedToast")); }
+    } catch (error) { pendingStartedToastRef.current = null; setStartingModelId(null); appendLog(t("log.startFailed", { error: String(error) }), "stderr"); setServiceAbnormal(true); dockAutoCollapseRef.current = false; endServiceStarting(); if (page !== "logs") setLogDockOpen(true); setToast(t("toast.startFailedToast")); }
     finally { setBusy(false); }
   };
 
   const handleStop = async () => {
-    setBusy(true); endServiceStarting(); pendingStartedToastRef.current = null; appendLog(t("log.stopping"));
+    setBusy(true); setStartingModelId(null); endServiceStarting(); pendingStartedToastRef.current = null; appendLog(t("log.stopping"));
     stopIntendedRef.current = true; // 本次退出是主动停止 → 不判为服务异常
     dockAutoCollapseRef.current = false;
     try { if (isTauri()) setStatus(await stopServer()); else { await new Promise((resolve) => window.setTimeout(resolve, 380)); setStatus(EMPTY_STATUS); appendLog(t("log.stopSuccess")); } setToast(t("toast.stopped")); }
@@ -1306,8 +1405,8 @@ export default function App() {
 
   return <div className={cn("app-shell", sidebarCollapsed && "sidebar-collapsed", zenMode && "zen-mode")}>
     <Sidebar page={page} onPage={setPage} downloadBadge={exploreBadge} badgeProgress={exploreActive > 0 ? exploreProgress : undefined} updateAvailable={appUpdate?.status === "available"} status={status} abnormal={serviceAbnormal} gpuStats={gpuStats} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed((value) => !value)} theme={theme} onToggleTheme={() => void persist({ ...config, theme: theme === "dark" ? "light" : "dark" })} />
-    <div className={cn("workspace", isDockPage && "dock-mode")}><Topbar page={page} status={status} busy={busy} serviceStarting={serviceStarting} onToggleService={status.running ? handleStop : startQuick} models={config.models} modelId={quickModelId || config.preferredModelId || config.models[0]?.id || ""} onSelectModel={setQuickModelId} zenMode={zenMode} onToggleZenMode={() => setZenMode((v) => !v)} /><main className="main-content">
-      {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} serviceStarting={serviceStarting} query={query} onQuery={setQuery} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onAddProfile={(model) => { const isN = model.path.toLowerCase().endsWith(".ninfer"); const baseP = isN ? DEFAULT_NINFER_PROFILES[0] : DEFAULT_PROFILES[0]; setProfileEditing({ modelId: model.id, profile: { ...baseP, id: uid("profile"), name: t("newProfile") } }); }} onRenameModel={renameModel} onUpdateModelTags={updateModelTags} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} justImportedIds={justImportedIds} onToast={setToast} />}
+    <div className={cn("workspace", isDockPage && "dock-mode")}><Topbar page={page} status={status} busy={busy} serviceStarting={serviceStarting} onToggleService={status.running || serviceStarting ? handleStop : startQuick} models={config.models} modelId={quickModelId || config.preferredModelId || config.models[0]?.id || ""} onSelectModel={setQuickModelId} zenMode={zenMode} onToggleZenMode={() => setZenMode((v) => !v)} /><main className="main-content">
+      {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} serviceStarting={serviceStarting} startingModelId={startingModelId} query={query} onQuery={setQuery} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onAddProfile={(model) => { const isN = model.path.toLowerCase().endsWith(".ninfer"); const baseP = isN ? DEFAULT_NINFER_PROFILES[0] : DEFAULT_PROFILES[0]; setProfileEditing({ modelId: model.id, profile: { ...baseP, id: uid("profile"), name: t("newProfile") } }); }} onRenameModel={renameModel} onUpdateModelTags={updateModelTags} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} justImportedIds={justImportedIds} onToast={setToast} />}
       <ExplorePage visible={page === "explore"} config={config} onPersist={persist} onToast={setToast} onLog={appendLog} diskUsage={diskUsage} onPickModelsDir={pickModelsDirFlow} onDownload={handleModelDownload} activeDownloads={downloads} progressMap={modelProgress} onPauseTask={handlePauseTask} onResumeTasks={handleResumeTasks} onPauseTasks={handlePauseTasks} onClearDone={handleClearDone} onCancelTask={handleCancelTask} onDeleteTask={handleDeleteTask} onDeleteTasks={deleteTasksImpl} onRetry={handleRetry} onReveal={handleReveal} onGoSettings={() => setPage("settings")} />
       {page === "profiles" && <ProfilesPage models={config.models} engines={config.engines} activeEngineId={config.activeEngineId} onEdit={(modelId, profile) => setProfileEditing({ modelId, profile })} onDelete={deleteProfile} onDuplicate={duplicateProfile} onSetDefault={setDefaultProfile} onReorderProfile={reorderProfiles} onDeleteProfiles={deleteMultipleProfiles} />}
       {/* 会话页保持常驻（隐藏而非卸载）：切换菜单不销毁内嵌 WebUI，回来时无需从聊天记录重新进入；WebUI 始终填满 Dock 下全部剩余高度 */}
