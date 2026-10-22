@@ -1,5 +1,17 @@
 export type Page = "models" | "explore" | "playground" | "profiles" | "settings" | "logs";
 
+/** 界面主题 */
+export type Theme = "dark" | "light";
+
+/** 引擎架构类型：llamacpp | ninfer | ninfer_kvmem */
+export type EngineType = "llamacpp" | "ninfer" | "ninfer_kvmem";
+
+/** llama.cpp 计算后端 */
+export type LlamaBackend = "cuda" | "vulkan" | "cpu";
+
+/** 网络代理模式 */
+export type ProxyMode = "system" | "manual" | "direct";
+
 /** 各页面的日志显示方式：dock=参与页面布局的底部 Dock（除日志页外所有页面），page=整页视图 */
 export type LogMode = "dock" | "page";
 
@@ -144,12 +156,12 @@ export interface LlamaEngine {
   id: string;
   name: string;
   path: string;
-  backend?: "cuda" | "vulkan" | "cpu" | string;
+  backend?: LlamaBackend | string;
   cudaVersion?: string;
   version?: string;
   createdAt?: number;
   /** 引擎架构类型：llamacpp | ninfer | ninfer_kvmem */
-  engineType?: "llamacpp" | "ninfer" | "ninfer_kvmem";
+  engineType?: EngineType;
 }
 
 export interface AppConfig {
@@ -161,7 +173,7 @@ export interface AppConfig {
   models: ModelAsset[];
   /** 旧版全局预设池，仅兼容旧配置读取；新配置预设已归入每个模型的 ModelAsset.profiles */
   profiles?: Profile[];
-  theme?: "dark" | "light";
+  theme?: Theme;
   /** 全局标签库池（用户自定义维护的标签列表） */
   customTags?: string[];
   /** 界面语言：zh（默认）/ en，设置页可切换并持久化 */
@@ -178,7 +190,7 @@ export interface AppConfig {
   preferredProfileId?: string;
   /** 网络与代理配置（跟随系统 / 手动 HTTP/SOCKS5 代理 / GitHub 反代镜像） */
   network?: {
-    proxyMode: "system" | "manual" | "direct";
+    proxyMode: ProxyMode;
     proxyUrl?: string;
   };
   /** 自定义 llama.cpp 安装目录（缺省为应用数据目录下的 llamacpp） */
@@ -190,7 +202,7 @@ export interface AppConfig {
   /** 关闭主窗口时是否最小化到托盘（默认开启） */
   minimizeToTrayOnClose?: boolean;
   /** llama.cpp 选定的硬件加速后端（cuda / vulkan / cpu） */
-  llamaBackend?: "cuda" | "vulkan" | "cpu";
+  llamaBackend?: LlamaBackend;
   /** llama.cpp 选定的 CUDA 版本偏好（如 "13"、"13.4"、"12" 等） */
   llamaCudaVersion?: string;
   /** 全局快捷键自定义配置 */
@@ -226,7 +238,7 @@ export interface ServerStatus {
   /** 启动当前服务所用的引擎计算后端 */
   engineBackend?: string;
   /** 启动当前服务所用的引擎架构类型 */
-  engineType?: "llamacpp" | "ninfer" | "ninfer_kvmem";
+  engineType?: EngineType;
 }
 
 /** GPU 实时指标（nvidia-smi 轮询，单位 MiB / % / W）；无 NVIDIA 驱动或字段不支持时为 null/缺省 */
@@ -335,6 +347,48 @@ export interface ModelDownloadProgress {
   total: number;
   speedBps: number;
   message: string;
+}
+
+/** 模型下载命令的结构化错误码 */
+export type DownloadErrorCode =
+  | "download_taken_over"
+  | "download_cancelled"
+  | "download_paused"
+  | "hf_gated_need_token"
+  | "hf_gated_no_permission"
+  | "download_failed";
+
+export interface DownloadErrorPayload {
+  code: DownloadErrorCode;
+  message: string;
+}
+
+/** 前端本地持久化的下载任务状态 */
+export interface ActiveDownload {
+  /** 任务唯一标识（新建任务即生成，取消 / 暂停 / 删除 / 恢复都按它精确命中单个任务） */
+  taskId: string;
+  /** 关联仓库（直链下载为 "direct-url"） */
+  repo: string;
+  file: string;
+  sizeBytes: number;
+  startedAt: number;
+  status: "active" | "done" | "error" | "cancelled";
+  percent?: number;
+  downloaded?: number;
+  total?: number;
+  speedBps?: number;
+  /** 完成 / 失败时的本地完整路径 */
+  path?: string;
+  /** 失败时的错误信息 */
+  error?: string;
+  /** 失败时的错误类型（用于任务卡片的闭环引导：needs-token / no-permission） */
+  errorKind?: "needs-token" | "no-permission";
+  /** 完成时间戳 */
+  finishedAt?: number;
+  /** 直链任务保留原始 URL（恢复 / 重试时重新发起） */
+  url?: string;
+  /** 任务所属社区源（hf: HuggingFace，ms: ModelScope） */
+  source?: CommunitySource;
 }
 
 

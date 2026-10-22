@@ -1,14 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { DEMO_CONFIG, DEFAULT_PROFILES, DEFAULT_NINFER_PROFILES, defaultProfilesForModel, INITIAL_LOGS, mergeImportedConfig, migrateConfig, uid } from "./data";
+import { DEMO_CONFIG, DEFAULT_PROFILES, DEFAULT_NINFER_PROFILES, migrateConfig, uid } from "./data";
 import { setLocale, useI18n } from "./i18n";
-import { checkForUpdate, checkOrphanServer, exportConfigBackup, getGpuStats, getModelsDir, getServerStatus, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, msDownload, inspectGguf, isTauri, killOrphanServer, loadConfig, onConfigUpdated, onShortcutOpenEngineHub, onLlamaLog, onServerLifecycle, onTrayViewError, openExternal, pathsExist, pickConfigBackup, pickDirectory, pickModelsDir, readNinferRequestLog, removeLocalFile, revealInFolder, saveConfig, setWindowTheme, startServer, stopServer, type ConfigBackupEnvelope, type OrphanProcessItem, type ServerLifecyclePayload, type UpdateCheckResult } from "./tauri";
-import type { ActiveDownload } from "./components/ExplorePage";
-import type { PickedFile } from "./tauri";
-import { onModelDownloadProgress } from "./tauri";
-import type { DiskUsage, ModelDownloadProgress } from "./types";
-import { PAGE_LOG_MODE, type AppConfig, type CommunitySource, type GpuStats, type InferenceMetrics, type LlamaLogPayload, type ModelAsset, type Page, type Profile, type ServerStatus, type TokSample } from "./types";
-import { ACCENTS, EMPTY_STATUS, cn, fileName, modelTitle, newLog, parseQuantization, parseTokPerSec, shallowEqualFields, InferenceTracker, isKeyboardEventMatchingShortcut, DEFAULT_SHORTCUTS } from "./utils";
+import { checkOrphanServer, exportConfigBackup, getGpuStats, getServerStatus, isTauri, loadConfig, onConfigUpdated, onShortcutOpenEngineHub, onLlamaLog, onServerLifecycle, onTrayViewError, openExternal, pathsExist, pickConfigBackup, pickDirectory, saveConfig, setWindowTheme, type ConfigBackupEnvelope } from "./tauri";
+import { PAGE_LOG_MODE, type AppConfig, type Page, type ServerStatus } from "./types";
+import { EMPTY_STATUS, cn, modelTitle, parseTokPerSec, shallowEqualFields, isKeyboardEventMatchingShortcut, DEFAULT_SHORTCUTS } from "./utils";
 import LogDock from "./components/LogDock";
 import { LogsPage, Sidebar, Toast, Topbar } from "./components/Layout";
 import ImportModelModal from "./components/ImportModelModal";
@@ -23,13 +19,13 @@ import OrphanServerModal from "./components/OrphanServerModal";
 import EngineHubModal from "./components/EngineHubModal";
 import EngineModal from "./components/EngineModal";
 import BackupImportModal from "./components/BackupImportModal";
-import type { LlamaEngine } from "./types";
-import { APP_VERSION } from "./data";
-
-/** 下载任务持久化 key：重开程序后恢复任务列表（含未完成的断点续传） */
-const DOWNLOADS_STORAGE_KEY = "cookllm.downloads";
-/** 自动续传全局一次性标记（StrictMode 双挂载 / 组件重建不会重复发起） */
-let autoResumeTriggered = false;
+import { useAppUpdate } from "./hooks/useAppUpdate";
+import { useDownloads } from "./hooks/useDownloads";
+import { useEngines } from "./hooks/useEngines";
+import { useLogs } from "./hooks/useLogs";
+import { useModelLibrary } from "./hooks/useModelLibrary";
+import { useServiceController } from "./hooks/useServiceController";
+import { useToast } from "./hooks/useToast";
 
 /**
  * 服务「真正就绪」日志特征：引擎加载完毕并开始监听。
@@ -38,145 +34,66 @@ let autoResumeTriggered = false;
  */
 const READY_LOG_RE = /is listening|listening on/i;
 
-function loadStoredDownloads(): ActiveDownload[] {
-  try {
-    const raw = localStorage.getItem(DOWNLOADS_STORAGE_KEY);
-    if (!raw) return [];
-    const parsed = JSON.parse(raw) as ActiveDownload[];
-    return Array.isArray(parsed) ? parsed.map((item) => ({ ...item, taskId: item.taskId || uid("download") })) : [];
-  } catch {
-    return [];
-  }
-}
-
 export default function App() {
   /** 界面语言：文案经 t() 查当前 locale；locale 由 AppConfig.language 驱动（adopt/persist 时同步） */
   const { t } = useI18n();
+  const { toast, setToast } = useToast();
+  const { logs, appendLog, queueLogs, clearLogs } = useLogs();
   const [config, setConfig] = useState<AppConfig>(DEMO_CONFIG);
   /** config 镜像：下载完成回调等长周期闭包读取最新配置，避免用过期快照覆盖用户中途的修改 */
   const configRef = useRef(config);
   configRef.current = config;
-  /** GPU 性能监测开关（默认开启，设置页可关闭） */
-  const gpuMonitorEnabled = config.gpuMonitorEnabled !== false;
   const [page, setPage] = useState<Page>("models");
   /** page 镜像：生命周期事件等一次性注册的监听器读取实时页面，避免闭包过期 */
   const pageRef = useRef(page);
   pageRef.current = page;
   const [status, setStatus] = useState<ServerStatus>(EMPTY_STATUS);
-  const [logs, setLogs] = useState<LlamaLogPayload[]>(INITIAL_LOGS);
-  const [query, setQuery] = useState("");
-  const [selectedProfiles, setSelectedProfiles] = useState<Record<string, string>>({});
-  const [profileEditing, setProfileEditing] = useState<{ modelId: string; profile: Profile } | null>(null);
+
+  /** 配置写盘唯一入口：先更新界面，再持久化；失败仅记日志，不打断当前交互 */
+  const persist = async (next: AppConfig, message?: string) => {
+    setConfig(next);
+    /** 语言随本次保存立即生效（值未变时为空操作） */
+    setLocale(next.language ?? "zh");
+    try { await saveConfig(next); if (message) setToast(message); }
+    catch (error) { appendLog(t("log.saveConfigFailed", { error: String(error) }), "stderr"); }
+  };
+
+  const { appEngines, activeAppEngine, handleSelectActiveEngine, handleSaveEngine, handleDeleteEngine } = useEngines({ config, persist, setToast, t });
+  const {
+    query, setQuery, menuModelId, setMenuModelId, selectedProfiles, setSelectedProfiles,
+    profileEditing, setProfileEditing, importOpen, setImportOpen, openImport, handleImportModels,
+    filteredModels, removeModel, reorderModels, removeMultipleModels,
+    saveProfile, deleteProfile, reorderProfiles, deleteMultipleProfiles, duplicateProfile,
+    setDefaultProfile, renameModel, updateModelTags, setDefaultModel,
+  } = useModelLibrary({ config, status, persist, setToast, t });
   // ---- Dock 日志状态（除"日志"整页外的所有页面共用同一份展开/高度状态）----
   /** Dock 默认收起：只显示底部状态栏，主区空间最大 */
   const [logDockOpen, setLogDockOpen] = useState(false);
   /** Dock 展开高度 px（120 ~ 60% 视口），持久化到 localStorage */
   const [logDockHeight, setLogDockHeight] = useState(() => { const stored = Number(localStorage.getItem("cookllm.logDock.height")); return Number.isFinite(stored) ? Math.max(120, Math.min(window.innerHeight * 0.6, stored)) : 160; });
-  /** 服务异常：启动失败 / 进程意外退出；成功启动后清除 */
-  const [serviceAbnormal, setServiceAbnormal] = useState(false);
-  /** 最近一次从日志解析到的生成吞吐（带时间戳，微型状态卡据此判定"实时 / Idle"） */
-  const [tokSample, setTokSample] = useState<TokSample | null>(null);
-  /** 推理指标聚合跟踪器：精准解析 Prefill、Decode、KV Cache 命中与首字耗时 */
-  const inferenceTrackerRef = useRef(new InferenceTracker());
-  const [latestInference, setLatestInference] = useState<InferenceMetrics | null>(null);
-  const [inferenceHistory, setInferenceHistory] = useState<InferenceMetrics[]>([]);
-  /** GPU 实时指标（nvidia-smi，2s 轮询；浏览器模式恒为 null；初始从本地缓存读取实现首帧秒显） */
-  const [gpuStats, setGpuStats] = useState<GpuStats | null>(() => {
-    try {
-      const raw = localStorage.getItem("cookllm.last_gpu_stats");
-      return raw ? (JSON.parse(raw) as GpuStats) : null;
-    } catch {
-      return null;
-    }
-  });
-  /** 已武装：本次启动期间收到就绪日志后自动收起 Dock（停止 / 失败时重置，避免误关用户手动打开的 Dock） */
-  const dockAutoCollapseRef = useRef(false);
-  /** 本次退出是主动停止（区别于崩溃），由状态轮询消费 */
-  const stopIntendedRef = useRef(false);
-  const [busy, setBusy] = useState(false);
-  /** 启动中：进程已拉起但服务端口尚未就绪（按钮显示旋转过渡，避免生硬地直接切为停止图标） */
-  const [serviceStarting, setServiceStarting] = useState(false);
-  const [startingModelId, setStartingModelId] = useState<string | null>(null);
-  /** 最近一次启动（UI 或托盘）的时间戳：启动后短暂窗口内 running=false 的轮询结果视为 spawn 前采样的过期数据 */
-  const lifecycleStartingAtRef = useRef(0);
-  const serviceStartingRef = useRef(false);
-  const serviceStartingTimerRef = useRef<number | null>(null);
-  const endServiceStarting = () => {
-    if (serviceStartingTimerRef.current) {
-      window.clearTimeout(serviceStartingTimerRef.current);
-      serviceStartingTimerRef.current = null;
-    }
-    serviceStartingRef.current = false;
-    setServiceStarting(false);
-    setStartingModelId(null);
-  };
-  const beginServiceStarting = (modelId?: string | null) => {
-    serviceStartingRef.current = true;
-    setServiceStarting(true);
-    if (modelId) setStartingModelId(modelId);
-    if (serviceStartingTimerRef.current) window.clearTimeout(serviceStartingTimerRef.current);
-    // 安全兜底：即便就绪日志缺失，也不会让按钮无限旋转（远超大型模型加载耗时）
-    serviceStartingTimerRef.current = window.setTimeout(() => endServiceStarting(), 900000);
-  };
-  /** 待播报的「已启动」提示：延迟到服务真正就绪（与 Dock 收起同步）后再弹出 */
-  const pendingStartedToastRef = useRef<string | null>(null);
-  /**
-   * 服务真正就绪：同步完成三件事 —— 收起 Dock、结束启动旋转动画、播报「已启动」。
-   * 三者必须同步，避免出现「还在转圈却提示已启动」的割裂感。
-   */
-  const markServiceReady = () => {
-    if (dockAutoCollapseRef.current) { dockAutoCollapseRef.current = false; setLogDockOpen(false); }
-    if (serviceStartingRef.current) endServiceStarting();
-    const pending = pendingStartedToastRef.current;
-    if (pending) { pendingStartedToastRef.current = null; setToast(t("toast.started", { model: pending })); }
-  };
-  const [toast, setToast] = useState<string | null>(null);
-  /** 社区探索：下载中任务（持久化到 localStorage，重开程序后恢复并自动续传） */
-  const [downloads, setDownloads] = useState<ActiveDownload[]>(loadStoredDownloads);
-  /** 社区探索：模型下载实时进度（仓库::文件名 -> 进度） */
-  const [modelProgress, setModelProgress] = useState<Record<string, ModelDownloadProgress>>({});
-  const [diskUsage, setDiskUsage] = useState<DiskUsage | null>(null);
-  const [appUpdate, setAppUpdate] = useState<UpdateCheckResult | null>(null);
-  const [appUpdateDialogOpen, setAppUpdateDialogOpen] = useState(false);
-  const [appUpdateChecking, setAppUpdateChecking] = useState(false);
-  const startupUpdateCheckedRef = useRef(false);
-  /** 后台残留 llama-server 孤儿进程检测状态 */
-  const [orphanPids, setOrphanPids] = useState<number[] | null>(null);
-  const [orphanProcesses, setOrphanProcesses] = useState<OrphanProcessItem[] | null>(null);
-  const [orphanPendingModel, setOrphanPendingModel] = useState<ModelAsset | null>(null);
-  /** 社区探索下载完成后刚导入的模型 id（卡片显示「刚刚导入」绿色 Badge，一定时间后消失） */
-  const [justImportedIds, setJustImportedIds] = useState<Set<string>>(new Set());
-  /** 下载任务镜像（供进度回调读取，避免闭包过期） */
-  const downloadsRef = useRef<ActiveDownload[]>([]);
-  /** 任务列表唯一变更入口：state 与镜像 ref 在同一处更新，所有下载任务的增删改都走它（消除成对双写） */
-  const mutateDownloads = (updater: (previous: ActiveDownload[]) => ActiveDownload[]) => {
-    setDownloads((previous) => {
-      const next = updater(previous);
-      downloadsRef.current = next;
-      return next;
-    });
-  };
-  const pauseRequestedRef = useRef<Set<string>>(new Set());
-  const cancelledTaskIdsRef = useRef<Set<string>>(new Set());
-
-  const clearProgressKey = (repo: string, file: string) => {
-    const key = repo + "::" + file;
-    setModelProgress((previous) => {
-      if (!previous[key]) return previous;
-      const next = { ...previous };
-      delete next[key];
-      return next;
-    });
-  };
-  const [menuModelId, setMenuModelId] = useState<string | null>(null);
   const [quickModelId, setQuickModelId] = useState("");
-  const [importOpen, setImportOpen] = useState(false);
   /** 侧边菜单收起（图标轨），持久化到 localStorage */
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("cookllm.sidebar.collapsed") === "1");
   /** 会话沉浸模式（仅在会话页生效，隐藏侧边栏与会话顶栏，保留窗口标题栏） */
   const [zenMode, setZenMode] = useState(false);
   /** 配置加载完成前不启用 GPU/状态轮询，避免「关闭监测」用户首次挂载闪现图表 */
   const [configReady, setConfigReady] = useState(false);
+
+  const { appUpdate, appUpdateDialogOpen, setAppUpdateDialogOpen, appUpdateChecking, checkAppUpdate } = useAppUpdate(config, configReady);
+  const {
+    downloads, modelProgress, diskUsage, justImportedIds,
+    handleModelDownload, handlePauseTask, handleResumeTasks, handlePauseTasks,
+    handleClearDone, handleCancelTask, handleDeleteTask, deleteTasksImpl,
+    handleRetry, handleReveal, pickModelsDirFlow,
+  } = useDownloads({ config, configRef, configReady, persist, setToast, appendLog, setSelectedProfiles, t });
+  const {
+    serviceAbnormal, tokSample, setTokSample, inferenceTrackerRef, latestInference, setLatestInference, inferenceHistory, setInferenceHistory,
+    gpuStats, setGpuStats, busy, serviceStarting, startingModelId,
+    markServiceReady, serverLifecycleHandlerRef,
+    handleStart, handleStop, handleClearInferenceStats,
+    orphanPids, orphanProcesses, orphanPendingModel, setOrphanPids, setOrphanProcesses,
+    handleKillOrphan, handleCloseOrphanModal,
+  } = useServiceController({ config, configReady, pageRef, status, setStatus, selectedProfiles, setMenuModelId, setLogDockOpen, setToast, appendLog, t });
 
   /** llama.cpp 运行时管理中心（Alt+Shift+E） */
   const [engineHubOpen, setEngineHubOpen] = useState(false);
@@ -203,85 +120,6 @@ export default function App() {
     window.addEventListener("keydown", handleGlobalKeyDown);
     return () => window.removeEventListener("keydown", handleGlobalKeyDown);
   }, [config.shortcuts?.switchEngine]);
-
-  const appEngines = useMemo<LlamaEngine[]>(() => {
-    return config.engines && config.engines.length > 0
-      ? config.engines
-      : config.serverPath
-        ? [{ id: "engine-default", name: "默认引擎", path: config.serverPath, backend: "cuda" }]
-        : [];
-  }, [config.engines, config.serverPath]);
-
-  const activeAppEngine = useMemo(() => {
-    return (
-      appEngines.find((e) => e.id === config.activeEngineId) ||
-      appEngines.find((e) => e.path.toLowerCase() === (config.serverPath || "").toLowerCase()) ||
-      appEngines[0]
-    );
-  }, [appEngines, config.activeEngineId, config.serverPath]);
-
-  const handleSelectActiveEngine = async (engine: LlamaEngine) => {
-    setToast(t("llama.switchedTo", { name: engine.name }));
-    await persist({
-      ...config,
-      activeEngineId: engine.id,
-      serverPath: engine.path,
-    });
-  };
-
-  const handleSaveEngine = async (engine: LlamaEngine) => {
-    let nextEngines = config.engines && config.engines.length > 0 ? [...config.engines] : [];
-    const idx = nextEngines.findIndex((e) => e.id === engine.id);
-    if (idx >= 0) {
-      nextEngines[idx] = engine;
-    } else {
-      nextEngines.push(engine);
-    }
-    const isCurActive = engine.id === config.activeEngineId;
-    await persist(
-      {
-        ...config,
-        engines: nextEngines,
-        serverPath: isCurActive ? engine.path : config.serverPath,
-      },
-      t("toast.settingsSaved"),
-    );
-  };
-
-  const handleDeleteEngine = async (engineId: string) => {
-    const nextEngines = (config.engines || []).filter((e) => e.id !== engineId);
-    let nextActiveId = config.activeEngineId;
-    let nextServerPath = config.serverPath;
-    if (config.activeEngineId === engineId && nextEngines.length > 0) {
-      nextActiveId = nextEngines[0].id;
-      nextServerPath = nextEngines[0].path;
-    }
-    await persist(
-      {
-        ...config,
-        engines: nextEngines,
-        activeEngineId: nextActiveId,
-        serverPath: nextServerPath,
-      },
-      t("toast.settingsSaved"),
-    );
-  };
-
-  /** 日志批量 flush：缓冲 100ms 聚合一次 setState，llama-server 启动期逐行刷日志不再触发全树重渲染 */
-  const logBufferRef = useRef<LlamaLogPayload[]>([]);
-  const logTimerRef = useRef<number | null>(null);
-  const flushLogs = () => {
-    logTimerRef.current = null;
-    if (!logBufferRef.current.length) return;
-    const batch = logBufferRef.current;
-    logBufferRef.current = [];
-    setLogs((previous) => [...previous, ...batch].slice(-1000));
-  };
-  const queueLogs = (entries: LlamaLogPayload[]) => {
-    logBufferRef.current.push(...entries);
-    if (logTimerRef.current === null) logTimerRef.current = window.setTimeout(flushLogs, 100);
-  };
-  const appendLog = (line: string, stream: LlamaLogPayload["stream"] = "system") => queueLogs([newLog(line, stream)]);
 
   const adopt = (cfg: AppConfig) => {
     const usable = migrateConfig(cfg);
@@ -376,202 +214,11 @@ export default function App() {
     return () => { active = false; unlisten?.(); unlistenLifecycle?.(); unlistenConfig?.(); unlistenEngineHub?.(); };
   }, []);
 
-  useEffect(() => {
-    if (!isTauri() || !configReady) return;
-    let active = true;
-    const refresh = () => {
-      // 浅比较后去重：数据未变化时保持旧引用，避免每 2s 的轮询触发全树重渲染
-      void getServerStatus().then((st) => {
-        if (!active) return;
-        // 启动后宽限窗口内的 running=false 是 spawn 前采样的过期轮询结果：
-        // 直接应用会误杀刚点亮的过渡动画，甚至把成功启动误判为「意外退出」（真实失败由 failed 事件 / 下一轮轮询兜底）
-        const staleDuringStart = !st.running && serviceStartingRef.current && Date.now() - lifecycleStartingAtRef.current < 4000;
-        if (!staleDuringStart) {
-          setStatus((prev) => (shallowEqualFields(prev, st) ? prev : st));
-          // 服务已停止（含启动失败 / 进程意外退出）：结束启动中的旋转过渡
-          if (!st.running && serviceStartingRef.current) endServiceStarting();
-        }
-        // 当服务处于运行状态时，同步底层实时指标（针对不同引擎自动自适应）
-        if (st.running && st.port) {
-          const isNinfer = st.engineType === "ninfer" || st.engineType === "ninfer_kvmem";
-          if (isNinfer) {
-            void Promise.all([
-              fetch(`http://127.0.0.1:${st.port}/stats`, { signal: AbortSignal.timeout(1000) })
-                .then((r) => (r.ok ? r.json() : null))
-                .catch(() => null),
-              fetch(`http://127.0.0.1:${st.port}/slots`, { signal: AbortSignal.timeout(1000) })
-                .then((r) => (r.ok ? r.json() : null))
-                .catch(() => null),
-              readNinferRequestLog().catch(() => [] as unknown[]),
-            ]).then(([statsData, slotsData, jsonlRecords]) => {
-              if (!active) return;
-              // 结构化 JSONL 权威值优先合并（全精度 timings / tokens / queue_wait），
-              // 再由 /stats + /slots 计数器差分补充进行中的轮次
-              if (Array.isArray(jsonlRecords) && jsonlRecords.length) {
-                const jr = inferenceTrackerRef.current.applyNinferRequestLog(jsonlRecords);
-                if (jr.updated) {
-                  if (jr.latest) setLatestInference({ ...jr.latest });
-                  setInferenceHistory(inferenceTrackerRef.current.getHistory());
-                }
-              }
-              const res = inferenceTrackerRef.current.updateFromNinfer({
-                stats: statsData,
-                slots: slotsData,
-              });
-              if (res.updated && res.latest) {
-                setLatestInference({ ...res.latest });
-                setInferenceHistory(inferenceTrackerRef.current.getHistory());
-                const speed = res.latest.decodeTps ?? res.latest.prefillTps;
-                if (speed != null) setTokSample({ rate: speed, at: Date.now() });
-              } else {
-                const timeoutRes = inferenceTrackerRef.current.checkIdleTimeout(3000);
-                if (timeoutRes.updated && timeoutRes.latest) {
-                  setLatestInference({ ...timeoutRes.latest });
-                  setInferenceHistory(inferenceTrackerRef.current.getHistory());
-                }
-              }
-            }).catch(() => undefined);
-          } else {
-            // llama.cpp 专属直连 /slots 端点
-            void fetch(`http://127.0.0.1:${st.port}/slots`, { signal: AbortSignal.timeout(1000) })
-              .then((r) => (r.ok ? r.json() : null))
-              .catch(() => null)
-              .then((data) => {
-                if (!active || !data) return;
-                const slots = Array.isArray(data) ? data : (data.value && Array.isArray(data.value) ? data.value : []);
-                if (!slots.length) return;
-                const activeSlot = slots.find((s: any) => s.is_processing);
-                const anyProcessing = Boolean(activeSlot);
-                // 若当前完全没有槽位在运行，且跟踪器也没有活跃未完成的轮次，说明服务处于纯空闲状态，直接跳过
-                if (!anyProcessing && !inferenceTrackerRef.current.hasActiveTurn()) {
-                  return;
-                }
-                const slot = activeSlot || slots[0];
-                if (!slot) return;
-                // 当前 llama.cpp 的缓存数与速率不在 slot 顶层，而在 timings（cache_n / prompt_per_second）
-                const timings = slot.timings && typeof slot.timings === "object" ? slot.timings : null;
-                const promptTokens = slot.n_prompt_tokens ?? timings?.prompt_n ?? slot.prompt_n ?? slot.n_prompt_tokens_processed;
-                const cachedTokens = slot.n_prompt_tokens_cache ?? timings?.cache_n ?? slot.n_past ?? 0;
-                const cacheHitRatio = promptTokens && promptTokens > 0 ? (cachedTokens / promptTokens) * 100 : undefined;
-                const decodeTokens = slot.next_token?.[0]?.n_decoded ?? timings?.predicted_n ?? slot.n_decoded ?? slot.predicted_n;
-                const res = inferenceTrackerRef.current.updateFromSlot({
-                  taskId: slot.id_task,
-                  promptTokens,
-                  cachedTokens,
-                  cacheHitRatio: cacheHitRatio != null ? parseFloat(cacheHitRatio.toFixed(1)) : undefined,
-                  decodeTokens,
-                  prefillTps: timings?.prompt_per_second ?? slot.prompt_per_second,
-                  prefillTimeMs: timings?.prompt_ms ?? slot.prompt_ms ?? slot.t_prompt_processing,
-                  decodeTps: timings?.predicted_per_second ?? slot.predicted_per_second,
-                  isProcessing: anyProcessing,
-                });
-                if (res.updated && res.latest) {
-                  setLatestInference({ ...res.latest });
-                  setInferenceHistory(inferenceTrackerRef.current.getHistory());
-                  const speed = res.latest.decodeTps ?? res.latest.prefillTps;
-                  if (speed != null) setTokSample({ rate: speed, at: Date.now() });
-                } else {
-                  // 空闲超时兜底检查（若生成停止但无显式完成信号，3 秒内自动结算）
-                  const timeoutRes = inferenceTrackerRef.current.checkIdleTimeout(3000);
-                  if (timeoutRes.updated && timeoutRes.latest) {
-                    setLatestInference({ ...timeoutRes.latest });
-                    setInferenceHistory(inferenceTrackerRef.current.getHistory());
-                  }
-                }
-              })
-              .catch(() => undefined);
-          }
-        }
-      }).catch(() => undefined);
-      // GPU 指标独立轮询：查询失败 / 无 NVIDIA 驱动 → null，卡片显示 "--"
-      if (gpuMonitorEnabled) {
-        // 响应到达时若已被关闭或 effect 已重跑（配置加载完成 / 用户切换），丢弃过期数据
-        void getGpuStats().then((stats) => {
-          if (!active || !gpuMonitorEnabled) return;
-          setGpuStats((prev) => (prev === null && stats === null) || (prev !== null && stats !== null && shallowEqualFields(prev, stats)) ? prev : stats);
-          if (stats) {
-            try { localStorage.setItem("cookllm.last_gpu_stats", JSON.stringify(stats)); } catch {}
-          } else {
-            try { localStorage.removeItem("cookllm.last_gpu_stats"); } catch {}
-          }
-        }).catch(() => {
-          if (active) {
-            setGpuStats((prev) => (prev === null ? prev : null));
-            try { localStorage.removeItem("cookllm.last_gpu_stats"); } catch {}
-          }
-        });
-      } else {
-        setGpuStats(null);
-        try { localStorage.removeItem("cookllm.last_gpu_stats"); } catch {}
-      }
-    };
-    // 挂载立即刷新一次（避免第一帧只显示版本号、2 秒后才出卡片）
-    refresh();
-    const timer = window.setInterval(refresh, 2000);
-    return () => { active = false; window.clearInterval(timer); };
-  }, [gpuMonitorEnabled, configReady]);
+
 
   /** Dock 高度持久化：下次进入会话页时恢复 */
   useEffect(() => { localStorage.setItem("cookllm.logDock.height", String(logDockHeight)); }, [logDockHeight]);
   useEffect(() => { localStorage.setItem("cookllm.sidebar.collapsed", sidebarCollapsed ? "1" : "0"); }, [sidebarCollapsed]);
-
-  /** 检测进程意外退出（运行中 → 停止，且不是主动停止）：标记服务异常并自动展开 Dock 显示 ERROR */
-  const prevRunningRef = useRef(false);
-  useEffect(() => {
-    const previous = prevRunningRef.current;
-    if (previous && !status.running) {
-      if (!stopIntendedRef.current) {
-        appendLog(t("log.unexpectedExit"), "stderr");
-        setServiceAbnormal(true);
-        setLogDockOpen(true);
-      }
-      stopIntendedRef.current = false;
-    }
-    prevRunningRef.current = status.running;
-  }, [status.running]);
-
-  /**
-   * 服务生命周期事件：托盘 / 主界面任一侧的启动、停止、失败都会广播到此处，
-   * 保证两侧状态完全同步（过渡动画、异常标记、意外退出判定），与 handleStart / handleStop 行为对齐。
-   * 通过 ref 转发以读取最新闭包（监听器仅注册一次，避免捕获过期的 page / t）。
-   */
-  const handleServerLifecycle = (payload: ServerLifecyclePayload) => {
-    if (payload.phase === "starting" && payload.status) {
-      const next = payload.status;
-      // 与 handleStart 对齐：进入启动过渡动画 + 清除异常标记 + 武装就绪后自动收起 Dock + 就绪提示
-      lifecycleStartingAtRef.current = Date.now();
-      setServiceAbnormal(false);
-      inferenceTrackerRef.current.reset();
-      setLatestInference(null);
-      setInferenceHistory([]);
-      setTokSample(null);
-      dockAutoCollapseRef.current = true;
-      pendingStartedToastRef.current = next.modelName || null;
-      if (next.modelId) setStartingModelId(next.modelId);
-      setStatus((prev) => (shallowEqualFields(prev, next) ? prev : next));
-      if (!serviceStartingRef.current) beginServiceStarting(next.modelId);
-      if (pageRef.current !== "logs") setLogDockOpen(true);
-    } else if (payload.phase === "stopped") {
-      // 主动停止（含托盘）：立即结束过渡动画、撤销就绪提示；状态仍在运行时同步为停止并放行意外退出判定
-      endServiceStarting();
-      setStartingModelId(null);
-      pendingStartedToastRef.current = null;
-      dockAutoCollapseRef.current = false;
-      if (prevRunningRef.current) {
-        stopIntendedRef.current = true;
-        setStatus(EMPTY_STATUS);
-      }
-    } else if (payload.phase === "failed") {
-      // 启动失败 / 进程意外退出：结束过渡动画并标记服务异常（错误详情由后端日志另行输出）
-      endServiceStarting();
-      pendingStartedToastRef.current = null;
-      dockAutoCollapseRef.current = false;
-      setServiceAbnormal(true);
-      if (pageRef.current !== "logs") setLogDockOpen(true);
-    }
-  };
-  const serverLifecycleHandlerRef = useRef(handleServerLifecycle);
-  serverLifecycleHandlerRef.current = handleServerLifecycle;
 
   /** 默认亮色主题；同时把标题栏同步给系统（Windows：暗色=黑，亮色=默认） */
   const theme = config.theme || "light";
@@ -610,8 +257,6 @@ export default function App() {
     };
   }, []);
 
-  useEffect(() => { if (!toast) return; const timeout = window.setTimeout(() => setToast(null), 2200); return () => window.clearTimeout(timeout); }, [toast]);
-
   // 离开会话页时自动退出沉浸模式
   useEffect(() => {
     if (page !== "playground" && zenMode) {
@@ -632,403 +277,6 @@ export default function App() {
   }, [page]);
 
 
-
-  // 读取模型存储目录与可用空间（配置加载完成后）
-  useEffect(() => {
-    if (!isTauri()) return;
-    void getModelsDir().then((usage) => setDiskUsage(usage)).catch(() => undefined);
-  }, [config.modelsDir]);
-
-  const checkAppUpdate = async (openWhenAvailable = true) => {
-    setAppUpdateChecking(true);
-    try {
-      const result = await checkForUpdate(APP_VERSION);
-      setAppUpdate(result);
-      if (result.status === "available" && openWhenAvailable) setAppUpdateDialogOpen(true);
-      return result;
-    } finally {
-      setAppUpdateChecking(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!configReady || config.autoUpdateEnabled === false || startupUpdateCheckedRef.current) return;
-    startupUpdateCheckedRef.current = true;
-    const timer = window.setTimeout(() => { void checkAppUpdate().catch(() => undefined); }, 1200);
-    return () => window.clearTimeout(timer);
-  }, [configReady, config.autoUpdateEnabled]);
-
-  // 持久化任务列表：变更后 400ms 无新变更才写盘（下载进度高频 patch 不会逐次 stringify 落盘）
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      try { localStorage.setItem(DOWNLOADS_STORAGE_KEY, JSON.stringify(downloads)); } catch { /* 忽略写入失败 */ }
-    }, 400);
-    return () => window.clearTimeout(timer);
-  }, [downloads]);
-
-  // 任务镜像随 state 同步（集中兜底，覆盖恢复初始值与所有 setDownloads 路径）
-  useEffect(() => { downloadsRef.current = downloads; }, [downloads]);
-
-  /** 启动一次通用下载启动器：仓库文件 / 直链统一走这里（自动续传 / 恢复 / 重试复用）。
-   *  每次都以唯一 taskId 发起，后端按 taskId 注册独立控制器，取消 / 暂停不会串扰其他任务。 */
-  const launchDownload = (entry: ActiveDownload) => {
-    pauseRequestedRef.current.delete(entry.taskId);
-    void (async () => {
-      // 必须先等摘除旧控制器完成、再发起下载：两个 invoke 若乱序，hf_clear_download 会把
-      // 刚注册的新控制器摘掉，此后暂停 / 取消永远找不到控制器（孤儿循环停不下来）
-      try { await hfClearDownload(entry.taskId); } catch { /* 旧控制器不存在时忽略 */ }
-      const run = entry.url
-        ? hfDownloadUrl(entry.url, entry.taskId)
-        : entry.source === "ms"
-        ? msDownload(entry.repo, entry.file, entry.taskId)
-        : hfDownload(entry.repo, entry.file, entry.taskId);
-      void run.then((result) => {
-        appendLog(t("explore.downloaded") + ": " + result.path, "system");
-        void importDownloadedModel(entry, result.path, result.sizeBytes);
-      }).catch((error) => {
-        const isCancelled = cancelledTaskIdsRef.current.has(entry.taskId);
-        cancelledTaskIdsRef.current.delete(entry.taskId);
-        const raw = error instanceof Error ? error.message : String(error);
-        if (raw.includes("已被接管")) {
-          // 该 taskId 已被新一轮下载接管：旧循环静默退出，状态由新循环负责
-          return;
-        }
-        if (isCancelled || raw.includes("取消") || raw.includes("cancelled")) {
-          cancelPendingProgress(entry.taskId);
-          clearProgressKey(entry.repo, entry.file);
-          mutateDownloads((previous) => previous.filter((item) => item.taskId !== entry.taskId));
-          return;
-        }
-        if (raw.includes("暂停")) {
-          cancelPendingProgress(entry.taskId);
-          clearProgressKey(entry.repo, entry.file);
-          patchByTaskId(entry.taskId, { status: "cancelled", error: t("explore.statusPaused"), speedBps: 0, finishedAt: Date.now() });
-          return;
-        }
-        clearProgressKey(entry.repo, entry.file);
-        const kind = raw.startsWith("HF_GATED_NEED_TOKEN") ? "needs-token" : raw.startsWith("HF_GATED_NO_PERMISSION") ? "no-permission" : undefined;
-        const failed = settleEntry(entry, raw, kind);
-        appendLog(t("explore.error", { error: failed.error ?? raw }), "stderr");
-        patchByTaskId(entry.taskId, failed);
-      });
-    })();
-  };
-
-  // 启动后自动续传：恢复的任务中以 active 开场（上次退出时未完成）→ 重新发起下载（后端 .part 断点续传）
-  useEffect(() => {
-    if (!isTauri() || !configReady || autoResumeTriggered) return;
-    const pending = downloadsRef.current.filter((item) => item.status === "active");
-    if (!pending.length) return;
-    autoResumeTriggered = true;
-    const timer = window.setTimeout(() => {
-      for (const task of pending) {
-        const entry: ActiveDownload = { ...task, startedAt: Date.now(), status: "active", percent: 0, downloaded: 0, total: task.total ?? task.sizeBytes, speedBps: 0 };
-        mutateDownloads((previous) => [...previous.filter((item) => !(item.repo === task.repo && item.file === task.file)), entry]);
-        launchDownload(entry);
-      }
-      if (pending.length) setToast(t("toast.downloadQueued"));
-    }, 800);
-    return () => window.clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [configReady]);
-
-  // 订阅模型下载进度：同步任务状态（percent/speed/status），完成时标记 done 并延迟清理 progressMap。
-  // 进行中进度按 200ms/任务 节流合并（事件频率≈网络吞吐，逐条 setState 会让整树跟着进度刷屏）；
-  // done/paused/cancelled/error 等结构性状态立即生效。
-  /** 进行中进度的节流挂起表（taskId → 待刷新进度）：任务进入终态 / 用户暂停取消时必须清掉，
-   *  否则挂起的旧进度会在 200ms 后把已暂停的任务写回「进行中」，出现速度冻结的假进行中 */
-  const pendingProgressRef = useRef(new Map<string, { timer: number; payload: ModelDownloadProgress }>());
-  const cancelPendingProgress = (taskId: string) => {
-    const pending = pendingProgressRef.current.get(taskId);
-    if (!pending) return;
-    window.clearTimeout(pending.timer);
-    pendingProgressRef.current.delete(taskId);
-  };
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    const pendingProgress = pendingProgressRef.current;
-    const flushProgress = (taskId: string) => {
-      const pending = pendingProgress.get(taskId);
-      if (!pending) return;
-      pendingProgress.delete(taskId);
-      const payload = pending.payload;
-      const key = payload.repo + "::" + payload.file;
-      setModelProgress((previous) => ({ ...previous, [key]: payload }));
-      mutateDownloads((previous) => previous.map((item) => (item.taskId === taskId ? { ...item, status: "active" as const, percent: payload.percent, downloaded: payload.downloaded, total: payload.total, speedBps: payload.speedBps } : item)));
-    };
-    const patchTask = (taskId: string, patch: Partial<ActiveDownload>) => {
-      mutateDownloads((previous) => previous.map((item) => (item.taskId === taskId ? { ...item, ...patch } : item)));
-    };
-    void onModelDownloadProgress((payload) => {
-      // 展示用进度表仍按 仓库::文件名 索引（FileModal / 模型仓库下载占位共用），任务状态则按 taskId 精确命中
-      const key = payload.repo + "::" + payload.file;
-      if (payload.phase === "done") {
-        cancelPendingProgress(payload.taskId);
-        setModelProgress((previous) => ({ ...previous, [key]: payload }));
-        patchTask(payload.taskId, { status: "done", percent: 100, downloaded: payload.downloaded, total: payload.total, speedBps: 0, finishedAt: Date.now() });
-        window.setTimeout(() => {
-          clearProgressKey(payload.repo, payload.file);
-        }, 1800);
-      } else if (payload.phase === "paused") {
-        cancelPendingProgress(payload.taskId);
-        clearProgressKey(payload.repo, payload.file);
-        // 单任务 / 全部暂停：归入「暂停」Tab（保留 .part 断点，可继续）
-        patchTask(payload.taskId, { status: "cancelled", error: t("explore.statusPaused"), speedBps: 0, finishedAt: Date.now() });
-      } else if (payload.phase === "cancelled") {
-        cancelPendingProgress(payload.taskId);
-        clearProgressKey(payload.repo, payload.file);
-        mutateDownloads((previous) => previous.filter((item) => item.taskId !== payload.taskId));
-      } else if (payload.phase === "error") {
-        cancelPendingProgress(payload.taskId);
-        clearProgressKey(payload.repo, payload.file);
-        patchTask(payload.taskId, { status: "error", error: payload.message || "download failed", speedBps: 0, finishedAt: Date.now() });
-      } else {
-        // 已暂停 / 已取消 / 已删除的任务忽略其迟到的「进行中」事件，防止假复活
-        const current = downloadsRef.current.find((item) => item.taskId === payload.taskId);
-        if (!current || current.status !== "active") return;
-        const pending = pendingProgress.get(payload.taskId);
-        if (pending) {
-          pending.payload = payload;
-        } else {
-          const timer = window.setTimeout(() => flushProgress(payload.taskId), 200);
-          pendingProgress.set(payload.taskId, { timer, payload });
-        }
-      }
-    }).then((fn) => { unlisten = fn; }).catch(() => undefined);
-    return () => {
-      unlisten?.();
-      for (const pending of pendingProgress.values()) window.clearTimeout(pending.timer);
-      pendingProgress.clear();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  const persist = async (next: AppConfig, message?: string) => {
-    setConfig(next);
-    /** 语言随本次保存立即生效（值未变时为空操作） */
-    setLocale(next.language ?? "zh");
-    try { await saveConfig(next); if (message) setToast(message); }
-    catch (error) { appendLog(t("log.saveConfigFailed", { error: String(error) }), "stderr"); }
-  };
-
-
-  /** 按唯一 taskId 合并更新单个下载任务（进度回调/取消/暂停/删除共用） */
-  const patchByTaskId = (taskId: string, patch: Partial<ActiveDownload>) => {
-    mutateDownloads((previous) => previous.map((item) => (item.taskId === taskId ? { ...item, ...patch } : item)));
-  };
-
-  /** 下载异常分类：取消 / 暂停（手动中断）归入「暂停」Tab，其余为真实错误 */
-  const settleEntry = (entry: ActiveDownload, raw: string, kind?: ActiveDownload["errorKind"]): ActiveDownload => {
-    const display = kind ? raw.split("::").slice(1).join("::") || raw : raw;
-    if (raw.includes("取消")) {
-      return { ...entry, status: "cancelled", error: t("explore.statusCancelled"), errorKind: kind, speedBps: 0, finishedAt: Date.now() };
-    }
-    if (raw.includes("暂停")) {
-      return { ...entry, status: "cancelled", error: t("explore.statusPaused"), errorKind: kind, speedBps: 0, finishedAt: Date.now() };
-    }
-    return { ...entry, status: "error", error: display || t("explore.statusError"), errorKind: kind, speedBps: 0, finishedAt: Date.now() };
-  };
-
-  const getTaskFilePath = (task: ActiveDownload): string => {
-    if (task.path) return task.path;
-    if (!diskUsage?.path) return "";
-    const root = diskUsage.path.replace(/[\\/]+$/, "");
-    if (task.repo === "direct-url") {
-      return root + "/" + task.file;
-    }
-    const repoDir = task.repo.split("/").pop() || task.repo;
-    const sanitized = repoDir.replace(/[^a-zA-Z0-9\-_.]/g, "_") || "model";
-    return root + "/" + sanitized + "/" + task.file;
-  };
-
-  /** 清理某任务在本地的缓存文件：目标文件 + .part 断点文件（已入库的完成任务由调用方跳过） */
-  const removeTaskFiles = (task: ActiveDownload) => {
-    const file = getTaskFilePath(task);
-    if (file) {
-      void removeLocalFile(file).catch(() => undefined);
-      void removeLocalFile(file + ".part").catch(() => undefined);
-    }
-  };
-
-  /** 下载完成：仅把主模型登记为本地资产（mmproj 图识模型仅保存文件供预设挂载，不自动入库），badge 打上「刚刚下载」 */
-  const importDownloadedModel = async (download: ActiveDownload, path: string, sizeBytes?: number) => {
-    try {
-      const fileBaseName = fileName(path);
-      // 图识视觉模型（mmproj）是辅助模型，需通过启动参数 --mmproj 挂载在主模型预设下，不作为独立模型入库
-      if (fileBaseName.toLowerCase().includes("mmproj")) {
-        patchByTaskId(download.taskId, { status: "done" as const, path, finishedAt: Date.now() });
-        setToast(t("toast.downloadDoneMmproj", { name: fileBaseName }));
-        return;
-      }
-
-      // 下载耗时数分钟，期间用户可能改过设置：读最新 config 而非发起下载时的闭包快照，
-      // 否则 persist 会把用户中途修改的主题 / 语言 / 代理等一并回滚
-      const currentConfig = configRef.current;
-      const existing = new Set(currentConfig.models.map((model) => model.path.toLowerCase()));
-      if (existing.has(path.toLowerCase())) {
-        patchByTaskId(download.taskId, { status: "done" as const, path, finishedAt: Date.now() });
-        return;
-      }
-      const name = fileBaseName.replace(/\.(gguf|ninfer)$/i, "").replace(/[-_]/g, " ");
-      const isNinfer = path.toLowerCase().endsWith(".ninfer");
-      const isGguf = path.toLowerCase().endsWith(".gguf");
-      const ext = (path.split(".").pop() || "FILE").toUpperCase();
-      const meta = await inspectGguf(path).catch(() => ({ architecture: "", parameters: "", quantization: "" }));
-      const paramMatch = path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase();
-      const parameters = meta.parameters || paramMatch || "—";
-      const initialProfiles = defaultProfilesForModel(path);
-      const defaultProfile = initialProfiles[0];
-      const model: ModelAsset = {
-        id: uid("model"),
-        name,
-        path,
-        sizeBytes: sizeBytes ?? download.sizeBytes,
-        architecture: meta.architecture || (isNinfer ? "NINFER" : isGguf ? "GGUF" : ext),
-        quantization: meta.quantization || parseQuantization(path, t("model.unknownQuant")),
-        parameters,
-        metadataSource: meta.architecture || meta.quantization || meta.parameters ? (isNinfer ? "ninfer" : isGguf ? "gguf" : "filename") : "filename",
-        profiles: initialProfiles,
-        accent: ACCENTS[currentConfig.models.length % ACCENTS.length],
-      };
-      setSelectedProfiles((previous) => ({ ...previous, [model.id]: defaultProfile.id }));
-      setJustImportedIds((previous) => new Set(previous).add(model.id));
-      window.setTimeout(() => { setJustImportedIds((previous) => { const next = new Set(previous); next.delete(model.id); return next; }); }, 6000);
-      patchByTaskId(download.taskId, { status: "done" as const, path, finishedAt: Date.now() });
-      await persist({ ...currentConfig, models: [...currentConfig.models, model] }, t("toast.downloadImported", { name }));
-    } catch (error) {
-      appendLog(t("log.saveConfigFailed", { error: String(error) }), "stderr");
-    }
-  };
-
-  /** 社区探索：点击下载 → 登记任务（task 池，附唯一 taskId）+ 提示，进度由后端事件推送 */
-  const handleModelDownload = (repo: string, file: string, sizeBytes: number, source?: CommunitySource) => {
-    const entry: ActiveDownload = { taskId: uid("download"), repo, file, sizeBytes, startedAt: Date.now(), status: "active", source: source ?? (repo.includes("modelscope") ? "ms" : "hf"), percent: 0, downloaded: 0, total: sizeBytes, speedBps: 0 };
-    mutateDownloads((previous) => [...previous.filter((item) => !(item.repo === repo && item.file === file)), entry]);
-    launchDownload(entry);
-    setToast(t("toast.downloadStarted"));
-  };
-
-  /** ===== 任务管理：暂停 / 重试 / 清理 / 取消 / 删除 / 定位 ===== */
-
-  /** 重新发起某任务的下载（失败 / 暂停任务恢复与单任务重试共用），按原 taskId 重打后端控制器 */
-  const relaunchTask = (task: ActiveDownload) => {
-    const entry: ActiveDownload = { ...task, startedAt: Date.now(), status: "active" as const, percent: 0, downloaded: 0, total: task.total ?? task.sizeBytes, speedBps: 0 };
-    patchByTaskId(task.taskId, entry);
-    launchDownload(entry);
-  };
-
-  /** 取消单个任务：直接从列表删除任务并清理未完成缓存文件，不移入「暂停」界面 */
-  const cancelTaskImpl = (task: ActiveDownload, withDelete = true) => {
-    const matched = task.taskId
-      ? downloadsRef.current.find((item) => item.taskId === task.taskId)
-      : downloadsRef.current.find((item) => item.repo === task.repo && item.file === task.file);
-    const targetTask = matched || task;
-
-    if (targetTask.taskId) {
-      cancelledTaskIdsRef.current.add(targetTask.taskId);
-      cancelPendingProgress(targetTask.taskId);
-      void hfCancelDownload(targetTask.taskId).catch(() => undefined);
-    }
-    mutateDownloads((previous) => previous.filter((item) =>
-      (targetTask.taskId ? item.taskId !== targetTask.taskId : !(item.repo === targetTask.repo && item.file === targetTask.file))
-    ));
-
-    if (withDelete) removeTaskFiles(targetTask);
-    clearProgressKey(targetTask.repo, targetTask.file);
-    setToast(t("toast.downloadCancelled"));
-  };
-  /** 暂停单个任务（保留 .part 断点，可继续）；只作用于该 taskId，归入「暂停」界面 */
-  const handlePauseTask = (task: ActiveDownload) => {
-    void hfPauseDownload(task.taskId).catch(() => undefined);
-    cancelPendingProgress(task.taskId);
-    patchByTaskId(task.taskId, { status: "cancelled", error: t("explore.statusPaused"), speedBps: 0, finishedAt: Date.now() });
-    clearProgressKey(task.repo, task.file);
-    setToast(t("toast.taskPaused"));
-  };
-
-  /** 批量恢复：遍历选中的 taskId 逐个重新发起下载（并发/排队由后端调度） */
-  const handleResumeTasks = (ids: string[]) => {
-    const idSet = new Set(ids);
-    const targets = downloadsRef.current.filter((item) => idSet.has(item.taskId) && (item.status === "error" || item.status === "cancelled"));
-    for (const task of targets) relaunchTask(task);
-    if (targets.length) setToast(t("toast.batchResumed", { count: targets.length }));
-  };
-  /** 批量暂停：仅对选中的进行中任务触发中止（按各自 taskId） */
-  const handlePauseTasks = (ids: string[]) => {
-    const idSet = new Set(ids);
-    const targets = downloadsRef.current.filter((item) => idSet.has(item.taskId) && item.status === "active");
-    for (const task of targets) {
-      void hfPauseDownload(task.taskId).catch(() => undefined);
-      cancelPendingProgress(task.taskId);
-      patchByTaskId(task.taskId, { status: "cancelled", error: t("explore.statusPaused"), speedBps: 0, finishedAt: Date.now() });
-      clearProgressKey(task.repo, task.file);
-    }
-    if (targets.length) setToast(t("toast.batchPaused", { count: targets.length }));
-  };
-  /** 删除任务：从前端响应式列表彻底移除，并同步清理本地未完成缓存（.part 断点等）。
-   *  若 deleteLocalFiles = true，还会彻底删除本地硬盘文件，并同步从模型仓库 config.models 中移除并持久化。 */
-  const deleteTasksImpl = async (ids: string[], deleteLocalFiles = false) => {
-    const idSet = new Set(ids);
-    const targets = downloadsRef.current.filter((item) => idSet.has(item.taskId));
-    if (!targets.length) return;
-    // 先按 taskId 中止仍在下载的任务，再清缓存、移记录
-    for (const task of targets) {
-      cancelledTaskIdsRef.current.add(task.taskId);
-      cancelPendingProgress(task.taskId);
-      clearProgressKey(task.repo, task.file);
-      if (task.status === "active") void hfCancelDownload(task.taskId).catch(() => undefined);
-    }
-    mutateDownloads((previous) => previous.filter((item) => !idSet.has(item.taskId)));
-
-    if (deleteLocalFiles) {
-      const removedPaths = new Set<string>();
-      for (const task of targets) {
-        if (task.path) {
-          removedPaths.add(task.path.toLowerCase());
-          void removeLocalFile(task.path).catch(() => undefined);
-        }
-        removeTaskFiles(task);
-      }
-      const nextModels = config.models.filter((model) => !removedPaths.has(model.path.toLowerCase()));
-      if (nextModels.length !== config.models.length) {
-        await persist({ ...config, models: nextModels });
-      }
-      void getModelsDir().then(setDiskUsage).catch(() => undefined);
-      setToast(t("toast.tasksAndFilesDeleted", { count: targets.length }));
-    } else {
-      for (const task of targets) {
-        if (task.status === "done" && task.path) continue; // 已同步进模型仓库，不删库内文件
-        removeTaskFiles(task);
-      }
-      setToast(t("toast.tasksDeleted", { count: targets.length }));
-    }
-  };
-  /** 单任务删除 */
-  const handleDeleteTask = (task: ActiveDownload, deleteLocalFile = false) => void deleteTasksImpl([task.taskId], deleteLocalFile);
-  /** 清除完成记录 */
-  const handleClearDone = () => {
-    mutateDownloads((previous) => previous.filter((item) => item.status !== "done"));
-    setToast(t("toast.queueCleared"));
-  };
-  /** 单任务：暂停 / 取消并删除缓存 */
-  const handleCancelTask = (task: ActiveDownload, deleteCache = false) => cancelTaskImpl(task, deleteCache);
-  /** 单任务重试 */
-  const handleRetry = (task: ActiveDownload) => relaunchTask(task);
-  const handleReveal = async (path: string) => { await revealInFolder(path); };
-
-  /** 设置页 / 社区探索共用：选择模型存储目录 */
-  const pickModelsDirFlow = async () => {
-    try {
-      const picked = await pickModelsDir();
-      if (!picked) return;
-      const nextConfig = { ...config, modelsDir: picked };
-      await persist(nextConfig, t("toast.dirChanged"));
-      const usage = await getModelsDir();
-      setDiskUsage(usage);
-    } catch (error) {
-      appendLog(t("explore.error", { error: error instanceof Error ? error.message : String(error) }), "stderr");
-    }
-  };
 
   const activeModel = config.models.find((model) => model.id === status.modelId);
   const activeProfile = activeModel?.profiles.find((profile) => profile.id === status.profileId);
@@ -1063,273 +311,6 @@ export default function App() {
     setToast(t("toast.webUiOpened"));
   };
 
-  const handleStart = async (model: ModelAsset) => {
-    const profileId = selectedProfiles[model.id] || model.defaultProfileId || model.profiles[0]?.id || '';
-    const profile = model.profiles.find((item) => item.id === profileId);
-    if (!profile) return setToast(t("toast.addProfileFirst"));
-
-    // 1. 若点击的是当前正在运行或正在启动中的同一个模型 -> 视为停止/暂停
-    if ((status.running && status.modelId === model.id) || (startingModelId === model.id)) {
-      return handleStop();
-    }
-
-    // 2. 若当前有其他模型正在运行或处于启动中 -> 立马停止旧模型，再切换启动新选择的模型
-    if (status.running || serviceStarting || startingModelId) {
-      stopIntendedRef.current = true;
-      endServiceStarting();
-      pendingStartedToastRef.current = null;
-      appendLog("正在停止当前服务并切换启动新模型…", "system");
-      try {
-        if (isTauri()) {
-          await stopServer();
-        } else {
-          setStatus(EMPTY_STATUS);
-        }
-      } catch (err) {
-        console.warn("停止前序服务失败", err);
-      }
-    }
-
-    // 启动前安全检测：检查后台是否有未被托管的残留 llama-server，防止双模型并发占用显存
-    if (isTauri()) {
-      try {
-        const orphanInfo = await checkOrphanServer();
-        if (orphanInfo.hasOrphan && orphanInfo.pids.length > 0) {
-          setOrphanPendingModel(model);
-          setOrphanPids(orphanInfo.pids);
-          setOrphanProcesses(orphanInfo.processes ?? null);
-          return;
-        }
-      } catch { }
-    }
-
-    const engineName = profile.engineId
-      ? config.engines?.find((e) => e.id === profile.engineId)?.name || profile.engineId
-      : config.engines?.find((e) => e.id === config.activeEngineId)?.name || "默认引擎";
-    setBusy(true); setStartingModelId(model.id); beginServiceStarting(model.id); lifecycleStartingAtRef.current = Date.now(); setMenuModelId(null); appendLog(t("toast.starting", { model: modelTitle(model), profile: `${profile.name} [${engineName}]` }));
-    try {
-      if (isTauri()) setStatus(await startServer(model.id, profile.id));
-      else {
-        await new Promise((resolve) => window.setTimeout(resolve, 650));
-        setStatus({
-          running: true,
-          pid: 18420,
-          port: profile.port,
-          modelId: model.id,
-          modelName: modelTitle(model),
-          profileId: profile.id,
-          profileName: profile.name,
-          startedAt: Date.now(),
-          engineName,
-          engineBackend: profile.engineId ? config.engines?.find((e) => e.id === profile.engineId)?.backend : "cuda",
-        });
-        [`llama_model_loader: loaded meta data with ${model.parameters} parameters`, `load_tensors: offloading ${profile.gpuLayers} repeating layers to GPU`, `llama_context: n_ctx = ${profile.contextSize}, n_batch = ${profile.batchSize}, n_ubatch = ${profile.ubatchSize}`, `server is listening on http://${profile.host}:${profile.port}`].forEach((line, index) => window.setTimeout(() => { appendLog(line, "stdout"); if (index === 3) markServiceReady(); }, 180 * index));
-      }
-      setServiceAbnormal(false); // 启动成功 → 清除异常标记
-      inferenceTrackerRef.current.reset();
-      setLatestInference(null);
-      setInferenceHistory([]);
-      setTokSample(null);
-      dockAutoCollapseRef.current = true; // 武装：本次启动期间收到就绪日志后自动收起 Dock
-      appendLog(`[engine] ${engineName}`, "system");
-      const currentEng = profile.engineId ? config.engines?.find((e) => e.id === profile.engineId) : config.engines?.find((e) => e.id === config.activeEngineId);
-      const isLlama = !currentEng || currentEng.engineType === "llamacpp" || !currentEng.engineType;
-      if (isLlama) {
-        if (profile.mmprojPath) appendLog(`--mmproj ${profile.mmprojPath}`, "stdout");
-        if (profile.mtpDraftPath) appendLog(`-md ${profile.mtpDraftPath}`, "stdout");
-        if (profile.mtp && !profile.mtpDraftPath) appendLog(`--spec-type draft-mtp`, "stdout");
-        if (profile.mtp || profile.mtpDraftPath) appendLog(`--spec-draft-n-max ${profile.specDraftNMax ?? 2}`, "stdout");
-      }
-      if (page !== "logs") setLogDockOpen(true); // 所有 Dock 页启动时自动展开，显示加载日志；就绪后自动收起（日志整页本身就在看日志）
-      // 「已启动」提示延迟到服务真正就绪后再播报（与 Dock 收起、旋转动画结束同步）；若就绪日志已提前到达则立即补播报
-      pendingStartedToastRef.current = modelTitle(model);
-      if (!serviceStartingRef.current) markServiceReady();
-    } catch (error) { pendingStartedToastRef.current = null; setStartingModelId(null); appendLog(t("log.startFailed", { error: String(error) }), "stderr"); setServiceAbnormal(true); dockAutoCollapseRef.current = false; endServiceStarting(); if (page !== "logs") setLogDockOpen(true); setToast(t("toast.startFailedToast")); }
-    finally { setBusy(false); }
-  };
-
-  const handleStop = async () => {
-    setBusy(true); setStartingModelId(null); endServiceStarting(); pendingStartedToastRef.current = null; appendLog(t("log.stopping"));
-    stopIntendedRef.current = true; // 本次退出是主动停止 → 不判为服务异常
-    dockAutoCollapseRef.current = false;
-    try { if (isTauri()) setStatus(await stopServer()); else { await new Promise((resolve) => window.setTimeout(resolve, 380)); setStatus(EMPTY_STATUS); appendLog(t("log.stopSuccess")); } setToast(t("toast.stopped")); }
-    catch (error) { appendLog(t("log.stopFailed", { error: String(error) }), "stderr"); }
-    finally { setBusy(false); setTokSample(null); }
-  };
-
-  /** 清空当前模型会话的推理性能历史与统计 */
-  const handleClearInferenceStats = () => {
-    inferenceTrackerRef.current.reset();
-    setLatestInference(null);
-    setInferenceHistory([]);
-    setTokSample(null);
-  };
-
-  /** 终止后台残留的 llama-server 进程 */
-  const handleKillOrphan = async () => {
-    const pids = orphanPids || [];
-    const pendingModel = orphanPendingModel;
-    setOrphanPids(null);
-    setOrphanProcesses(null);
-    setOrphanPendingModel(null);
-    try {
-      const killed = await killOrphanServer(pids);
-      appendLog(t("orphan.killedLog", { count: killed }), "system");
-      setToast(t("orphan.killedToast", { count: killed }));
-      if (pendingModel) {
-        window.setTimeout(() => {
-          void handleStart(pendingModel);
-        }, 300);
-      }
-    } catch (error) {
-      appendLog(t("orphan.killFailed", { error: String(error) }), "stderr");
-      setToast(t("orphan.killFailed", { error: String(error) }));
-    }
-  };
-
-  const handleCloseOrphanModal = () => {
-    setOrphanPids(null);
-    setOrphanProcesses(null);
-    setOrphanPendingModel(null);
-  };
-
-  const addModelFromPaths = async (paths: { path: string; sizeBytes: number }[]) => {
-    if (!paths.length) return;
-    const existing = new Set(config.models.map((model) => model.path));
-    const fresh = paths.filter((item) => !existing.has(item.path));
-    if (!fresh.length) return setToast(t("toast.alreadyInLibrary"));
-    const additions: ModelAsset[] = [];
-    for (const [index, item] of fresh.entries()) {
-      const path = item.path;
-      const isNinfer = path.toLowerCase().endsWith(".ninfer");
-      const meta = await inspectGguf(path).catch(() => ({ architecture: "", parameters: "", quantization: "" }));
-      const initialProfiles = defaultProfilesForModel(path);
-      additions.push({
-        id: uid("model"),
-        name: fileName(path).replace(/\.(gguf|ninfer)$/i, "").replace(/[-_]/g, " "),
-        path,
-        sizeBytes: item.sizeBytes,
-        architecture: meta.architecture || (isNinfer ? "NINFER" : "GGUF"),
-        quantization: meta.quantization || parseQuantization(path, t("model.unknownQuant")),
-        parameters: meta.parameters || path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase() || "—",
-        metadataSource: meta.architecture || meta.quantization || meta.parameters ? (isNinfer ? "ninfer" : "gguf") : "filename",
-        profiles: initialProfiles,
-        accent: ACCENTS[(config.models.length + index) % ACCENTS.length]
-      });
-    }
-    setSelectedProfiles((previous) => { const next = { ...previous }; for (const model of additions) next[model.id] = model.profiles[0].id; return next; });
-    await persist({ ...config, models: [...config.models, ...additions] }, t(additions.length === 1 ? "toast.modelAdded" : "toast.modelsAdded", { count: additions.length }));
-  };
-  /** 统一入口：打开导入弹窗（拖拽 / 选文件 / 选文件夹都在弹窗内完成） */
-  const openImport = () => setImportOpen(true);
-  const handleImportModels = async (paths: PickedFile[]) => {
-    try { await addModelFromPaths(paths); }
-    finally { setImportOpen(false); }
-  };
-  const removeModel = async (id: string) => {
-    if (status.modelId === id) return setToast(t("toast.stopFirst"));
-    setMenuModelId(null); await persist({ ...config, models: config.models.filter((model) => model.id !== id) }, t("toast.modelRemoved"));
-  };
-  /** 拖拽排序提交（最终可见顺序）：拖动中页面只改本地预览，松手后一次性写盘。搜索过滤下的稳定交织——可见模型按新顺序填入原槽位，被过滤隐藏的保持原位 */
-  const reorderModels = (visibleOrder: string[]) => {
-    if (!visibleOrder.length) return;
-    const visible = new Set(visibleOrder);
-    const byId = new Map(config.models.map((item) => [item.id, item]));
-    let cursor = 0;
-    const list = config.models.map((item) => (visible.has(item.id) ? byId.get(visibleOrder[cursor++]) ?? item : item));
-    if (list.every((item, index) => item.id === config.models[index].id)) return; // 顺序未变 → 不写盘、不打扰
-    void persist({ ...config, models: list }, t("toast.orderUpdated"));
-  };
-  /** 批量移出：运行中的模型不可删除，整批拦截 */
-  const removeMultipleModels = async (ids: string[]) => {
-    if (!ids.length) return;
-    const idSet = new Set(ids);
-    const running = config.models.find((item) => status.modelId === item.id && idSet.has(item.id));
-    if (running) return setToast(t("toast.runningSelectedModels"));
-    await persist({ ...config, models: config.models.filter((model) => !idSet.has(model.id)) }, t("toast.modelsRemoved", { count: ids.length }));
-  };
-  const upsertProfile = (modelId: string, profile: Profile, message?: string) => {
-    const model = config.models.find((item) => item.id === modelId);
-    if (!model) return;
-    const profiles = model.profiles.some((item) => item.id === profile.id)
-      ? model.profiles.map((item) => (item.id === profile.id ? profile : item))
-      : [...model.profiles, profile];
-    return persist({ ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, profiles } : item)) }, message);
-  };
-  const saveProfile = async (modelId: string, profile: Profile, isDefault = false) => {
-    const model = config.models.find((item) => item.id === modelId);
-    if (!model) return;
-    const profiles = model.profiles.some((item) => item.id === profile.id)
-      ? model.profiles.map((item) => (item.id === profile.id ? profile : item))
-      : [...model.profiles, profile];
-    const defaultProfileId = isDefault ? profile.id : (model.defaultProfileId === profile.id ? undefined : model.defaultProfileId);
-    /** 编辑器里新开启「默认预设」时，同步模型仓库里的当前选择 */
-    if (isDefault && model.defaultProfileId !== profile.id) setSelectedProfiles((previous) => ({ ...previous, [modelId]: profile.id }));
-    await persist({ ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, profiles, defaultProfileId } : item)) }, t("toast.profileSaved"));
-    setProfileEditing(null);
-  };
-  const deleteProfile = async (modelId: string, id: string) => {
-    if (status.modelId === modelId && status.profileId === id) return setToast(t("toast.runningProfileLocked"));
-    const model = config.models.find((item) => item.id === modelId);
-    const profiles = model ? model.profiles.filter((item) => item.id !== id) : [];
-    setSelectedProfiles((previous) => (previous[modelId] === id ? { ...previous, [modelId]: profiles[0]?.id ?? "" } : previous));
-    /** 删掉的若是默认预设，清掉悬空的 defaultProfileId */
-    await persist({ ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, profiles, defaultProfileId: item.defaultProfileId === id ? undefined : item.defaultProfileId } : item)) }, t("toast.profileDeleted"));
-  };
-  /** 拖拽排序提交（同一模型内预设的最终顺序）：拖动中页面只改本地预览，松手后一次性写盘 */
-  const reorderProfiles = (modelId: string, profileIds: string[]) => {
-    if (!profileIds.length) return;
-    const owner = config.models.find((item) => item.id === modelId);
-    if (!owner || profileIds.length !== owner.profiles.length) return; // 数量对不上不提交，避免误删
-    const byId = new Map(owner.profiles.map((profile) => [profile.id, profile]));
-    const ordered = profileIds.flatMap((id) => { const profile = byId.get(id); return profile ? [profile] : []; });
-    if (ordered.length !== owner.profiles.length) return; // 出现未知 id 不提交
-    void persist({ ...config, models: config.models.map((item) => item.id === modelId ? { ...item, profiles: ordered } : item) }, t("toast.profilesOrderUpdated"));
-  };
-  /** 批量删除：运行中的预设不可删除，整批拦截；同时清掉悬空的默认预设与当前选择 */
-  const deleteMultipleProfiles = async (items: { modelId: string; profileId: string }[]) => {
-    if (!items.length) return;
-    const running = items.find((item) => status.modelId === item.modelId && status.profileId === item.profileId);
-    if (running) return setToast(t("toast.runningSelectedProfiles"));
-    const byModel = new Map<string, Set<string>>();
-    for (const item of items) {
-      const ids = byModel.get(item.modelId) ?? new Set<string>();
-      ids.add(item.profileId);
-      byModel.set(item.modelId, ids);
-    }
-    setSelectedProfiles((previous) => {
-      const next = { ...previous };
-      for (const [modelId, drop] of byModel) {
-        const owner = config.models.find((item) => item.id === modelId);
-        if (!owner || !drop.has(previous[modelId])) continue;
-        next[modelId] = owner.profiles.find((profile) => !drop.has(profile.id))?.id ?? "";
-      }
-      return next;
-    });
-    await persist({
-      ...config, models: config.models.map((owner) => {
-        const drop = byModel.get(owner.id);
-        if (!drop || !drop.size) return owner;
-        const profiles = owner.profiles.filter((profile) => !drop.has(profile.id));
-        return { ...owner, profiles, defaultProfileId: owner.defaultProfileId && drop.has(owner.defaultProfileId) ? undefined : owner.defaultProfileId };
-      })
-    }, t("toast.profilesDeleted", { count: items.length }));
-  };
-  const duplicateProfile = (modelId: string, profile: Profile) =>
-    upsertProfile(modelId, { ...profile, id: uid("profile"), name: profile.name + t("profile.copySuffix") }, t("toast.profileCopied"));
-  const setDefaultProfile = async (modelId: string, profileId: string) => {
-    const model = config.models.find((item) => item.id === modelId);
-    if (!model) return;
-    const makingDefault = model.defaultProfileId !== profileId;
-    /** 设为默认即视为指定该预设启动，同步模型仓库里的当前选择 */
-    if (makingDefault) setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }));
-    await persist({ ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, defaultProfileId: makingDefault ? profileId : undefined } : item)) }, t(makingDefault ? "toast.defaultSet" : "toast.defaultUnset"));
-  };
-  const renameModel = (modelId: string, displayName: string) => {
-    const trimmed = displayName?.trim();
-    void persist({ ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, displayName: trimmed ? trimmed : undefined } : item)) }, t(trimmed ? "toast.renamed" : "toast.nameRestored"));
-    setMenuModelId(null);
-  };
   const exportBackup = async () => {
     try {
       const path = await exportConfigBackup();
@@ -1351,46 +332,12 @@ export default function App() {
       setToast(t("toast.backupFailed", { error: String(error) }));
     }
   };
-  const updateModelTags = (modelId: string, quantization: string, tags: string[], nextPool?: string[]) => {
-    const trimmedQuant = quantization?.trim();
-    void persist(
-      {
-        ...config,
-        customTags: nextPool ?? config.customTags,
-        models: config.models.map((item) =>
-          item.id === modelId
-            ? {
-                ...item,
-                quantization: trimmedQuant || t("model.unknownQuant"),
-                tags: tags.length ? tags : undefined,
-              }
-            : item
-        ),
-      },
-      t("toast.tagsUpdated")
-    );
-  };
-  const setDefaultModel = (modelId: string) => {
-    const makingDefault = config.preferredModelId !== modelId;
-    void persist({ ...config, preferredModelId: makingDefault ? modelId : undefined }, t(makingDefault ? "toast.launchModelSet" : "toast.launchModelUnset"));
-  };
   const startQuick = async () => {
     const id = quickModelId || config.preferredModelId || config.models[0]?.id || "";
     const model = config.models.find((item) => item.id === id) || config.models[0];
     if (!model) return setToast(t("toast.addFirst"));
     await handleStart(model);
   };
-  const filteredModels = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return q
-      ? config.models.filter((model) =>
-          [modelTitle(model), model.architecture, model.quantization, model.path, ...(model.tags || [])]
-            .join(" ")
-            .toLowerCase()
-            .includes(q)
-        )
-      : config.models;
-  }, [config.models, query]);
 
   /** 当前页是否使用 Dock 日志（除"日志"整页外所有页面）：Dock 参与布局，无悬浮遮挡 */
   const isDockPage = PAGE_LOG_MODE[page] === "dock";
@@ -1419,10 +366,10 @@ export default function App() {
           latestMetrics={latestInference}
           inferenceHistory={inferenceHistory}
           onClearHistory={handleClearInferenceStats}
-          onClear={() => setLogs([])}
+          onClear={clearLogs}
         />
       )}
-      <SettingsPage visible={page === "settings"} config={config} appUpdate={appUpdate} checkingUpdate={appUpdateChecking} onCheckUpdate={checkAppUpdate} onPersist={persist} onLog={appendLog} onOpenEngineHub={() => setEngineHubOpen(true)} onExportBackup={exportBackup} onImportBackup={importBackup} />
+      <SettingsPage visible={page === "settings"} config={config} activeEngine={activeAppEngine} appUpdate={appUpdate} checkingUpdate={appUpdateChecking} onCheckUpdate={checkAppUpdate} onPersist={persist} onLog={appendLog} onOpenEngineHub={() => setEngineHubOpen(true)} onExportBackup={exportBackup} onImportBackup={importBackup} />
     </main>
       {/* Dock 日志参与布局（收起=底部状态栏 / 展开=可调高度面板），各页面共用同一份状态，不遮挡内容；仅"日志"整页除外 */}
       {isDockPage && (
@@ -1444,7 +391,7 @@ export default function App() {
           onOpenEnginePicker={() => setEngineHubOpen(true)}
           onToggle={() => setLogDockOpen((value) => !value)}
           onHeightChange={setLogDockHeight}
-          onClear={() => setLogs([])}
+          onClear={clearLogs}
         />
       )}
     </div>

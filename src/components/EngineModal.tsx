@@ -4,7 +4,8 @@ import { useI18n } from "../i18n";
 import { uid } from "../data";
 import { getLlamaCppStatus, pickServerDir, pickServerFile, type LlamaCppLocalStatus, type ServerCandidate } from "../tauri";
 import type { LlamaEngine } from "../types";
-import { cn, formatBytes, formatEngineBackend, detectEngineType, getEngineTypeDisplay, type EngineTypeKey } from "../utils";
+import type { EngineType } from "../types";
+import { cn, formatBytes, formatEngineBackend, detectEngineType, getEngineTypeDisplay } from "../utils";
 
 interface Props {
   engine?: LlamaEngine | null;
@@ -58,8 +59,8 @@ export default function EngineModal({ engine, isDefault = false, onSave, onClose
   const [backend, setBackend] = useState<string>(engine?.backend ?? "cuda");
   const [cudaVersion, setCudaVersion] = useState<string>(engine?.cudaVersion ?? "");
   const [version, setVersion] = useState<string>(engine?.version ?? "");
-  const [engineType, setEngineType] = useState<EngineTypeKey>(
-    (engine?.engineType as EngineTypeKey) || detectEngineType(engine?.path) || "llamacpp"
+  const [engineType, setEngineType] = useState<EngineType>(
+    (engine?.engineType as EngineType) || detectEngineType(engine?.path) || "llamacpp"
   );
   const [setAsActive, setSetAsActive] = useState<boolean>(isDefault);
 
@@ -92,7 +93,7 @@ export default function EngineModal({ engine, isDefault = false, onSave, onClose
         if (status.localBackend) setBackend(status.localBackend);
         if (status.cudaVersion) setCudaVersion(status.cudaVersion);
         if (status.localVersion) setVersion(status.localVersion);
-        if (status.engineType) setEngineType(status.engineType as EngineTypeKey);
+        if (status.engineType) setEngineType(status.engineType as EngineType);
         if (status.serverPath && status.serverPath !== targetPath) {
           setPath(status.serverPath);
         }

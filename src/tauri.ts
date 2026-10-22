@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { APP_REPO, APP_VERSION, PROJECT_URL } from "./data";
 import { isNewerVersion } from "./utils";
-import type { AppConfig, DiskUsage, GpuStats, HfDownloadResult, HfFile, HfModel, LlamaLogPayload, ModelDownloadProgress, ServerStatus } from "./types";
+import type { AppConfig, DiskUsage, EngineType, GpuStats, HfDownloadResult, HfFile, HfModel, LlamaBackend, LlamaLogPayload, ModelDownloadProgress, ProxyMode, ServerStatus } from "./types";
 
 export const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -289,7 +289,7 @@ export async function installAppUpdate(path: string): Promise<void> {
 
 export interface HardwareSuggestion {
   /** 推荐后端：cuda | vulkan | cpu */
-  recommendedBackend: "cuda" | "vulkan" | "cpu";
+  recommendedBackend: LlamaBackend;
   gpuName?: string | null;
   cudaSupported: boolean;
   vulkanSupported: boolean;
@@ -318,7 +318,7 @@ export async function getSystemProxy(): Promise<string | null> {
 }
 
 export async function testProxyConnection(
-  proxyMode: "system" | "manual" | "direct",
+  proxyMode: ProxyMode,
   proxyUrl: string,
 ): Promise<ProxyTestResult> {
   if (!isTauri()) return { ok: false, status: "N/A", detail: "仅 Tauri 桌面端可用", latencyMs: 0 };
@@ -328,7 +328,7 @@ export async function testProxyConnection(
 /* ==================== llama.cpp 引擎管理（阶段三） ==================== */
 
 export interface LlamaCppAsset {
-  backend: "cuda" | "vulkan" | "cpu";
+  backend: LlamaBackend;
   /** CUDA 主版本（如 "12" / "13"）；非 cuda 后端为空字符串 */
   cudaVersion?: string;
   /** CUDA 完整版本（如 "12.4" / "13.4"）；非 cuda 后端为空字符串 */
@@ -352,11 +352,11 @@ export interface LlamaCppRelease {
 export interface LlamaCppLocalStatus {
   installDir: string;
   localVersion?: string | null;
-  localBackend: "cuda" | "vulkan" | "cpu";
+  localBackend: LlamaBackend;
   cudaVersion?: string | null;
   serverAvailable: boolean;
   serverPath?: string | null;
-  engineType?: "llamacpp" | "ninfer" | "ninfer_kvmem" | string | null;
+  engineType?: EngineType | null;
 }
 
 export interface DownloadProgress {

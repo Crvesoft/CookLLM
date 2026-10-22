@@ -1,0 +1,61 @@
+:root {
+  font-family: Inter, "Noto Sans SC", system-ui, sans-serif;
+  color: #eef2f8;
+  background: #181818;
+  color-scheme: dark;
+  font-synthesis: none;
+  --bg: #181818;
+  --bg-radial: rgba(255, 107, 40, .045);
+  --panel: #202020;
+  --panel-2: #242424;
+  --panel-3: #1f1f1f;
+  --line: #333333;
+  --line-soft: #2c2c2c;
+  --line-strong: #3c3c3c;
+  --muted: #7f8a9d;
+  --muted-2: #687386;
+  --text: #eef2f8;
+  --text-soft: #cbd2df;
+  --violet: #8b5cf6;
+  --cyan: #19c8d1;
+  --green: #39d98a;
+  --amber: #f4b454;
+  --rose: #f0648d;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  margin: 0;
+  min-width: 1080px;
+  min-height: 720px;
+  height: 100%;
+  overflow: hidden;
+}
+
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+button {
+  color: inherit;
+}
+
+button,
+select {
+  cursor: pointer;
+}
+
+button:disabled,
+select:disabled {
+  cursor: not-allowed;
+  opacity: .55;
+}
+

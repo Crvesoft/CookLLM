@@ -14,7 +14,8 @@ import {
 } from "lucide-react";
 import type { LlamaEngine } from "../types";
 import { useI18n } from "../i18n";
-import { cn, formatEngineBackend, detectEngineType, getEngineTypeDisplay, type EngineTypeKey } from "../utils";
+import type { EngineType } from "../types";
+import { cn, formatEngineBackend, detectEngineType, getEngineTypeDisplay } from "../utils";
 import { getLlamaCppStatus, pickServerFile, revealInFolder, type LlamaCppLocalStatus } from "../tauri";
 import ConfirmModal from "./ConfirmModal";
 
@@ -97,7 +98,7 @@ export default function EngineHubModal({
     return engines.find((e) => e.id === selectedId) || engines[0];
   }, [engines, selectedId]);
 
-  // 选中切换时同步到表单
+  // 选中切换时同步到表单并探测；探测结果只用于展示，持久化仅由保存按钮触发
   useEffect(() => {
     if (selectedEngine) {
       setDraftName(selectedEngine.name);
@@ -107,19 +108,9 @@ export default function EngineHubModal({
 
       if (selectedEngine.path) {
         setProbing(true);
+        setProbeStatus(null);
         void getLlamaCppStatus(selectedEngine.path)
-          .then((st) => {
-            setProbeStatus(st);
-            if (st?.cudaVersion && st.cudaVersion !== selectedEngine.cudaVersion) {
-              onSaveEngine({
-                ...selectedEngine,
-                cudaVersion: st.cudaVersion,
-                version: st.localVersion || selectedEngine.version,
-                backend: st.localBackend || selectedEngine.backend,
-                engineType: (st.engineType as any) || selectedEngine.engineType,
-              });
-            }
-          })
+          .then((st) => setProbeStatus(st))
           .catch(() => setProbeStatus(null))
           .finally(() => setProbing(false));
       } else {
@@ -128,18 +119,28 @@ export default function EngineHubModal({
     }
   }, [selectedEngine]);
 
+  // 探测到的运行时元数据与已保存值不同：允许通过保存按钮显式更新
+  const probeChanged = Boolean(
+    selectedEngine &&
+      probeStatus &&
+      ((probeStatus.cudaVersion && probeStatus.cudaVersion !== selectedEngine.cudaVersion) ||
+        (probeStatus.localVersion && probeStatus.localVersion !== selectedEngine.version) ||
+        (probeStatus.engineType && probeStatus.engineType !== selectedEngine.engineType)),
+  );
+
   // 检查是否有未保存修改
   const isModified = Boolean(
     selectedEngine &&
       (draftName.trim() !== selectedEngine.name ||
         draftPath.trim() !== selectedEngine.path ||
-        draftBackend !== (selectedEngine.backend || "cuda")),
+        draftBackend !== (selectedEngine.backend || "cuda") ||
+        probeChanged),
   );
 
   // 保存修改（引擎架构类型自动识别填充）
   const handleSave = () => {
     if (!selectedEngine || !draftPath.trim()) return;
-    const inferredType = (probeStatus?.engineType as EngineTypeKey) || detectEngineType(draftPath.trim());
+    const inferredType = (probeStatus?.engineType as EngineType) || detectEngineType(draftPath.trim());
     const updated: LlamaEngine = {
       ...selectedEngine,
       name: draftName.trim() || selectedEngine.name,

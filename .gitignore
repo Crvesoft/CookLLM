@@ -8,3 +8,4 @@ src-tauri/target/
 .idea/
 .vscode/
 .tmp/
+.test-dist/

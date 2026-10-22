@@ -1,4 +1,4 @@
-import type { InferenceMetrics, LlamaLogPayload, ModelAsset, ShortcutsConfig } from "./types";
+import type { EngineType, InferenceMetrics, LlamaLogPayload, ModelAsset, ShortcutsConfig } from "./types";
 import { formatMessage, getLocale } from "./i18n";
 import { writeClipboard } from "./tauri";
 
@@ -32,10 +32,8 @@ export function fileName(path: string) {
   return path.split(/[\\/]/).pop() || path;
 }
 
-export type EngineTypeKey = "llamacpp" | "ninfer" | "ninfer_kvmem";
-
 /** 智能推断可执行程序的引擎类型 */
-export function detectEngineType(path?: string): EngineTypeKey {
+export function detectEngineType(path?: string): EngineType {
   if (!path) return "llamacpp";
   const lower = path.toLowerCase();
   const file = lower.split(/[\/\\]/).pop() || lower;
@@ -52,8 +50,8 @@ export function detectEngineType(path?: string): EngineTypeKey {
 export function getEngineTypeDisplay(
   engineType?: string | null,
   path?: string | null,
-): { key: EngineTypeKey; label: "llama.cpp" | "ninfer" | "kvmem-ninfer" } {
-  let key: EngineTypeKey = "llamacpp";
+): { key: EngineType; label: "llama.cpp" | "ninfer" | "kvmem-ninfer" } {
+  let key: EngineType = "llamacpp";
   if (engineType === "ninfer_kvmem" || engineType === "ninfer" || engineType === "llamacpp") {
     key = engineType;
   } else if (path) {
@@ -1300,7 +1298,7 @@ export function isNewerVersion(release: string, current: string): boolean {
 export function formatEngineBackend(
   backend?: string | null,
   cudaVersion?: string | null,
-  engineType?: "llamacpp" | "ninfer" | "ninfer_kvmem" | string | null,
+  engineType?: EngineType | string | null,
 ): string {
   const b = (backend || "cuda").toLowerCase();
   let base = "CUDA";

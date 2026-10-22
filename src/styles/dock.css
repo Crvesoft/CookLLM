@@ -1,0 +1,660 @@
+/* Dock 日志（除"日志"整页外所有页面共用，workspace flex 第三子项，非悬浮）：收起=底部状态栏 / 展开=可调高度面板；Rust 日志监听不受收放影响 */
+.log-dock-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: none;
+  height: 34px;
+  padding: 0 28px;
+  border-top: 1px solid #333333;
+  background: #1f1f1f;
+}
+
+.log-dock-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #8b95a7;
+  font-size: 13px;
+}
+
+.log-dock-status i {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #687284;
+}
+
+.log-dock-bar.running .log-dock-status i {
+  background: #36d38b;
+  box-shadow: 0 0 7px rgba(54, 211, 139, .6);
+}
+
+.dock-running-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dock-status-state {
+  font-size: 12px;
+  font-weight: 500;
+  color: #8b95a7;
+  white-space: nowrap;
+}
+
+.dock-status-state.live {
+  color: #34d399;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+}
+
+.dock-status-state.abnormal {
+  color: #ff9cb9;
+  font-weight: 600;
+}
+
+.dock-status-sep {
+  width: 1px;
+  height: 10px;
+  background: rgba(255, 255, 255, 0.14);
+  flex: none;
+}
+
+.dock-model-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: #f1f5f9;
+  font-size: 12px;
+  font-weight: 550;
+  user-select: text;
+}
+
+.dock-model-icon {
+  color: #94a3b8;
+  flex: none;
+}
+
+.dock-model-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 280px;
+}
+
+.dock-profile-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 1.5px 7px 1.5px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  color: #cbd5e1;
+  font-size: 11px;
+  line-height: 1.4;
+  user-select: text;
+  flex-shrink: 1;
+  min-width: 0;
+  transition: all .15s ease;
+}
+
+.dock-profile-pill:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(255, 255, 255, 0.18);
+  color: #f8fafc;
+}
+
+.dock-profile-icon {
+  color: #fb923c;
+  flex: none;
+}
+
+.dock-profile-tag {
+  font-size: 9.5px;
+  font-weight: 600;
+  padding-right: 4px;
+  border-right: 1px solid rgba(255, 255, 255, 0.12);
+  color: #94a3b8;
+  line-height: 1.2;
+}
+
+.dock-profile-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+
+.log-dock-bar.abnormal {
+  border-top-color: #613447;
+  background: #1c1118;
+}
+
+.log-dock-bar.abnormal .log-dock-status {
+  color: #ff9cb9;
+}
+
+.log-dock-bar.abnormal .log-dock-status i {
+  background: #e26f91;
+  box-shadow: 0 0 7px rgba(226, 111, 145, .7);
+  animation: dock-pulse 1.4s ease infinite;
+}
+
+@keyframes dock-pulse {
+  50% {
+    opacity: .45;
+  }
+}
+
+.log-dock-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  padding: 4px 9px;
+  border: 1px solid #3c3c3c;
+  border-radius: 6px;
+  color: #8791a2;
+  background: #232323;
+  font-size: 12px;
+}
+
+.log-dock-toggle:hover {
+  color: #ffd9ad;
+  border-color: #584129;
+}
+
+/* Dock 容器：高度在 34px（收起）与展开高度间过渡；拖拽调高时经 .resizing 关闭过渡保证跟手 */
+.log-dock {
+  display: flex;
+  flex-direction: column;
+  flex: none;
+  min-height: 0;
+  overflow: hidden;
+  transition: height .18s ease;
+}
+
+.log-dock.resizing {
+  transition: none;
+}
+
+.log-dock-panel {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: #161616;
+}
+
+.log-dock:not(.open) .log-dock-panel {
+  pointer-events: none;
+}
+
+.log-dock-resize {
+  flex: none;
+  height: 8px;
+  cursor: ns-resize;
+  background: transparent;
+  border-top: 1px solid #333333;
+  touch-action: none;
+}
+
+.log-dock-resize:hover,
+.log-dock-resize:active {
+  background: rgba(255, 107, 40, .28);
+}
+
+/* Dock 面板内日志行区：弹性填满面板剩余高度（上缘含 8px 拖拽带 + 工具栏各占固定高度） */
+.log-dock-panel .console-lines {
+  height: auto;
+  flex: 1;
+  min-height: 0;
+}
+
+/* 推理性能 / 运行日志 页签：同一时刻只显示一个，互不挤占高度 */
+.dock-tabs {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+
+.dock-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 23px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 5px;
+  color: #657083;
+  background: transparent;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.dock-tab:hover {
+  color: #abb4c3;
+  background: #272727;
+}
+
+.dock-tab.active {
+  color: #ffd9ad;
+  background: rgba(255, 107, 40, .14);
+}
+
+.dock-perf-pane {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.dock-perf-pane .inf-inspector {
+  border-bottom: 0;
+  min-height: 100%;
+}
+
+/* 推理性能：跟日志同一套纯色底 + 等宽字，不用卡片、渐变和圆角 */
+.inf-inspector.inf-split {
+  display: grid;
+  grid-template-columns: 280px 1fr;
+  align-items: stretch;
+  padding: 0;
+  overflow: hidden;
+  background: #161616;
+}
+
+.inf-history {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  border-right: 1px solid #2e2e2e;
+  background: #161616;
+}
+
+.inf-clear {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: #5e6878;
+  background: transparent;
+  font: 11px JetBrains Mono, monospace;
+  cursor: pointer;
+}
+
+.inf-clear:hover {
+  color: #d5dbe6;
+}
+
+.inf-history-list {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 0 0;
+}
+
+.inf-history-empty {
+  padding: 18px 13px;
+  color: #46505e;
+  font: 12px JetBrains Mono, monospace;
+}
+
+.inf-turn {
+  display: grid;
+  grid-template-columns: 64px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  padding: 2px 13px;
+  border: 0;
+  border-left: 2px solid transparent;
+  border-radius: 0;
+  color: #8490a2;
+  background: transparent;
+  font: 12px/1.45 JetBrains Mono, monospace;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.inf-turn:hover {
+  background: #1d1d1d;
+}
+
+.inf-turn.active {
+  border-left-color: #ff6b28;
+  background: #1c1c1c;
+  color: #d5dbe6;
+}
+
+.inf-turn.pinned {
+  border-left-color: #ff8c42;
+  background: rgba(255, 140, 66, 0.12);
+  color: #fff;
+}
+
+.inf-turn-time {
+  color: #3f4958;
+}
+
+.inf-turn-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.inf-turn-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inf-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.inf-dot.idle {
+  visibility: hidden;
+  background: transparent;
+}
+
+.inf-dot.live {
+  visibility: visible;
+  background: #ff6b28;
+  box-shadow: 0 0 6px rgba(255, 107, 40, .7);
+}
+
+.inf-turn-rate {
+  color: #8490a2;
+}
+
+.inf-turn.active .inf-turn-rate {
+  color: #ffb37a;
+}
+
+.inf-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+  padding: 6px 14px 6px;
+  overflow: auto;
+  background: #161616;
+}
+
+/* 第一层：四个核心数字，横排，不用卡片 */
+.inf-kpis {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 2px 20px;
+  padding-bottom: 5px;
+}
+
+.inf-kpi {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+  padding-left: 14px;
+  border-left: 1px solid #2a2a2a;
+}
+
+.inf-kpi:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.inf-kpi b {
+  color: #d5dbe6;
+  font: 600 15px/1.15 JetBrains Mono, monospace;
+  white-space: nowrap;
+}
+
+.inf-kpi.decode b {
+  color: #ff9248;
+}
+
+.inf-kpi.prefill b {
+  color: #38bdf8;
+}
+
+.inf-kpi span {
+  color: #8490a2;
+  font: 500 11px/1.2 JetBrains Mono, monospace;
+}
+
+.inf-kpi em {
+  color: #5e6878;
+  font: 11px/1.2 JetBrains Mono, monospace;
+  font-style: normal;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 第二层：上下文 / KV Cache / 耗时构成 */
+.inf-details {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 2fr);
+  gap: 2px 20px;
+  padding-top: 5px;
+  border-top: 1px solid #2e2e2e;
+}
+
+.inf-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  min-width: 0;
+}
+
+.inf-block-title {
+  color: #5e6878;
+  font: 11px/1.2 JetBrains Mono, monospace;
+}
+
+.inf-block>b {
+  color: #d5dbe6;
+  font: 600 13px/1.15 JetBrains Mono, monospace;
+}
+
+.inf-block.kv-cache>b {
+  color: #34d399;
+}
+
+.inf-block>em {
+  color: #5e6878;
+  font: 11px/1.2 JetBrains Mono, monospace;
+  font-style: normal;
+}
+
+.inf-thin-bar {
+  display: block;
+  height: 3px;
+  margin: 2px 0 1px;
+  border-radius: 999px;
+  background: #2a2a2a;
+  overflow: hidden;
+}
+
+.inf-thin-bar>span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #10b981, #34d399);
+}
+
+.inf-time-row {
+  display: grid;
+  grid-template-columns: 58px 62px 34px minmax(40px, 1fr);
+  align-items: center;
+  gap: 8px;
+  color: #8490a2;
+  font: 11px/1.2 JetBrains Mono, monospace;
+}
+
+.inf-time-row b {
+  color: #d5dbe6;
+  font-weight: 500;
+}
+
+.inf-time-row em {
+  color: #5e6878;
+  font-style: normal;
+}
+
+.inf-time-row i {
+  display: block;
+  height: 4px;
+  border-radius: 999px;
+  background: #2a2a2a;
+  overflow: hidden;
+}
+
+.inf-time-row i>span {
+  display: block;
+  height: 100%;
+}
+
+.inf-time-row i>span.prefill {
+  background: #38bdf8;
+}
+
+.inf-time-row i>span.decode {
+  background: #ff8c42;
+}
+
+.inf-time-row i>span.queue {
+  background: #a78bfa;
+}
+
+/* 第三层：已完成请求的统计，字号刻意小于当前请求，避免抢第一层的注意力 */
+.inf-session {
+  margin-top: 5px;
+  padding-top: 4px;
+  border-top: 1px solid #2e2e2e;
+}
+
+.inf-session-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 1px;
+  color: #5e6878;
+  font: 11px JetBrains Mono, monospace;
+}
+
+.inf-session-grid {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 2px 14px;
+}
+
+.inf-session-grid b {
+  display: block;
+  color: #8490a2;
+  font: 500 12px/1.15 JetBrains Mono, monospace;
+}
+
+.inf-session-grid small {
+  font-size: 11px;
+}
+
+.inf-session-grid em {
+  color: #5e6878;
+  font: 11px/1.2 JetBrains Mono, monospace;
+  font-style: normal;
+}
+
+.inf-empty-dash {
+  color: #5e6878;
+  font: 18px JetBrains Mono, monospace;
+}
+
+@media (max-width: 1180px) {
+  .inf-kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    row-gap: 10px;
+  }
+
+  .inf-kpi:nth-child(3) {
+    padding-left: 0;
+    border-left: 0;
+  }
+
+  .inf-details {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .inf-timing {
+    grid-column: 1 / -1;
+  }
+}
+
+.inf-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) 150px minmax(0, 1fr);
+  gap: 12px;
+  align-items: baseline;
+  padding: 3px 0;
+  font: 12px/1.7 JetBrains Mono, monospace;
+}
+
+.inf-row-label {
+  color: #5e6b7e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inf-row-value {
+  color: #d5dbe6;
+}
+
+.inf-row.primary .inf-row-value {
+  color: #ffb37a;
+  font-weight: 650;
+}
+
+.inf-row-extra {
+  color: #5e6878;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inf-detail .inf-header {
+  margin-bottom: 0;
+}
+
+.dock-error-badge {
+  margin-left: 8px;
+  padding: 2px 7px;
+  border-radius: 4px;
+  border: 1px solid #613447;
+  color: #ff9cb9;
+  background: #25151d;
+  font: 600 11px JetBrains Mono, monospace;
+  font-style: normal;
+}
+

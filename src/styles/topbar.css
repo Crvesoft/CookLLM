@@ -1,0 +1,435 @@
+/* workspace 为纵向 flex：顶栏固定 + 主区弹性填充；Dock 日志（除"日志"整页外所有页面）作为第三子项参与布局（无悬浮遮挡） */
+.workspace {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.topbar {
+  flex: none;
+  height: 62px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0 0 28px;
+  border-bottom: 1px solid #2e2e2e;
+  background: rgba(9, 13, 18, .84);
+  backdrop-filter: blur(16px);
+  user-select: none;
+}
+
+.breadcrumbs {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #626d80;
+  font-size: 15px;
+}
+
+.breadcrumbs strong {
+  color: #9da6b5;
+  font-weight: 500;
+}
+
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  padding-right: 14px;
+}
+
+/* 顶栏沉浸模式切换按钮 */
+.zen-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  border: 1px solid #383838;
+  background: #1f1f1f;
+  color: #94a3b8;
+  cursor: pointer;
+  transition: all .18s ease;
+}
+
+.zen-toggle-btn:hover {
+  border-color: #444444;
+  color: #eef2f8;
+  background: rgba(255, 255, 255, .05);
+}
+
+.zen-toggle-btn.active {
+  color: #f4b454;
+  border-color: rgba(244, 180, 84, .4);
+  background: rgba(244, 180, 84, .1);
+  box-shadow: 0 0 12px rgba(244, 180, 84, .15);
+}
+
+/* 顶栏一体化启动胶囊：左侧选模/运行态 + 右侧纯图标按钮 ▶/■，统一高度 32px，恒定宽度消除割裂 */
+.launcher-capsule {
+  display: inline-flex;
+  align-items: center;
+  height: 32px;
+  border: 1px solid #383838;
+  border-radius: 8px;
+  background: #1f1f1f;
+  transition: border-color .24s ease, background .24s ease, box-shadow .24s ease;
+}
+
+.launcher-capsule:hover {
+  border-color: #444444;
+}
+
+.launcher-capsule.running {
+  border-color: #2b5948;
+  background: #09130f;
+  box-shadow: 0 0 14px rgba(43, 89, 72, .18);
+}
+
+.launcher-capsule.busy {
+  border-color: #5a4325;
+}
+
+.capsule-select,
+.capsule-model {
+  width: 180px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px 0 10px;
+  box-sizing: border-box;
+}
+
+.capsule-select {
+  position: relative;
+  cursor: pointer;
+}
+
+.capsule-select select {
+  flex: 1;
+  min-width: 0;
+  height: 100%;
+  border: 0;
+  outline: 0;
+  padding: 0 14px 0 0;
+  color: #cbd2de;
+  background: transparent;
+  font-size: 13px;
+  font-weight: 500;
+  appearance: none;
+  cursor: pointer;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color-scheme: dark;
+}
+
+.capsule-select select option,
+select option {
+  background-color: #181c22;
+  color: #cbd5e1;
+}
+
+.capsule-select select option:checked,
+select option:checked {
+  background-color: #272d37;
+  color: #ffffff;
+}
+
+.capsule-select::after {
+  content: "▾";
+  position: absolute;
+  right: 8px;
+  pointer-events: none;
+  color: #687285;
+  font-size: 11px;
+  transition: color .15s ease;
+}
+
+.capsule-select:hover::after {
+  color: #a0aec0;
+}
+
+.capsule-model {
+  cursor: default;
+}
+
+.capsule-model span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 500;
+  color: #cbd2de;
+}
+
+.status-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  transition: background .24s ease, box-shadow .24s ease;
+}
+
+.status-dot.idle {
+  background: #4b5563;
+}
+
+.status-dot.live {
+  background: #36d38b;
+  box-shadow: 0 0 7px rgba(54, 211, 139, .7);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
+.status-dot.busy {
+  background: #f59e0b;
+  box-shadow: 0 0 7px rgba(245, 158, 11, .6);
+  animation: pulse-busy 1s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: .55;
+    transform: scale(1.2);
+  }
+}
+
+@keyframes pulse-busy {
+
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+
+  50% {
+    opacity: .35;
+    transform: scale(1.25);
+  }
+}
+
+.capsule-divider {
+  width: 1px;
+  height: 16px;
+  background: #333333;
+  flex: none;
+  transition: background .24s ease;
+}
+
+.launcher-capsule.running .capsule-divider {
+  background: rgba(43, 89, 72, .6);
+}
+
+.capsule-btn {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 30px;
+  border: 0;
+  border-radius: 0 7px 7px 0;
+  background: transparent;
+  color: #39d98a;
+  cursor: pointer;
+  transition: background .15s ease, color .15s ease, transform .12s ease;
+}
+
+.capsule-btn:hover:not(:disabled) {
+  background: rgba(57, 217, 138, .12);
+  color: #55efa3;
+}
+
+.capsule-btn:active:not(:disabled) {
+  transform: scale(0.92);
+}
+
+.capsule-btn.running {
+  color: #f0648d;
+}
+
+.capsule-btn.running:hover:not(:disabled) {
+  background: rgba(240, 100, 141, .15);
+  color: #ff85a8;
+}
+
+.capsule-btn.busy {
+  color: #f59e0b;
+  opacity: 1 !important;
+  cursor: wait !important;
+}
+
+.capsule-btn.busy.running {
+  color: #f0648d;
+}
+
+.search-box {
+  display: flex;
+  align-items: center;
+  width: 300px;
+  height: 34px;
+  padding: 0 9px;
+  gap: 8px;
+  border: 1px solid #333333;
+  border-radius: 8px;
+  color: #657085;
+  background: #1e1e1e;
+  transition: .18s ease;
+}
+
+.search-box input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: #cbd2df;
+  background: transparent;
+  font-size: 14px;
+}
+
+.search-box kbd {
+  padding: 2px 6px;
+  border: 1px solid #383838;
+  border-radius: 4px;
+  color: #616b7d;
+  background: rgba(255, 255, 255, .03);
+  font: 12px JetBrains Mono, monospace;
+}
+
+.search-box:focus-within {
+  border-color: #ee9b55;
+  box-shadow: 0 0 0 3px rgba(255, 107, 40, .18);
+}
+
+.icon-button,
+.ghost-icon,
+.danger-icon {
+  display: grid;
+  place-items: center;
+  border: 1px solid #333333;
+  border-radius: 8px;
+  background: #1e1e1e;
+  color: #838da0;
+}
+
+.icon-button {
+  width: 34px;
+  height: 34px;
+}
+
+.icon-button:hover,
+.ghost-icon:hover {
+  color: #ffd9ad;
+  border-color: #584129;
+}
+
+.icon-button,
+.ghost-icon,
+.danger-icon .icon-button,
+.ghost-icon {
+  display: grid;
+  place-items: center;
+  border: 1px solid #333333;
+  border-radius: 8px;
+  background: #1e1e1e;
+  color: #838da0;
+}
+
+.icon-button {
+  width: 34px;
+  height: 34px;
+}
+
+.icon-button:hover,
+.ghost-icon:hover {
+  color: #ffd9ad;
+  border-color: #584129;
+}
+
+.avatar {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  border: 1px solid #6a4a29;
+  border-radius: 50%;
+  color: #f3d3ab;
+  background: linear-gradient(145deg, #3d2817, #1c1510);
+  font-size: 14px;
+  font-weight: 700;
+}
+
+/* 自定义标题栏：窗口控制按钮（无边框窗口，贴右上角，通栏高度） */
+.window-controls {
+  flex: none;
+  display: flex;
+  align-self: stretch
+}
+
+.window-controls button {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  border: 0;
+  outline: none;
+  color: #8d97a9;
+  background: transparent;
+  cursor: default;
+  transition: background .12s ease, color .12s ease
+}
+
+.window-controls button.zen-control-btn {
+  cursor: pointer
+}
+
+.window-controls button:hover {
+  color: #e6ebf4;
+  background: #ffffff14
+}
+
+.window-controls button:active {
+  background: #ffffff20
+}
+
+.window-controls button.close:hover {
+  color: #fff;
+  background: #e81123
+}
+
+.window-controls button.close:active {
+  color: #fff;
+  background: #f1707a
+}
+
+/* flex:1 替代固定视口高度；Dock 展开时主区自动让出空间（悬浮抽屉已移除，无需底部留白） */
+.main-content {
+  flex: 1;
+  min-height: 0;
+  padding: 22px 28px;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #3c3c3c transparent;
+}
+
+.primary-button,
+.secondary-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  border-radius: 8px;
+  font-size: 15px;
+  font-weight: 600;
+}
+

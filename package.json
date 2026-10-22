@@ -7,6 +7,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run test:inference",
+    "test:inference": "tsc -p tsconfig.test.json && node -e \"require('fs').writeFileSync('.test-dist/package.json',JSON.stringify({type:'commonjs'}))\" && node .test-dist/test/inference-regression.test.js",
     "preview": "vite preview",
     "tauri": "tauri",
     "release:check": "node scripts/release.mjs check",
@@ -22,12 +25,10 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
-    "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2.8.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
-    "tailwindcss": "^4.3.3",
     "typescript": "~5.7.2",
     "vite": "^6.0.5"
   }

@@ -274,14 +274,11 @@ export function mergeImportedConfig(
     if (incoming.preferredProfileId && !current.preferredProfileId) {
       mergedConfig.preferredProfileId = incoming.preferredProfileId;
     }
-    if (incoming.gpuMonitorEnabled !== undefined && current.gpuMonitorEnabled === undefined) {
-      mergedConfig.gpuMonitorEnabled = incoming.gpuMonitorEnabled;
-    }
-    if (incoming.autoUpdateEnabled !== undefined && current.autoUpdateEnabled === undefined) {
-      mergedConfig.autoUpdateEnabled = incoming.autoUpdateEnabled;
-    }
-    if (incoming.minimizeToTrayOnClose !== undefined && current.minimizeToTrayOnClose === undefined) {
-      mergedConfig.minimizeToTrayOnClose = incoming.minimizeToTrayOnClose;
+    const booleanSettings = ["gpuMonitorEnabled", "exploreSidebarCollapsed", "autoUpdateEnabled", "minimizeToTrayOnClose"] as const;
+    for (const key of booleanSettings) {
+      if (incoming[key] !== undefined && current[key] === undefined) {
+        mergedConfig[key] = incoming[key];
+      }
     }
     if (incoming.shortcuts) {
       mergedConfig.shortcuts = {
