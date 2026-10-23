@@ -5,7 +5,6 @@
   color-scheme: dark;
   font-synthesis: none;
   --bg: #181818;
-  --bg-radial: rgba(255, 107, 40, .045);
   --panel: #202020;
   --panel-2: #242424;
   --panel-3: #1f1f1f;
@@ -21,6 +20,10 @@
   --green: #39d98a;
   --amber: #f4b454;
   --rose: #f0648d;
+  --fav-from: #f59e0b;
+  --fav-mid: #d97706;
+  --fav-to: #b45309;
+  --fav-star: #ffffff;
 }
 
 * {

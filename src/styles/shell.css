@@ -3,15 +3,7 @@
   display: grid;
   grid-template-columns: var(--sidebar-w, 250px) 1fr;
   height: 100vh;
-  background:
-    radial-gradient(
-      ellipse 60% 190px at 78% 270px,
-      rgba(255, 107, 40, 0.045) 0%,
-      rgba(255, 107, 40, 0.028) 35%,
-      rgba(255, 107, 40, 0.012) 65%,
-      rgba(255, 107, 40, 0) 100%
-    ),
-    var(--bg);
+  background: var(--bg);
   transition: grid-template-columns .18s ease;
 }
 
@@ -361,102 +353,139 @@
   letter-spacing: .08em;
 }
 
-/* 左下角 GPU 性能监测 + 功耗合并卡片：GPU 指标区（VRAM/Core sparkline）在上，功耗行居中，健康灯 + 版本号 + 设置沉底 */
+/* 左下角 GPU 性能监测 + 功耗：纯色扁平卡片，仅保留轻边框，无渐变 / 光晕 / 投影 */
 .mini-status {
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 7px;
   margin: 0 2px;
-  padding: 10px;
-  border: 1px solid #333333;
-  border-radius: 10px;
-  background: linear-gradient(145deg, #252525, #1c1c1c);
+  padding: 10px 10px 8px;
+  border: 1px solid #2f2f2f;
+  border-radius: 12px;
+  background: var(--panel);
 }
 
-/* 章节标签 */
 .ms-caption {
-  color: #6f788a;
-  font: 600 10.5px JetBrains Mono, monospace;
-  letter-spacing: .08em;
+  color: #8b96a9;
+  font: 600 10px/1 JetBrains Mono, monospace;
+  letter-spacing: .11em;
   white-space: nowrap;
-  padding-left: 2px;
+  padding-left: 1px;
 }
 
-/* GPU 指标视图（侧栏内纵向堆叠）：左标题/数值 + 右小网格迷你图 */
-.mini-status .gm-view {
+/* 指标行：数值左、80×36 网格迷你图右 */
+.ms-metric {
   display: grid;
-  grid-template-columns: auto 56px;
+  grid-template-columns: minmax(0, 1fr) 80px;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
-  padding: 3px 7px;
-  border: 1px solid #333333;
-  border-radius: 7px;
-  background: #202020;
 }
 
-.mini-status .gm-meta {
+.ms-metric + .ms-metric {
+  padding-top: 7px;
+  border-top: 1px solid rgba(255, 255, 255, .07);
+}
+
+.ms-meta {
   display: flex;
   flex-direction: column;
-  gap: 1px;
+  gap: 3px;
   min-width: 0;
-}
-
-/* 侧栏内迷你图尺寸 */
-.mini-status .ms-spark {
-  width: 56px;
-  height: 30px;
-  display: block;
-  overflow: hidden;
 }
 
 .ms-view-title {
+  display: flex;
+  align-items: center;
+  gap: 5px;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
-  color: #8b95a7;
-  font: 600 10px JetBrains Mono, monospace;
-  letter-spacing: .06em;
+  color: #8b96a9;
+  font: 600 9.5px/1 JetBrains Mono, monospace;
+  letter-spacing: .1em;
+  text-transform: uppercase;
 }
 
 .ms-val {
-  display: block;
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
-  color: #c6cedb;
-  font: 600 12px JetBrains Mono, monospace;
+  color: #e8edf5;
+  font-variant-numeric: tabular-nums;
+}
+
+.ms-val b {
+  font: 600 17px/1 JetBrains Mono, monospace;
+  letter-spacing: -.02em;
+}
+
+.ms-unit {
+  color: #8b96a9;
+  font: 500 9px/1 JetBrains Mono, monospace;
+  letter-spacing: .03em;
 }
 
 /* 网格迷你图：尺寸由宿主容器控制；网格背景始终渲染 */
 .ms-spark {
-  width: 100%;
-  height: 66px;
+  width: 80px;
+  height: 36px;
   display: block;
-  overflow: hidden;
+  overflow: visible;
+}
+
+/* 曲线下方纯色填充：低透明度，不加渐变 */
+.ms-area {
+  fill: rgba(251, 191, 36, .14);
 }
 
 .ms-grid line {
-  stroke: rgba(255, 255, 255, .08);
+  stroke: rgba(255, 255, 255, .055);
 }
 
-/* 功耗行：GPU 指标区下方，健康灯 + 版本号 + 设置沉底至其右端 */
+.ms-grid line.edge {
+  stroke: rgba(255, 255, 255, .12);
+}
+
+.ms-spark polyline {
+  fill: none;
+  stroke: #fbbf24;
+  stroke-width: 1.3;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.ms-dot {
+  fill: #fbbf24;
+}
+
+/* 底栏：功耗 + 健康灯 / 版本号 / 主题切换 */
 .ms-power {
   display: flex;
   align-items: center;
   gap: 6px;
   min-width: 0;
-  color: #5f6a7c;
-  font: 500 11px JetBrains Mono, monospace;
+  padding-top: 7px;
+  border-top: 1px solid rgba(255, 255, 255, .07);
+  color: #8b96a9;
+  font: 500 9.5px/1 JetBrains Mono, monospace;
   white-space: nowrap;
 }
 
-/* GPU 监测关闭时仅保留此行：不再套独立边框 / 底色，直接落在卡片单框内（避免双层描边） */
+.ms-power > svg {
+  flex: none;
+  color: #f97316;
+  opacity: .9;
+}
+
+/* GPU 监测关闭时仅保留此行：不再额外分隔 / 内边距 */
 .ms-power-only {
   font-size: 12px;
   gap: 8px;
+  padding-top: 0;
+  border-top: 0;
 }
 
 .ms-state-text {
@@ -471,15 +500,15 @@
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-weight: 600;
-  color: #8b95a7;
+  color: #e8edf5;
+  font: 600 10.5px/1 JetBrains Mono, monospace;
 }
 
-/* 健康灯（功耗行右端）：灰 = 未启动，绿 = 运行中，玫红闪烁 = 服务异常 */
+/* 健康灯（底栏右端）：灰 = 未启动，绿 = 运行中，玫红闪烁 = 服务异常 */
 .ms-health {
   flex: none;
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: #4a5468;
 }
@@ -499,7 +528,7 @@
 .ms-app-meta {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
   flex: none;
   margin-left: auto;
 }
@@ -509,98 +538,27 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   padding: 0;
-  border: 1px solid #383838;
+  border: 1px solid transparent;
   border-radius: 6px;
-  color: #8b95a7;
-  background: #202020;
+  color: #8b96a9;
+  background: transparent;
   cursor: pointer;
   transition: .15s ease;
 }
 
 .ms-theme-toggle:hover {
   color: #ffd9ad;
-  border-color: #4a5a70;
-  background: #222222;
+  border-color: rgba(249, 115, 22, .45);
+  background: rgba(249, 115, 22, .08);
 }
 
 .ms-version {
-  color: #677184;
-  font: 500 10.5px JetBrains Mono, monospace;
+  color: #8b96a9;
+  font: 500 9.5px/1 JetBrains Mono, monospace;
   white-space: nowrap;
-}
-
-.ms-spark.mem polygon {
-  fill: rgba(90, 167, 247, .26);
-}
-
-.ms-spark.mem polyline {
-  stroke: #5aa7f7;
-  stroke-width: 1;
-  fill: none;
-}
-
-.ms-spark.core polygon {
-  fill: rgba(70, 208, 161, .26);
-}
-
-.ms-spark.core polyline {
-  stroke: #46d0a1;
-  stroke-width: 1;
-  fill: none;
-}
-
-/* GPU 性能监测指标视图通用样式（侧栏卡片内使用，尺寸由 .mini-status 上下文控制） */
-.gpu-monitor {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  min-width: 0;
-}
-
-.gm-caption {
-  color: #6f788a;
-  font: 600 10.5px JetBrains Mono, monospace;
-  letter-spacing: .08em;
-  white-space: nowrap;
-}
-
-.gm-view {
-  display: grid;
-  grid-template-columns: auto 56px;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-  padding: 3px 7px;
-  border: 1px solid #333333;
-  border-radius: 7px;
-  background: #202020;
-}
-
-.gm-meta {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-
-.gpu-monitor .ms-spark {
-  width: 56px;
-  height: 30px;
-}
-
-.gm-state {
-  margin-left: 4px;
-  font-size: 10px;
-  font-weight: 500;
-  color: #8b95a7;
-  white-space: nowrap;
-}
-
-.gm-view.live .gm-state {
-  color: #eba45c;
 }
 
 .theme-icon-button {

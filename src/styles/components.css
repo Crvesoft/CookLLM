@@ -135,10 +135,9 @@
 /* ---- 亮色主题 ---- */
 [data-theme="light"] {
   color: #141a24;
-  background: #f2f4f9;
+  background: #f7f8fa;
   color-scheme: light;
-  --bg: #f2f4f9;
-  --bg-radial: rgba(255, 107, 40, .035);
+  --bg: #f7f8fa;
   --panel: #ffffff;
   --panel-2: #f6f7fb;
   --panel-3: #eef1f6;
@@ -154,28 +153,20 @@
   --green: #1e9e63;
   --amber: #d88a1d;
   --rose: #d34f78;
+  --fav-from: #fbbf24;
+  --fav-mid: #f97316;
+  --fav-to: #ea580c;
+  --fav-star: #ffffff;
 }
 
 [data-theme="light"] body {
   color: #141a24;
-  background: #f2f4f9;
-}
-
-[data-theme="light"] .app-shell {
-  background:
-    radial-gradient(
-      ellipse 60% 190px at 78% 270px,
-      rgba(255, 107, 40, 0.035) 0%,
-      rgba(255, 107, 40, 0.02) 35%,
-      rgba(255, 107, 40, 0.008) 65%,
-      rgba(255, 107, 40, 0) 100%
-    ),
-    var(--bg);
+  background: #f7f8fa;
 }
 
 [data-theme="light"] .sidebar {
   border-color: #e3e7ef;
-  background: linear-gradient(180deg, #fbfcfe 0%, #eef1f7 100%);
+  background: #f8f9fc;
 }
 
 [data-theme="light"] .topbar {
@@ -499,10 +490,9 @@
   color: #5b6474;
 }
 
-/* 紧凑状态卡亮色套：白卡 + 浅边框，绿点 / 玫红对齐 service-toggle 语义 */
+/* 紧凑状态卡亮色套：纯白扁平卡片，绿点 / 玫红对齐 service-toggle 语义 */
 [data-theme="light"] .mini-status {
-  border-color: #e3e7ef;
-  background: linear-gradient(145deg, #ffffff, #f3f5fa);
+  border-color: #e4e8f0;
 }
 
 [data-theme="light"] .mini-status.running .ms-health {
@@ -515,27 +505,22 @@
   box-shadow: 0 0 6px rgba(211, 79, 120, .4);
 }
 
-/* 紧凑卡亮色套：状态后缀 / 版本号淡灰，视图数值加深一档，迷你图蓝绿 + 网格适配白卡 */
-[data-theme="light"] .gm-view {
-  border-color: #e0e5ee;
-  background: #f6f8fb;
-}
-
-[data-theme="light"] .gm-state,
+/* 亮色套：标签 / 单位淡灰，主数值加深，迷你图暖金 + 网格适配白卡 */
+[data-theme="light"] .ms-caption,
+[data-theme="light"] .ms-view-title,
+[data-theme="light"] .ms-unit,
 [data-theme="light"] .ms-version {
-  color: #6b7384;
+  color: #707c8f;
 }
 
-[data-theme="light"] .gm-caption {
-  color: #8a93a3;
+[data-theme="light"] .ms-metric + .ms-metric,
+[data-theme="light"] .ms-power {
+  border-color: #e8ecf3;
 }
 
-[data-theme="light"] .ms-view-title {
-  color: #6b7384;
-}
-
-[data-theme="light"] .ms-val {
-  color: #414a58;
+[data-theme="light"] .ms-val,
+[data-theme="light"] .ms-power b {
+  color: #1c2430;
 }
 
 [data-theme="light"] .ms-power {
@@ -544,8 +529,8 @@
 
 [data-theme="light"] .ms-theme-toggle {
   color: #6b7384;
-  border-color: #dde3ec;
-  background: #ffffff;
+  border-color: transparent;
+  background: transparent;
 }
 
 [data-theme="light"] .ms-theme-toggle:hover {
@@ -558,32 +543,24 @@
   color: #414a58;
 }
 
-[data-theme="light"] .ms-power b {
-  color: #6b7384;
-}
-
-[data-theme="light"] .gm-view.live .gm-state {
-  color: #bd5c16;
-}
-
 [data-theme="light"] .ms-grid line {
-  stroke: rgba(15, 35, 70, .09);
+  stroke: rgba(15, 35, 70, .07);
 }
 
-[data-theme="light"] .ms-spark.mem polygon {
-  fill: rgba(47, 127, 212, .22);
+[data-theme="light"] .ms-grid line.edge {
+  stroke: rgba(15, 35, 70, .13);
 }
 
-[data-theme="light"] .ms-spark.mem polyline {
-  stroke: #2f7fd4;
+[data-theme="light"] .ms-area {
+  fill: rgba(224, 133, 15, .12);
 }
 
-[data-theme="light"] .ms-spark.core polygon {
-  fill: rgba(47, 174, 124, .22);
+[data-theme="light"] .ms-spark polyline {
+  stroke: #e0850f;
 }
 
-[data-theme="light"] .ms-spark.core polyline {
-  stroke: #2fae7c;
+[data-theme="light"] .ms-dot {
+  fill: #e0850f;
 }
 
 [data-theme="light"] .runtime-meta span {
@@ -1294,72 +1271,38 @@
   top: 0;
   left: 0;
   z-index: 2;
-  width: 24px;
-  height: 24px;
-  display: grid;
-  place-items: center;
-  background: linear-gradient(135deg, #ff8c38 0%, #e65100 100%);
-  border-radius: 11px 0 10px 0;
-  box-shadow: 0 2px 6px rgba(230, 81, 0, .35), inset 0 1px 0 rgba(255, 255, 255, .3);
+  width: 26px;
+  height: 26px;
+  background: linear-gradient(135deg, var(--fav-from) 0%, var(--fav-mid) 70%, var(--fav-to) 100%);
+  border-radius: 12px 0 0 0;
+  clip-path: path("M 0 12 A 12 12 0 0 1 12 0 L 26 0 L 0 26 Z");
+  opacity: .8;
   pointer-events: none;
+  animation: corner-flag-pulse 2.4s ease-in-out infinite;
   transition: transform .18s ease, opacity .18s ease;
   transform-origin: top left;
-}
-
-.corner-flag svg {
-  display: block;
-  color: #ffffff;
-  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .25));
-}
-
-.model-card:hover .corner-flag,
-.profile-card:hover .corner-flag {
-  transform: scale(1.06);
-}
-
-.model-card.selecting .corner-flag,
-.profile-card.selecting .corner-flag {
-  opacity: 0;
-  transform: scale(.6);
-}
-
-[data-theme="light"] .corner-flag {
-  background: linear-gradient(135deg, #ffa02e 0%, #ff4d17 100%);
-  box-shadow: 0 2px 6px rgba(255, 77, 23, .3), inset 0 1px 0 rgba(255, 255, 255, .45);
-}
-
-.corner-flag {
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 2;
-  width: 30px;
-  height: 30px;
-  background: linear-gradient(135deg, rgba(255, 215, 163, .75) 0%, rgba(255, 107, 40, .6) 55%, rgba(199, 112, 42, .48) 100%);
-  border-radius: 12px 0 0 0;
-  clip-path: polygon(0 0, 100% 0, 0 100%);
-  pointer-events: none;
 }
 
 .corner-flag svg {
   position: absolute;
   top: 4px;
   left: 4px;
+  width: 10px;
+  height: 10px;
   display: block;
-  color: rgba(255, 255, 255, .9);
-  filter: drop-shadow(0 2px 4px rgba(199, 112, 42, .35));
+  color: var(--fav-star);
+  transform-origin: center center;
+  animation: corner-star-breathe 2.4s ease-in-out infinite;
 }
 
 @keyframes corner-flag-pulse {
 
   0%,
   100% {
-    opacity: 0.82;
     filter: drop-shadow(0 0 2px rgba(245, 158, 11, 0.4));
   }
 
   50% {
-    opacity: 1;
     filter: drop-shadow(0 0 8px rgba(251, 191, 36, 0.95)) drop-shadow(0 0 14px rgba(245, 158, 11, 0.45));
   }
 }
@@ -1378,34 +1321,6 @@
   }
 }
 
-.corner-flag {
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 2;
-  width: 24px;
-  height: 24px;
-  background: linear-gradient(135deg, #f59e0b 0%, #d97706 70%, #b45309 100%);
-  border-radius: 12px 0 0 0;
-  clip-path: polygon(0 0, 100% 0, 0 100%);
-  pointer-events: none;
-  animation: corner-flag-pulse 2.4s ease-in-out infinite;
-  transition: transform .18s ease, opacity .18s ease;
-  transform-origin: top left;
-}
-
-.corner-flag svg {
-  position: absolute;
-  top: 3.5px;
-  left: 3.5px;
-  width: 10px;
-  height: 10px;
-  display: block;
-  color: #ffffff;
-  transform-origin: center center;
-  animation: corner-star-breathe 2.4s ease-in-out infinite;
-}
-
 .model-card:hover .corner-flag,
 .profile-card:hover .corner-flag {
   transform: scale(1.06);
@@ -1415,10 +1330,6 @@
 .profile-card.selecting .corner-flag {
   opacity: 0;
   transform: scale(.6);
-}
-
-[data-theme="light"] .corner-flag {
-  background: linear-gradient(135deg, #fbbf24 0%, #ea580c 100%);
 }
 
 .model-menu-wrap .ghost-icon {

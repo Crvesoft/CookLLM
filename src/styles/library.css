@@ -88,13 +88,17 @@
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #f59e0b;
-  color: #242424;
+  background: linear-gradient(135deg, var(--fav-from) 0%, var(--fav-mid) 70%, var(--fav-to) 100%);
+  color: var(--fav-star);
   display: flex;
   align-items: center;
   justify-content: center;
-  box-shadow: 0 1px 4px rgba(0, 0, 0, .4);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
   z-index: 3;
+}
+
+.model-symbol-star svg {
+  color: var(--fav-star);
 }
 
 .model-symbol.compact {
@@ -504,9 +508,7 @@
 }
 
 [data-theme="light"] .model-symbol-star {
-  color: #ffffff;
-  background: #f59e0b;
-  box-shadow: 0 1px 4px rgba(245, 158, 11, .45);
+  box-shadow: 0 1px 3px rgba(190, 120, 60, .35);
 }
 
 [data-theme="light"] .model-row-title h3,

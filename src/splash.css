@@ -1,7 +1,7 @@
 /* 启动 splash：JS 未就绪前避免白屏/黑屏，React 挂载后 #splash 被完整替换 */
 html, body {
   margin: 0;
-  background: #f2f4f9;
+  background: #f7f8fa;
   color-scheme: light;
 }
 
@@ -12,7 +12,7 @@ html, body {
   align-items: center;
   justify-content: center;
   gap: 18px;
-  background: radial-gradient(ellipse 60% 190px at 78% 270px, rgba(255, 107, 40, 0.035) 0%, rgba(255, 107, 40, 0.015) 50%, rgba(255, 107, 40, 0) 100%), #f2f4f9;
+  background: radial-gradient(ellipse 60% 190px at 78% 270px, rgba(255, 107, 40, 0.035) 0%, rgba(255, 107, 40, 0.015) 50%, rgba(255, 107, 40, 0) 100%), #f7f8fa;
   font-family: Inter, "Noto Sans SC", system-ui, sans-serif;
 }
 
