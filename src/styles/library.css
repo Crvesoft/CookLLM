@@ -471,7 +471,7 @@
 /* ---- 浅色主题适配 ---- */
 [data-theme="light"] .view-mode-toggle {
   border-color: #d8dfeb;
-  background: #f1f4f9;
+  background: #ffffff;
 }
 
 [data-theme="light"] .view-mode-btn {
@@ -480,14 +480,14 @@
 
 [data-theme="light"] .view-mode-btn:hover {
   color: #1e293b;
-  background: rgba(0, 0, 0, .04);
+  background: #f1f4f9;
 }
 
 [data-theme="light"] .view-mode-btn.active {
-  color: #b8471a;
-  background: #ffffff;
-  border-color: rgba(255, 107, 40, .4);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, .08);
+  color: #b96a10;
+  background: #fdf1dd;
+  border: 0;
+  box-shadow: none;
 }
 
 [data-theme="light"] .model-row,
@@ -552,6 +552,12 @@
   background: #fff3e6;
   border-color: #f2ba82;
   color: #b96a10;
+}
+
+[data-theme="light"] .launch-split.compact .launch-button.active {
+  background: #f4faf6;
+  border-color: #9dd8bd;
+  color: #0e7a4d;
 }
 
 [data-theme="light"] .launch-split.compact .profile-select select {

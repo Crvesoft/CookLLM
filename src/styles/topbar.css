@@ -8,6 +8,9 @@
 }
 
 .topbar {
+  position: relative;
+  /* 高于页面卡片/吸顶栏，保证胶囊下拉不被内容遮挡 */
+  z-index: 150;
   flex: none;
   height: 62px;
   display: flex;
@@ -69,8 +72,9 @@
   box-shadow: 0 0 12px rgba(244, 180, 84, .15);
 }
 
-/* 顶栏一体化启动胶囊：左侧选模/运行态 + 右侧纯图标按钮 ▶/■，统一高度 32px，恒定宽度消除割裂 */
+/* 顶栏一体化启动胶囊：左侧选模/运行态 + 右侧纯图标按钮 ▶/⏻，统一高度 32px，恒定宽度消除割裂 */
 .launcher-capsule {
+  position: relative;
   display: inline-flex;
   align-items: center;
   height: 32px;
@@ -94,6 +98,23 @@
   border-color: #5a4325;
 }
 
+/* 异常态：红色只用于服务异常，不再与停止动作共用 */
+.launcher-capsule.abnormal {
+  border-color: #6a3041;
+  background: #170d11;
+  box-shadow: 0 0 14px rgba(220, 60, 100, .16);
+}
+
+.launcher-capsule.abnormal .capsule-divider {
+  background: rgba(240, 100, 141, .45);
+}
+
+.launcher-capsule.abnormal .status-dot {
+  background: #ef5d82;
+  box-shadow: 0 0 7px rgba(239, 93, 130, .65);
+  animation: pulse-dot 2s ease-in-out infinite;
+}
+
 .capsule-select,
 .capsule-model {
   width: 180px;
@@ -107,51 +128,130 @@
 
 .capsule-select {
   position: relative;
-  cursor: pointer;
 }
 
-.capsule-select select {
+.capsule-picker-trigger {
   flex: 1;
   min-width: 0;
   height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
   border: 0;
-  outline: 0;
-  padding: 0 14px 0 0;
-  color: #cbd2de;
   background: transparent;
+  color: #cbd2de;
   font-size: 13px;
   font-weight: 500;
-  appearance: none;
+  text-align: left;
   cursor: pointer;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color-scheme: dark;
 }
 
-.capsule-select select option,
+.capsule-picker-trigger:disabled {
+  cursor: default;
+  opacity: .6;
+}
+
+.capsule-picker-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.capsule-chevron {
+  flex: none;
+  color: #687285;
+  transition: transform .18s ease, color .15s ease;
+}
+
+.capsule-picker-trigger:hover .capsule-chevron {
+  color: #a0aec0;
+}
+
+.capsule-chevron.open {
+  transform: rotate(180deg);
+}
+
+/* 其余原生下拉的暗色选项 */
 select option {
   background-color: #181c22;
   color: #cbd5e1;
 }
 
-.capsule-select select option:checked,
 select option:checked {
   background-color: #272d37;
   color: #ffffff;
 }
 
-.capsule-select::after {
-  content: "▾";
+/* 模型下拉：与胶囊同宽对齐，单行截断 + 选中态 */
+.model-picker-menu {
   position: absolute;
-  right: 8px;
-  pointer-events: none;
-  color: #687285;
-  font-size: 11px;
-  transition: color .15s ease;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  max-height: 336px;
+  overflow-y: auto;
+  padding: 5px;
+  background: #1e1e24;
+  border: 1px solid #383842;
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, .5);
+  z-index: 200;
+  animation: modelPickerIn .14s cubic-bezier(.16, 1, .3, 1);
 }
 
-.capsule-select:hover::after {
-  color: #a0aec0;
+@keyframes modelPickerIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.model-picker-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 30px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #cbd5e1;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: left;
+  cursor: pointer;
+}
+
+.model-picker-name {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-picker-item:hover {
+  background: #2a2a34;
+  color: #ffffff;
+}
+
+.model-picker-item.selected {
+  background: #2b1c10;
+  color: #ffd3a0;
+}
+
+.model-picker-item .opt-check {
+  flex: none;
+  color: #ffd3a0;
 }
 
 .capsule-model {
@@ -241,27 +341,28 @@ select option:checked {
   border: 0;
   border-radius: 0 7px 7px 0;
   background: transparent;
-  color: #39d98a;
+  color: #64e6ad;
   cursor: pointer;
   transition: background .15s ease, color .15s ease, transform .12s ease;
 }
 
 .capsule-btn:hover:not(:disabled) {
-  background: rgba(57, 217, 138, .12);
-  color: #55efa3;
+  background: rgba(100, 230, 173, .10);
+  color: #8ff0c4;
 }
 
 .capsule-btn:active:not(:disabled) {
   transform: scale(0.92);
 }
 
+/* 动作图标使用与卡片启停按钮一致的绿色，状态仍由胶囊与状态点表达 */
 .capsule-btn.running {
-  color: #f0648d;
+  color: #64e6ad;
 }
 
 .capsule-btn.running:hover:not(:disabled) {
-  background: rgba(240, 100, 141, .15);
-  color: #ff85a8;
+  background: rgba(100, 230, 173, .10);
+  color: #8ff0c4;
 }
 
 .capsule-btn.busy {
@@ -271,7 +372,7 @@ select option:checked {
 }
 
 .capsule-btn.busy.running {
-  color: #f0648d;
+  color: #f59e0b;
 }
 
 .search-box {

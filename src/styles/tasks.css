@@ -992,7 +992,7 @@
 .view-mode-btn.active {
   color: #ffd9ad;
   background: #221811;
-  border: 1px solid rgba(255, 107, 40, .35);
-  box-shadow: 0 1px 4px rgba(0, 0, 0, .3);
+  border: 0;
+  box-shadow: none;
 }
 

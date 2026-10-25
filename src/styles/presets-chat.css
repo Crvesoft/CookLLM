@@ -413,19 +413,12 @@
   color: #df708f
 }
 
-.about-layout {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  justify-content: space-between;
-  margin: 0 0 6px
-}
-
 .about-update-control {
   display: flex;
   align-items: center;
   gap: 14px;
-  flex: none
+  flex: none;
+  margin-left: auto
 }
 
 .auto-update-toggle {

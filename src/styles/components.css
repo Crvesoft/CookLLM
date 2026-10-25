@@ -559,10 +559,6 @@
   stroke: #e0850f;
 }
 
-[data-theme="light"] .ms-dot {
-  fill: #e0850f;
-}
-
 [data-theme="light"] .runtime-meta span {
   color: #6b7384;
   border-color: #dde2ea;
@@ -607,29 +603,65 @@
   border-color: #f0c08a;
 }
 
-[data-theme="light"] .capsule-select select {
-  color: #1f2937;
-  color-scheme: light;
+[data-theme="light"] .launcher-capsule.abnormal {
+  border-color: #efb3c4;
+  background: #fdf5f7;
+  box-shadow: 0 0 14px rgba(200, 50, 90, .10);
 }
 
-[data-theme="light"] .capsule-select select option,
+[data-theme="light"] .launcher-capsule.abnormal .capsule-divider {
+  background: #f3d3dc;
+}
+
+[data-theme="light"] .launcher-capsule.abnormal .status-dot {
+  background: #d23b63;
+  box-shadow: 0 0 7px rgba(210, 59, 99, .55);
+}
+
 [data-theme="light"] select option {
   background-color: #ffffff;
   color: #1f2937;
 }
 
-[data-theme="light"] .capsule-select select option:checked,
 [data-theme="light"] select option:checked {
   background-color: #f1f5f9;
   color: #0f172a;
 }
 
-[data-theme="light"] .capsule-select::after {
+[data-theme="light"] .capsule-picker-trigger {
+  color: #1f2937;
+}
+
+[data-theme="light"] .capsule-chevron {
   color: #94a3b8;
 }
 
-[data-theme="light"] .capsule-select:hover::after {
+[data-theme="light"] .capsule-picker-trigger:hover .capsule-chevron {
   color: #475569;
+}
+
+[data-theme="light"] .model-picker-menu {
+  background: #ffffff;
+  border-color: #e2e8f0;
+  box-shadow: 0 12px 32px rgba(15, 23, 42, .14), 0 2px 6px rgba(15, 23, 42, .05);
+}
+
+[data-theme="light"] .model-picker-item {
+  color: #334155;
+}
+
+[data-theme="light"] .model-picker-item:hover {
+  background: #f1f5f9;
+  color: #0f172a;
+}
+
+[data-theme="light"] .model-picker-item.selected {
+  background: #fdf1dd;
+  color: #b96a10;
+}
+
+[data-theme="light"] .model-picker-item .opt-check {
+  color: #b96a10;
 }
 
 [data-theme="light"] .capsule-model span {
@@ -653,17 +685,17 @@
 }
 
 [data-theme="light"] .capsule-btn:hover:not(:disabled) {
-  background: #e6f6ee;
-  color: #06764d;
+  background: #eaf7f1;
+  color: #0b6b43;
 }
 
 [data-theme="light"] .capsule-btn.running {
-  color: #c0385e;
+  color: #0e7a4d;
 }
 
 [data-theme="light"] .capsule-btn.running:hover:not(:disabled) {
-  background: #fbe9ef;
-  color: #a12b4b;
+  background: #e4f4ec;
+  color: #0b6b43;
 }
 
 [data-theme="light"] .capsule-btn.busy {
@@ -671,7 +703,7 @@
 }
 
 [data-theme="light"] .capsule-btn.busy.running {
-  color: #c0385e;
+  color: #d97706;
 }
 
 /* 弱化工具栏动作按钮亮色套 */

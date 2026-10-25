@@ -197,7 +197,7 @@ export interface AppConfig {
   llamacppDir?: string;
   /** 模型存储根目录（社区下载 / 自动扫描，缺省为应用数据目录下的 models） */
   modelsDir?: string;
-  /** 启动时自动检测应用更新（默认开启） */
+  /** 自动检测应用更新（启动后每 30 分钟，默认开启） */
   autoUpdateEnabled?: boolean;
   /** 关闭主窗口时是否最小化到托盘（默认开启） */
   minimizeToTrayOnClose?: boolean;

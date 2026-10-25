@@ -52,18 +52,16 @@ export default function AboutCard({ config, appUpdate, checkingUpdate, onCheckUp
       </div>
       <div className="settings-card-body">
         <p className="about-desc">{t("st.aboutDesc")}</p>
-        <div className="about-layout">
-          <div className="about-info">
-            <span className="app-version-badge">{appVersion ? "v" + appVersion : "--"}{updateAvailable && <em className="version-new-badge">NEW</em>}</span>
-            <button className="repo-link" title={PROJECT_URL} onClick={() => void openExternal(PROJECT_URL)}><Github size={13} />{APP_REPO}</button>
-            <button className="ghost-link" onClick={() => onLog("diagnostics: UI event bridge is working", "system")}><Activity size={12} />{t("sendTestLog")}</button>
-          </div>
+        <div className="about-info">
+          <span className="app-version-badge">{appVersion ? "v" + appVersion : "--"}{updateAvailable && <em className="version-new-badge">NEW</em>}</span>
+          <button className="repo-link" title={PROJECT_URL} onClick={() => void openExternal(PROJECT_URL)}><Github size={13} />{APP_REPO}</button>
+          <button className="ghost-link" onClick={() => onLog("diagnostics: UI event bridge is working", "system")}><Activity size={12} />{t("sendTestLog")}</button>
           <div className="about-update-control">
             <label className="auto-update-toggle">
+              <span>{t("st.autoUpdate")}</span>
               <button className={cn("switch", autoUpdateEnabled && "on")} role="switch" aria-checked={autoUpdateEnabled} aria-label={t("st.autoUpdate")} onClick={() => void onPersist({ ...config, autoUpdateEnabled: !autoUpdateEnabled }, t("toast.settingsSaved"))}>
                 <span className="switch-knob" />
               </button>
-              <span>{t("st.autoUpdate")}</span>
             </label>
             <button className="secondary-button compact" disabled={checkingUpdate} onClick={() => void runUpdateCheck()}>
               {checkingUpdate ? <Loader2 size={14} className="spin" /> : updateCheckDone ? <Check size={14} /> : <RefreshCw size={14} />}

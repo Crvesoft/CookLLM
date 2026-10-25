@@ -9,14 +9,22 @@ import {
   Save,
   Trash2,
   X,
-  Sparkles,
+  GitBranch,
+  Wrench,
   Loader2,
 } from "lucide-react";
 import type { LlamaEngine } from "../types";
 import { useI18n } from "../i18n";
 import type { EngineType } from "../types";
 import { cn, formatEngineBackend, detectEngineType, getEngineTypeDisplay } from "../utils";
-import { getLlamaCppStatus, pickServerFile, revealInFolder, type LlamaCppLocalStatus } from "../tauri";
+import {
+  getLlamaCppStatus,
+  pickServerDir,
+  pickServerFile,
+  revealInFolder,
+  type LlamaCppLocalStatus,
+  type ServerCandidate,
+} from "../tauri";
 import ConfirmModal from "./ConfirmModal";
 
 interface EngineHubModalProps {
@@ -48,16 +56,17 @@ export default function EngineHubModal({
   // 详情编辑表单状态
   const [draftName, setDraftName] = useState("");
   const [draftPath, setDraftPath] = useState("");
-  const [draftBackend, setDraftBackend] = useState("cuda");
   const [probing, setProbing] = useState(false);
   const [probeStatus, setProbeStatus] = useState<LlamaCppLocalStatus | null>(null);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [dirCandidates, setDirCandidates] = useState<ServerCandidate[] | null>(null);
 
   // 打开弹窗瞬间重置选中项为活跃引擎，弹窗开启期间保持当前浏览选择
   const prevOpenRef = useRef(false);
   useEffect(() => {
     if (open && !prevOpenRef.current) {
       setQuery("");
+      setDirCandidates(null);
       const initial = activeEngineId || engines[0]?.id || "";
       setSelectedId(initial);
     }
@@ -103,8 +112,8 @@ export default function EngineHubModal({
     if (selectedEngine) {
       setDraftName(selectedEngine.name);
       setDraftPath(selectedEngine.path);
-      setDraftBackend(selectedEngine.backend || "cuda");
       setSaveSuccess(false);
+      setDirCandidates(null);
 
       if (selectedEngine.path) {
         setProbing(true);
@@ -133,7 +142,6 @@ export default function EngineHubModal({
     selectedEngine &&
       (draftName.trim() !== selectedEngine.name ||
         draftPath.trim() !== selectedEngine.path ||
-        draftBackend !== (selectedEngine.backend || "cuda") ||
         probeChanged),
   );
 
@@ -145,14 +153,52 @@ export default function EngineHubModal({
       ...selectedEngine,
       name: draftName.trim() || selectedEngine.name,
       path: draftPath.trim(),
-      backend: draftBackend,
-      cudaVersion: draftBackend === "cuda" ? (probeStatus?.cudaVersion || selectedEngine.cudaVersion) : undefined,
+      cudaVersion: probeStatus?.cudaVersion || selectedEngine.cudaVersion,
       version: probeStatus?.localVersion || selectedEngine.version,
       engineType: inferredType,
     };
     onSaveEngine(updated);
+    setDirCandidates(null);
     setSaveSuccess(true);
     setTimeout(() => setSaveSuccess(false), 1800);
+  };
+
+  // 应用新的可执行文件路径并重新探测运行时信息
+  const applyDraftPath = async (targetPath: string) => {
+    setDraftPath(targetPath);
+    setProbing(true);
+    setProbeStatus(null);
+    try {
+      const st = await getLlamaCppStatus(targetPath);
+      setProbeStatus(st);
+    } catch {
+      setProbeStatus(null);
+    } finally {
+      setProbing(false);
+    }
+  };
+
+  // 选择目录并自动识别其中的 server 程序
+  const handlePickDir = async () => {
+    try {
+      const result = await pickServerDir();
+      if (result.status === "selected" && result.selectedPath) {
+        setDirCandidates(null);
+        await applyDraftPath(result.selectedPath);
+      } else if (result.status === "multiple") {
+        setDirCandidates(result.candidates);
+        const first = result.candidates[0];
+        if (first) await applyDraftPath(first.path);
+      } else if (result.status === "none") {
+        const manual = await pickServerFile();
+        if (manual) {
+          setDirCandidates(null);
+          await applyDraftPath(manual);
+        }
+      }
+    } catch {
+      setProbing(false);
+    }
   };
 
   // 浏览并更换服务端执行程序
@@ -160,21 +206,23 @@ export default function EngineHubModal({
     try {
       const manual = await pickServerFile();
       if (manual) {
-        setDraftPath(manual);
-        setProbing(true);
-        const st = await getLlamaCppStatus(manual);
-        setProbeStatus(st);
-        if (st?.localBackend) setDraftBackend(st.localBackend);
-        setProbing(false);
+        setDirCandidates(null);
+        await applyDraftPath(manual);
       }
     } catch {
       setProbing(false);
     }
   };
 
+  const handleSelectCandidate = (candidate: ServerCandidate) => {
+    setDirCandidates(null);
+    void applyDraftPath(candidate.path);
+  };
+
   if (!open) return null;
 
   const isActive = selectedEngine?.id === activeEngineId;
+  const hasDirCandidates = Boolean(dirCandidates && dirCandidates.length > 0);
 
   return (
     <div
@@ -182,26 +230,38 @@ export default function EngineHubModal({
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div className="engine-hub-modal" role="dialog" aria-modal="true">
-        {/* 顶部标题栏 */}
         <header className="engine-hub-header">
-          <div className="engine-hub-header-title">
-            <Cpu size={18} className="engine-hub-header-icon" />
+          <div className="engine-hub-title-icon">
+            <Cpu size={17} />
+          </div>
+          <div className="engine-hub-header-copy">
             <h2>{t("llama.hubTitle")}</h2>
           </div>
-          <button
-            type="button"
-            className="ghost-icon compact"
-            aria-label={t("ariaClose")}
-            onClick={onClose}
-          >
-            <X size={16} />
-          </button>
+          <div className="engine-hub-header-actions">
+            <button
+              type="button"
+              className="engine-hub-icon-button"
+              aria-label={t("ariaClose")}
+              title={t("ariaClose")}
+              onClick={onClose}
+            >
+              <X size={16} />
+            </button>
+          </div>
         </header>
 
-        {/* 双栏主体架构 */}
         <div className="engine-hub-body">
-          {/* 左侧 Master 列表栏 */}
-          <aside className="engine-hub-sidebar">
+          <aside className="engine-hub-card engine-hub-sidebar">
+            <div className="engine-hub-card-head engine-hub-side-head">
+              <div className="engine-hub-head-icon">
+                <GitBranch size={15} />
+              </div>
+              <div className="engine-hub-head-copy">
+                <h3>{t("llama.localBranches")}</h3>
+              </div>
+              <span className="engine-hub-count">{engines.length}</span>
+            </div>
+
             <div className="engine-hub-search-wrap">
               <Search size={13} className="engine-hub-search-icon" />
               <input
@@ -225,11 +285,7 @@ export default function EngineHubModal({
                   return (
                     <div
                       key={item.id}
-                      className={cn(
-                        "engine-hub-branch-item",
-                        isCurSelected && "selected",
-                        isCurActive && "is-active",
-                      )}
+                      className={cn("engine-hub-branch-item", isCurSelected && "selected")}
                       onClick={() => setSelectedId(item.id)}
                     >
                       <div className="engine-hub-item-left">
@@ -264,167 +320,203 @@ export default function EngineHubModal({
             </div>
 
             <div className="engine-hub-sidebar-footer">
-              <button
-                type="button"
-                className="secondary-button compact engine-hub-add-btn"
-                onClick={onOpenAddModal}
-              >
+              <button type="button" className="engine-hub-add-btn" onClick={onOpenAddModal}>
                 <Plus size={13} />
                 <span>{t("llama.addBranch")}</span>
               </button>
             </div>
           </aside>
 
-          {/* 右侧 Detail 详情工作台 */}
-          <main className="engine-hub-detail">
+          <main className="engine-hub-main">
             {selectedEngine ? (
-              <div className="engine-hub-detail-inner">
-                {/* 详情顶栏标题与操作（统一UI风格，固定高度单行不换行） */}
-                <div className="engine-hub-detail-top">
-                  <div className="engine-hub-detail-identity">
-                    <h3 title={selectedEngine.name}>{selectedEngine.name}</h3>
-                    {isActive ? (
-                      <span className="engine-hub-status-pill active">
-                        <Check size={11} />
-                        <span>{t("llama.activeBadge")}</span>
-                      </span>
-                    ) : (
-                      <span className="engine-hub-status-pill standby">
-                        <span>{t("llama.standbyBadge")}</span>
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="engine-hub-detail-actions">
-                    {!isActive && (
+              <>
+                <section className="engine-hub-card engine-hub-detail">
+                  <div className="engine-hub-card-head engine-hub-detail-head">
+                    <div className="engine-hub-engine-tile">
+                      <Cpu size={16} />
+                    </div>
+                    <div className="engine-hub-identity">
+                      <div className="engine-hub-identity-row">
+                        <h3 title={selectedEngine.name}>{selectedEngine.name}</h3>
+                        <span className={cn("engine-hub-status-pill", isActive ? "active" : "standby")}>
+                          {isActive && <Check size={11} />}
+                          <span>{isActive ? t("llama.activeBadge") : t("llama.standbyBadge")}</span>
+                        </span>
+                      </div>
+                    </div>
+                    <div className="engine-hub-detail-actions">
+                      {!isActive && (
+                        <button
+                          type="button"
+                          className="engine-hub-action-btn"
+                          onClick={() => onSelectActiveEngine(selectedEngine)}
+                        >
+                          <Check size={12} />
+                          <span>{t("llama.setActive")}</span>
+                        </button>
+                      )}
                       <button
                         type="button"
-                        className="secondary-button compact engine-activate-btn"
-                        onClick={() => onSelectActiveEngine(selectedEngine)}
-                        title={t("llama.setActive")}
+                        className="engine-hub-action-btn"
+                        onClick={() => void revealInFolder(selectedEngine.path)}
                       >
-                        <Check size={12} />
-                        <span>{t("llama.setActive")}</span>
+                        <FolderOpen size={13} />
+                        <span>{t("llama.openFolder")}</span>
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      className="secondary-button compact"
-                      title={t("llama.openFolder")}
-                      onClick={() => void revealInFolder(selectedEngine.path)}
-                    >
-                      <FolderOpen size={13} />
-                      <span>{t("llama.openFolder")}</span>
-                    </button>
-                    {engines.length > 1 && (
-                      <button
-                        type="button"
-                        className="ghost-icon compact danger"
-                        title={t("llama.deleteBranch")}
-                        onClick={() => setDeletingEngine(selectedEngine)}
-                      >
-                        <Trash2 size={14} />
-                      </button>
-                    )}
-                  </div>
-                </div>
-
-                {/* 字段 1：分支名称 */}
-                <div className="engine-hub-field">
-                  <label className="engine-hub-label">{t("llama.branchName")}</label>
-                  <input
-                    type="text"
-                    className="engine-hub-input"
-                    value={draftName}
-                    onChange={(e) => setDraftName(e.target.value)}
-                    placeholder={t("llama.branchNamePlaceholder")}
-                  />
-                </div>
-
-                {/* 字段 2：服务端可执行文件路径 */}
-                <div className="engine-hub-field">
-                  <div className="engine-hub-label-row">
-                    <label className="engine-hub-label">{t("llama.branchPath")}</label>
-                    <button
-                      type="button"
-                      className="engine-hub-link-btn"
-                      onClick={() => void handlePickFile()}
-                    >
-                      <FileCode size={12} />
-                      <span>{t("llama.pickFile")}</span>
-                    </button>
-                  </div>
-                  <input
-                    type="text"
-                    className="engine-hub-input monospace"
-                    value={draftPath}
-                    onChange={(e) => setDraftPath(e.target.value)}
-                    placeholder="C:\llama.cpp\llama-server.exe"
-                  />
-                </div>
-
-                {/* 字段 3：计算后端 */}
-                <div className="engine-hub-field">
-                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                    <label className="engine-hub-label">{t("llama.branchBackend")}</label>
-                    {draftBackend === "cuda" && (probeStatus?.cudaVersion || selectedEngine.cudaVersion) && (
-                      <span className="engine-pill-tag backend" style={{ padding: "1px 6px", fontSize: 10 }}>
-                        {formatEngineBackend("cuda", probeStatus?.cudaVersion || selectedEngine.cudaVersion)}
-                      </span>
-                    )}
-                  </div>
-                  <select
-                    className="engine-hub-select"
-                    value={draftBackend}
-                    onChange={(e) => setDraftBackend(e.target.value)}
-                  >
-                    <option value="cuda">CUDA (NVIDIA)</option>
-                    <option value="vulkan">Vulkan (AMD / Intel / Multi-GPU)</option>
-                    <option value="cpu">CPU (Generic)</option>
-                  </select>
-                </div>
-
-                {/* 字段 4：引擎类型与构建版本并排（自动识别展示） */}
-                <div className="engine-hub-grid-row">
-                  <div className="engine-hub-field">
-                    <label className="engine-hub-label">{t("llama.engineType") || "引擎类型"}</label>
-                    <div className="engine-hub-version-box">
-                      <span className="engine-hub-version-tag" style={{ textTransform: "none", fontWeight: 600 }}>
-                        {getEngineTypeDisplay(probeStatus?.engineType || selectedEngine.engineType, draftPath || selectedEngine.path).label}
-                      </span>
-                      {probing && <Loader2 size={12} className="spin" />}
+                      {engines.length > 1 && (
+                        <button
+                          type="button"
+                          className="engine-hub-icon-button danger"
+                          aria-label={t("llama.deleteBranch")}
+                          title={t("llama.deleteBranch")}
+                          onClick={() => setDeletingEngine(selectedEngine)}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      )}
                     </div>
                   </div>
 
-                  <div className="engine-hub-field">
-                    <label className="engine-hub-label">{t("llama.branchVersion")}</label>
-                    <div className="engine-hub-version-box">
-                      <span className="engine-hub-version-tag">
-                        {probeStatus?.localVersion || selectedEngine.version || "--"}
-                      </span>
-                      {probing && <Loader2 size={12} className="spin" />}
+                  <div className="engine-hub-rows">
+                    <div className="engine-hub-row">
+                      <label className="engine-hub-label" htmlFor="engine-hub-name">
+                        {t("llama.branchName")}
+                      </label>
+                      <div className="engine-hub-control">
+                        <input
+                          id="engine-hub-name"
+                          type="text"
+                          className="engine-hub-input"
+                          value={draftName}
+                          onChange={(e) => setDraftName(e.target.value)}
+                          placeholder={t("llama.branchNamePlaceholder")}
+                        />
+                      </div>
                     </div>
-                  </div>
-                </div>
 
-                {/* 底部保存条 */}
-                <div className="engine-hub-save-row">
-                  {saveSuccess && (
-                    <span className="engine-hub-saved-hint">
-                      <Check size={13} /> {t("saved")}
-                    </span>
+                    <div className="engine-hub-row">
+                      <label className="engine-hub-label" htmlFor="engine-hub-path">
+                        {t("llama.branchPath")}
+                      </label>
+                      <div className="engine-hub-control path">
+                        <input
+                          id="engine-hub-path"
+                          type="text"
+                          className="engine-hub-input monospace"
+                          value={draftPath}
+                          onChange={(e) => {
+                            setDraftPath(e.target.value);
+                            setDirCandidates(null);
+                          }}
+                          placeholder={t("llama.branchPathPlaceholder")}
+                        />
+                        <button
+                          type="button"
+                          className="engine-hub-action-btn engine-hub-browse-btn"
+                          onClick={() => void handlePickDir()}
+                          title={t("llama.pickDirTitle")}
+                        >
+                          <FolderOpen size={12} />
+                          <span>{t("llama.pickDir")}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="engine-hub-action-btn engine-hub-browse-btn"
+                          onClick={() => void handlePickFile()}
+                        >
+                          <FileCode size={12} />
+                          <span>{t("llama.pickFile")}</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    {hasDirCandidates && (
+                      <div className="engine-hub-row">
+                        <span className="engine-hub-label">{t("llama.candidateLabel")}</span>
+                        <div className="engine-hub-control">
+                          <div className="engine-hub-candidate-chips">
+                            {dirCandidates!.map((candidate) => (
+                              <button
+                                key={candidate.path}
+                                type="button"
+                                className={cn(
+                                  "engine-hub-candidate-chip",
+                                  draftPath === candidate.path && "selected",
+                                )}
+                                title={candidate.path}
+                                onClick={() => handleSelectCandidate(candidate)}
+                              >
+                                <FileCode size={12} />
+                                <span>{candidate.name}</span>
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                  </div>
+
+                  {!hasDirCandidates && (
+                    <section className="engine-hub-meta">
+                      <div className="engine-hub-card-head engine-hub-meta-head">
+                        <div className="engine-hub-head-icon small">
+                          <Wrench size={13} />
+                        </div>
+                        <div className="engine-hub-head-copy">
+                          <h3>{t("llama.buildInfo")}</h3>
+                        </div>
+                        <span className="engine-hub-meta-note">
+                          {probing ? <Loader2 size={12} className="spin" /> : t("llama.autoDetected")}
+                        </span>
+                      </div>
+                      <div className="engine-hub-rows">
+                        <div className="engine-hub-row">
+                          <span className="engine-hub-label">{t("llama.engineType")}</span>
+                          <div className="engine-hub-control">
+                            <span className="engine-hub-type-badge">
+                              {getEngineTypeDisplay(
+                                probeStatus?.engineType || selectedEngine.engineType,
+                                draftPath || selectedEngine.path,
+                              ).label.toUpperCase()}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="engine-hub-row">
+                          <span className="engine-hub-label">{t("llama.branchVersion")}</span>
+                          <div className="engine-hub-control">
+                            <span className="engine-hub-meta-value">
+                              {probeStatus?.localVersion || selectedEngine.version || "--"}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </section>
                   )}
-                  <button
-                    type="button"
-                    className="secondary-button compact engine-hub-save-btn"
-                    disabled={!isModified || !draftPath.trim()}
-                    onClick={handleSave}
-                  >
-                    <Save size={13} />
-                    <span>{t("save")}</span>
-                  </button>
-                </div>
-              </div>
+
+                  <div className="engine-hub-save-row">
+                    {saveSuccess ? (
+                      <span className="engine-hub-saved-hint">
+                        <Check size={13} />
+                        <span>{t("saved")}</span>
+                      </span>
+                    ) : isModified ? (
+                      <span className="engine-hub-dirty-hint">
+                        <span>{t("llama.unsavedChanges")}</span>
+                      </span>
+                    ) : null}
+                    <button
+                      type="button"
+                      className="engine-hub-save-btn"
+                      disabled={!isModified || !draftPath.trim()}
+                      onClick={handleSave}
+                    >
+                      <Save size={13} />
+                      <span>{t("save")}</span>
+                    </button>
+                  </div>
+                </section>
+              </>
             ) : (
               <div className="engine-hub-no-selection">
                 <span>{t("llama.noBranchSelected")}</span>
@@ -432,17 +524,6 @@ export default function EngineHubModal({
             )}
           </main>
         </div>
-
-        {/* 弹窗底栏说明与关闭按钮 */}
-        <footer className="engine-hub-footer">
-          <div className="engine-hub-footer-hint">
-            <Sparkles size={13} />
-            <span>{t("llama.presetEngineHint")}</span>
-          </div>
-          <button type="button" className="secondary-button compact" onClick={onClose}>
-            {t("close")} (ESC)
-          </button>
-        </footer>
       </div>
 
       {/* 删除分支二次确认弹窗 */}

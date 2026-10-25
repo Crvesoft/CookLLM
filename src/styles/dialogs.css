@@ -247,9 +247,9 @@
 }
 
 [data-theme="light"] .launch-button.active {
-  color: #c0385e;
-  border-color: #f0c0cf;
-  background: #fbe9ef;
+  color: #0e7a4d;
+  border-color: #9dd8bd;
+  background: #f4faf6;
 }
 
 [data-theme="light"] .model-rename-input {
@@ -432,6 +432,7 @@ body.reordering .profile-card:hover {
   border-radius: 14px;
   background: #222222;
   box-shadow: 0 30px 100px rgba(0, 0, 0, .7);
+  overflow: hidden;
   animation: import-pop .18s ease
 }
 

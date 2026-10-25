@@ -42,14 +42,13 @@ function Spark({ history }: { history: number[] }) {
   });
   const linePath = coords.map(([cx, cy], index) => `${index === 0 ? "M" : "L"}${cx.toFixed(2)},${cy.toFixed(2)}`).join(" ");
   const [firstX] = coords[0];
-  const [lastX, lastY] = coords[coords.length - 1];
+  const [lastX] = coords[coords.length - 1];
   const areaPath = `${linePath} L${lastX.toFixed(2)},${SPARK_H} L${firstX.toFixed(2)},${SPARK_H} Z`;
   return (
     <svg className="ms-spark" viewBox={`0 0 ${SPARK_W} ${SPARK_H}`} preserveAspectRatio="none" aria-hidden="true">
       <path className="ms-area" d={areaPath} />
       {grid}
       <polyline points={coords.map(([cx, cy]) => `${cx.toFixed(2)},${cy.toFixed(2)}`).join(" ")} vectorEffect="non-scaling-stroke" />
-      <circle className="ms-dot" cx={lastX} cy={lastY} r={2} />
     </svg>
   );
 }

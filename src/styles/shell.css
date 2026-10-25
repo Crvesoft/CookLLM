@@ -457,10 +457,6 @@
   stroke-linecap: round;
 }
 
-.ms-dot {
-  fill: #fbbf24;
-}
-
 /* 底栏：功耗 + 健康灯 / 版本号 / 主题切换 */
 .ms-power {
   display: flex;

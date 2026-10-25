@@ -1,4 +1,4 @@
-import { Activity, Check, Copy, MessageSquareText, PanelLeftClose, PanelLeftOpen, Play, Settings, SlidersHorizontal, Square, SquareTerminal, Boxes, Globe, Loader2, Minimize, type LucideIcon } from "lucide-react";
+import { Activity, Check, ChevronDown, Copy, MessageSquareText, PanelLeftClose, PanelLeftOpen, Play, Power, Settings, SlidersHorizontal, SquareTerminal, Boxes, Globe, Loader2, Minimize, type LucideIcon } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type React from "react";
 import { useEffect, useRef, useState } from "react";
@@ -77,7 +77,7 @@ export function Sidebar({ page, onPage, downloadBadge, badgeProgress, updateAvai
   </aside>;
 }
 
-export function Topbar({ page, status, busy, serviceStarting, onToggleService, models, modelId, onSelectModel, zenMode, onToggleZenMode }: { page: Page; status: ServerStatus; busy: boolean; serviceStarting?: boolean; onToggleService: () => void; models: ModelAsset[]; modelId: string; onSelectModel: (id: string) => void; zenMode?: boolean; onToggleZenMode?: () => void }) {
+export function Topbar({ page, status, abnormal, busy, serviceStarting, onToggleService, models, modelId, onSelectModel, zenMode, onToggleZenMode }: { page: Page; status: ServerStatus; abnormal: boolean; busy: boolean; serviceStarting?: boolean; onToggleService: () => void; models: ModelAsset[]; modelId: string; onSelectModel: (id: string) => void; zenMode?: boolean; onToggleZenMode?: () => void }) {
   const { t } = useI18n();
   /** 状态融入模型组件：运行中用只读胶囊替代下拉框（绿点 + 模型名称），停止服务后自动还原为可选下拉框 */
   const active = models.find((model) => model.id === status.modelId);
@@ -85,6 +85,31 @@ export function Topbar({ page, status, busy, serviceStarting, onToggleService, m
   const isZenActive = zenMode && page === "playground";
   /** 忙碌（启停请求进行中）或启动中（端口未就绪）统一走旋转过渡，避免图标生硬跳变 */
   const pending = busy || !!serviceStarting;
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const pickerRef = useRef<HTMLDivElement | null>(null);
+  const selectedModel = models.find((model) => model.id === modelId);
+  const pickerLabel = selectedModel ? modelTitle(selectedModel) : t("selectModel");
+
+  useEffect(() => {
+    if (!pickerOpen) return;
+    const closeOnOutside = (event: PointerEvent) => {
+      if (!pickerRef.current?.contains(event.target as Node)) setPickerOpen(false);
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setPickerOpen(false);
+    };
+    document.addEventListener("pointerdown", closeOnOutside);
+    document.addEventListener("keydown", closeOnEscape);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutside);
+      document.removeEventListener("keydown", closeOnEscape);
+    };
+  }, [pickerOpen]);
+
+  useEffect(() => {
+    if (status.running) setPickerOpen(false);
+  }, [status.running]);
+
   return (
     <header className="topbar" data-tauri-drag-region="deep">
       <div className="breadcrumbs">
@@ -92,41 +117,60 @@ export function Topbar({ page, status, busy, serviceStarting, onToggleService, m
       </div>
       <div className="topbar-actions">
         {!isZenActive && (
-          <div className={cn("launcher-capsule", status.running && "running", pending && "busy")}>
+          <div className={cn("launcher-capsule", status.running && "running", abnormal && "abnormal", pending && "busy")} ref={pickerRef}>
             {status.running ? (
               <span className="capsule-model" title={pending ? t("statusStarting") : t("runningPrefix", { label: runningLabel })}>
                 <i className={cn("status-dot", pending ? "busy" : "live")} aria-hidden="true" />
                 <span>{runningLabel}</span>
               </span>
             ) : (
-              <label className="capsule-select" title={t("selectModel")}>
+              <div className="capsule-select">
                 <i className={cn("status-dot", pending ? "busy" : "idle")} aria-hidden="true" />
-                <select value={modelId} onChange={(e) => onSelectModel(e.target.value)} disabled={!models.length || busy}>
-                  {!models.length && <option value="">{t("selectModel")}</option>}
-                  {models.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {modelTitle(item)}
-                    </option>
-                  ))}
-                </select>
-              </label>
+                <button
+                  className="capsule-picker-trigger"
+                  title={t("selectModel")}
+                  aria-haspopup="listbox"
+                  aria-expanded={pickerOpen}
+                  disabled={!models.length || busy}
+                  onClick={() => setPickerOpen((value) => !value)}
+                >
+                  <span className="capsule-picker-name">{pickerLabel}</span>
+                  <ChevronDown size={12} className={cn("capsule-chevron", pickerOpen && "open")} aria-hidden="true" />
+                </button>
+              </div>
             )}
             <span className="capsule-divider" aria-hidden="true" />
             <button
               className={cn("capsule-btn", status.running && "running", pending && "busy")}
               disabled={busy && !serviceStarting}
-              onClick={onToggleService}
+              onClick={() => { setPickerOpen(false); onToggleService(); }}
               title={t(status.running || serviceStarting ? "stopService" : "startService")}
               aria-label={t(status.running || serviceStarting ? "stopService" : "startService")}
             >
               {pending ? (
                 <Loader2 size={12} className="spin" />
               ) : status.running ? (
-                <Square size={11} fill="currentColor" />
+                <Power size={13} />
               ) : (
-                <Play size={12} fill="currentColor" />
+                <Play size={13} />
               )}
             </button>
+            {pickerOpen && !status.running && (
+              <div className="model-picker-menu" role="listbox" aria-label={t("selectModel")}>
+                {models.map((item) => (
+                  <button
+                    key={item.id}
+                    role="option"
+                    aria-selected={item.id === modelId}
+                    className={cn("model-picker-item", item.id === modelId && "selected")}
+                    onClick={() => { onSelectModel(item.id); setPickerOpen(false); }}
+                  >
+                    <span className="model-picker-name">{modelTitle(item)}</span>
+                    {item.id === modelId && <Check size={13} className="opt-check" aria-hidden="true" />}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
