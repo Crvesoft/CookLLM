@@ -538,6 +538,7 @@
   margin-top: 11px;
 }
 
+/* 空闲启动态：保留暖琥珀填充；琥珀描边 + 呼吸动画只用于 pending（启动中） */
 .launch-button {
   display: flex;
   align-items: center;
@@ -548,6 +549,7 @@
   border-radius: 8px;
   color: #ffd9ad;
   background: #2b1c10;
+  transition: color .24s ease, background-color .24s ease, border-color .24s ease, box-shadow .24s ease;
   font-size: 14px;
   font-weight: 600
 }
@@ -560,6 +562,37 @@
   color: #64e6ad;
   border-color: #2b5948;
   background: #09130f
+}
+
+/* 启动中：填充翻转为描边（近似空底 + 琥珀边），边框 1.8s 呼吸；运行后再切回绿色 */
+.launch-button.starting {
+  color: #fbbf24;
+  border-color: #8a5a22;
+  background: #171310;
+  animation: pending-breathe-dark 1.8s ease-in-out infinite;
+}
+
+/* 启动中呼吸节奏：卡片按钮与顶栏胶囊共用，字色/底色保持静止，只有边界明暗变化 */
+@keyframes pending-breathe {
+  0%,
+  100% {
+    border-color: #e5a04e;
+  }
+
+  50% {
+    border-color: #f8ddbc;
+  }
+}
+
+@keyframes pending-breathe-dark {
+  0%,
+  100% {
+    border-color: #8a5a22;
+  }
+
+  50% {
+    border-color: #b98237;
+  }
 }
 
 .profile-select {

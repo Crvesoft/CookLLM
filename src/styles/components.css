@@ -599,8 +599,11 @@
   box-shadow: 0 0 14px rgba(30, 158, 99, .12);
 }
 
-[data-theme="light"] .launcher-capsule.busy {
-  border-color: #f0c08a;
+[data-theme="light"] .launcher-capsule.busy:not(.abnormal) {
+  border-color: #e5a04e;
+  background: #ffffff;
+  box-shadow: none;
+  animation: pending-breathe 1.8s ease-in-out infinite;
 }
 
 [data-theme="light"] .launcher-capsule.abnormal {
@@ -680,6 +683,10 @@
   background: #c3e9d8;
 }
 
+[data-theme="light"] .launcher-capsule.busy:not(.abnormal) .capsule-divider {
+  background: #e5e9f1;
+}
+
 [data-theme="light"] .capsule-btn {
   color: #0e7a4d;
 }
@@ -699,11 +706,11 @@
 }
 
 [data-theme="light"] .capsule-btn.busy {
-  color: #d97706;
+  color: #b45309;
 }
 
 [data-theme="light"] .capsule-btn.busy.running {
-  color: #d97706;
+  color: #b45309;
 }
 
 /* 弱化工具栏动作按钮亮色套 */
@@ -934,6 +941,11 @@
   border-color: #9dd8bd;
   box-shadow: 0 4px 18px rgba(30, 158, 99, .12), inset 0 1px 0 rgba(255, 255, 255, .8);
   background: #fcfefd;
+}
+
+[data-theme="light"] .model-card.starting {
+  border-color: #e5a04e;
+  background: #fffdf9;
 }
 
 /* GGUF Format Theme (暖橙琥珀 · 浅色模式 - 匹配橘色首图) */

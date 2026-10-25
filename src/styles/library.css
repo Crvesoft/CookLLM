@@ -16,7 +16,7 @@
   border: 1px solid #333333;
   border-radius: 10px;
   background: linear-gradient(155deg, #242424, #1e1e1e);
-  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+  transition: transform .18s ease, border-color .24s ease, box-shadow .24s ease, background-color .24s ease;
 }
 
 .model-row:hover {
@@ -28,6 +28,11 @@
 .model-row.running {
   border-color: #356555;
   box-shadow: inset 0 1px 0 rgba(101, 230, 173, .05), 0 0 14px rgba(53, 101, 85, .2);
+}
+
+.model-row.starting {
+  border-color: #7a5424;
+  box-shadow: inset 0 1px 0 rgba(245, 158, 11, .05);
 }
 
 .model-row.selecting {
@@ -128,6 +133,7 @@
 }
 
 .model-row-title h3 {
+  min-width: 0;
   margin: 0;
   font-size: 15px;
   font-weight: 600;
@@ -507,6 +513,11 @@
   box-shadow: 0 4px 18px rgba(30, 158, 99, .12);
 }
 
+[data-theme="light"] .model-row.starting {
+  border-color: #e5a04e;
+  background: #fffdf9;
+}
+
 [data-theme="light"] .model-symbol-star {
   box-shadow: 0 1px 3px rgba(190, 120, 60, .35);
 }
@@ -558,6 +569,13 @@
   background: #f4faf6;
   border-color: #9dd8bd;
   color: #0e7a4d;
+}
+
+[data-theme="light"] .launch-split.compact .launch-button.starting {
+  background: #ffffff;
+  border-color: #e5a04e;
+  color: #b45309;
+  animation: pending-breathe 1.8s ease-in-out infinite;
 }
 
 [data-theme="light"] .launch-split.compact .profile-select select {

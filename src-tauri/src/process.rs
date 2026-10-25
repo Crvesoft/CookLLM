@@ -58,7 +58,7 @@ pub(crate) fn emit_log(app: &AppHandle, stream: &str, line: impl Into<String>) {
 }
 
 /// 服务生命周期广播（事件名 server-lifecycle）：托盘或主界面任一侧发生
-/// 启动（starting）/ 主动停止（stopped）/ 启动失败与意外退出（failed）时通知前端，
+/// 启动（starting）/ 真正就绪（ready）/ 主动停止（stopped）/ 启动失败与意外退出（failed）时通知前端，
 /// 使主界面与托盘操作严格同步：启动过渡动画、异常标记清除、主动停止绝不误判为「服务异常」。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -72,6 +72,51 @@ struct ServerLifecyclePayload {
 
 fn emit_server_lifecycle(app: &AppHandle, phase: &str, status: Option<ServerStatus>, error: Option<String>) {
     let _ = app.emit("server-lifecycle", ServerLifecyclePayload { phase: phase.to_string(), status, error });
+}
+
+/// 引擎 HTTP 就绪探测：llama.cpp 系服务在模型/CUDA graph 加载完成前对 /health 返回 503，
+/// 只有真正可服务时才回 200。未实现 /health 的引擎（Ninfer）回退到 OpenAI 兼容的 /v1/models。
+/// 仅靠 TCP 可连接无法判断就绪（端口在权重加载前就已监听），必须走 HTTP 语义。
+fn http_probe_ready(port: u16) -> bool {
+    use std::{
+        io::{Read, Write},
+        net::{SocketAddr, TcpStream},
+        time::Duration,
+    };
+
+    let get_status = |path: &str| -> Option<u16> {
+        let mut stream = TcpStream::connect_timeout(
+            &SocketAddr::from(([127, 0, 0, 1], port)),
+            Duration::from_millis(400),
+        )
+        .ok()?;
+        stream.set_write_timeout(Some(Duration::from_millis(800))).ok()?;
+        stream.set_read_timeout(Some(Duration::from_millis(800))).ok()?;
+        stream
+            .write_all(format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n").as_bytes())
+            .ok()?;
+        // 读到首行行尾即可判定状态码，避免等待整个响应体
+        let mut buf = Vec::with_capacity(128);
+        let mut chunk = [0u8; 64];
+        while buf.len() < 128 {
+            let n = stream.read(&mut chunk).ok()?;
+            if n == 0 {
+                break;
+            }
+            buf.extend_from_slice(&chunk[..n]);
+            if buf.windows(2).any(|w| w == b"\r\n") {
+                break;
+            }
+        }
+        std::str::from_utf8(&buf).ok()?.split_whitespace().nth(1)?.parse::<u16>().ok()
+    };
+
+    match get_status("/health") {
+        Some(200) => true,
+        // 404/405：引擎未实现 /health，改用模型列表接口判断是否已可对外服务
+        Some(404) | Some(405) => get_status("/v1/models") == Some(200),
+        _ => false,
+    }
 }
 
 fn stream_reader<R: std::io::Read + Send + 'static>(app: AppHandle, stream: &'static str, reader: R) {
@@ -461,16 +506,10 @@ fn start_server_core(app: &AppHandle, state: &ProcessState, model_id: &str, prof
     let probe_gen = TRAY_PULSE_GENERATION.load(std::sync::atomic::Ordering::SeqCst);
 
     std::thread::spawn(move || {
-        use std::net::{SocketAddr, TcpStream};
         use std::time::{Duration, Instant};
 
         let start_time = Instant::now();
         let timeout = Duration::from_secs(120);
-        let addr: Result<SocketAddr, _> = format!("127.0.0.1:{}", probe_port).parse();
-        let addr = match addr {
-            Ok(a) => a,
-            Err(_) => return,
-        };
 
         loop {
             // 若代数已变更或托盘状态不再是本轮匹配的 Starting（如用户已主动停止或切换模型），直接静默退出
@@ -527,8 +566,8 @@ fn start_server_core(app: &AppHandle, state: &ProcessState, model_id: &str, prof
                 return;
             }
 
-            if let Ok(stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(300)) {
-                drop(stream);
+            // 端口可连接 ≠ 已就绪：必须等 HTTP 接口真正可服务（模型权重 / CUDA graph 加载完成）
+            if http_probe_ready(probe_port) {
                 if TRAY_PULSE_GENERATION.load(std::sync::atomic::Ordering::SeqCst) == probe_gen {
                     if let TrayServerState::Starting { ref model_name, port } = get_tray_state() {
                         if model_name == &probe_model_name && port == probe_port {
@@ -538,6 +577,8 @@ fn start_server_core(app: &AppHandle, state: &ProcessState, model_id: &str, prof
                             });
                             update_tray_status(&app_probe, None);
                             emit_log(&app_probe, "system", format!("服务已就绪 (http://127.0.0.1:{})", probe_port));
+                            // 广播 ready：主界面据此结束启动过渡动画，不依赖各引擎的启动日志文案
+                            emit_server_lifecycle(&app_probe, "ready", None, None);
                         }
                     }
                 }
@@ -550,7 +591,7 @@ fn start_server_core(app: &AppHandle, state: &ProcessState, model_id: &str, prof
                         if model_name == &probe_model_name && port == probe_port {
                             set_tray_state(TrayServerState::Failed {
                                 model_name: probe_model_name,
-                                error: "服务启动超时 (端口未就绪)".to_string(),
+                                error: "服务启动超时 (接口未就绪)".to_string(),
                             });
                             update_tray_status(&app_probe, None);
                         }

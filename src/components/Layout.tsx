@@ -83,7 +83,7 @@ export function Topbar({ page, status, abnormal, busy, serviceStarting, onToggle
   const active = models.find((model) => model.id === status.modelId);
   const runningLabel = active ? modelTitle(active) : status.modelName || t("modelFallback");
   const isZenActive = zenMode && page === "playground";
-  /** 忙碌（启停请求进行中）或启动中（端口未就绪）统一走旋转过渡，避免图标生硬跳变 */
+  /** 忙碌（启停请求进行中）或启动中（接口未就绪）统一走旋转过渡，避免图标生硬跳变 */
   const pending = busy || !!serviceStarting;
   const [pickerOpen, setPickerOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement | null>(null);

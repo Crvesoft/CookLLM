@@ -52,6 +52,10 @@ export function useServiceController({ config, configReady, pageRef, status, set
   const lifecycleStartingAtRef = useRef(0);
   const serviceStartingRef = useRef(false);
   const serviceStartingTimerRef = useRef<number | null>(null);
+  /** 启动编排序号：新的启动 / 主动停止递增，使旧流程在 await 之后自动失效 */
+  const startSeqRef = useRef(0);
+  /** 启动编排进行中：此间收到的 stopped 广播来自被替换的旧进程，不应结束新启动的过渡动画 */
+  const startingNewRef = useRef(false);
 
   const endServiceStarting = () => {
     if (serviceStartingTimerRef.current) {
@@ -59,6 +63,7 @@ export function useServiceController({ config, configReady, pageRef, status, set
       serviceStartingTimerRef.current = null;
     }
     serviceStartingRef.current = false;
+    startingNewRef.current = false;
     setServiceStarting(false);
     setStartingModelId(null);
   };
@@ -77,6 +82,8 @@ export function useServiceController({ config, configReady, pageRef, status, set
    * 三者必须同步，避免出现「还在转圈却提示已启动」的割裂感。
    */
   const markServiceReady = () => {
+    // 切换旧服务期间可能仍有旧进程的就绪日志，不能据此结束新服务的启动过渡
+    if (startingNewRef.current) return;
     if (dockAutoCollapseRef.current) { dockAutoCollapseRef.current = false; setLogDockOpen(false); }
     if (serviceStartingRef.current) endServiceStarting();
     const pending = pendingStartedToastRef.current;
@@ -97,7 +104,8 @@ export function useServiceController({ config, configReady, pageRef, status, set
         if (!active) return;
         // 启动后宽限窗口内的 running=false 是 spawn 前采样的过期轮询结果：
         // 直接应用会误杀刚点亮的过渡动画，甚至把成功启动误判为「意外退出」（真实失败由 failed 事件 / 下一轮轮询兜底）
-        const staleDuringStart = !st.running && serviceStartingRef.current && Date.now() - lifecycleStartingAtRef.current < 4000;
+        const staleDuringStart = !st.running && serviceStartingRef.current
+          && (startingNewRef.current || Date.now() - lifecycleStartingAtRef.current < 4000);
         if (!staleDuringStart) {
           setStatus((prev) => (shallowEqualFields(prev, st) ? prev : st));
           // 服务已停止（含启动失败 / 进程意外退出）：结束启动中的旋转过渡
@@ -246,6 +254,7 @@ export function useServiceController({ config, configReady, pageRef, status, set
   const handleServerLifecycle = (payload: ServerLifecyclePayload) => {
     if (payload.phase === "starting" && payload.status) {
       const next = payload.status;
+      startingNewRef.current = false;
       // 与 handleStart 对齐：进入启动过渡动画 + 清除异常标记 + 武装就绪后自动收起 Dock + 就绪提示
       lifecycleStartingAtRef.current = Date.now();
       setServiceAbnormal(false);
@@ -259,7 +268,19 @@ export function useServiceController({ config, configReady, pageRef, status, set
       setStatus((prev) => (shallowEqualFields(prev, next) ? prev : next));
       if (!serviceStartingRef.current) beginServiceStarting(next.modelId);
       if (pageRef.current !== "logs") setLogDockOpen(true);
+    } else if (payload.phase === "ready") {
+      // 后端 HTTP 探针确认接口可服务：与日志就绪信号等价，统一收尾过渡动画 / Dock / 播报
+      markServiceReady();
     } else if (payload.phase === "stopped") {
+      // 切换模型/引擎时，启动流程内部会先停掉旧进程：这条 stopped 属于旧服务，
+      // 只同步状态，保留新模型正在进行的启动过渡动画
+      if (startingNewRef.current) {
+        if (prevRunningRef.current) {
+          stopIntendedRef.current = true;
+          setStatus(EMPTY_STATUS);
+        }
+        return;
+      }
       // 主动停止（含托盘）：立即结束过渡动画、撤销就绪提示；状态仍在运行时同步为停止并放行意外退出判定
       endServiceStarting();
       setStartingModelId(null);
@@ -282,6 +303,7 @@ export function useServiceController({ config, configReady, pageRef, status, set
   serverLifecycleHandlerRef.current = handleServerLifecycle;
 
   const handleStop = async () => {
+    startSeqRef.current += 1; // 取消仍在编排中的启动流程
     setBusy(true); setStartingModelId(null); endServiceStarting(); pendingStartedToastRef.current = null; appendLog(t("log.stopping"));
     stopIntendedRef.current = true; // 本次退出是主动停止 → 不判为服务异常
     dockAutoCollapseRef.current = false;
@@ -300,28 +322,54 @@ export function useServiceController({ config, configReady, pageRef, status, set
       return handleStop();
     }
 
-    // 2. 若当前有其他模型正在运行或处于启动中 -> 立马停止旧模型，再切换启动新选择的模型
-    if (status.running || serviceStarting || startingModelId) {
+    const switching = Boolean(status.running || serviceStarting || startingModelId);
+    const engineName = profile.engineId
+      ? config.engines?.find((e) => e.id === profile.engineId)?.name || profile.engineId
+      : config.engines?.find((e) => e.id === config.activeEngineId)?.name || "默认引擎";
+
+    // 点击即进入启动过渡：切换旧服务与孤儿进程检测都要 await 数百毫秒以上，
+    // 先在同一次事件里切到旋转态，避免 IPC 往返期间按钮毫无反馈；序号用于让旧流程在 await 后失效
+    const seq = ++startSeqRef.current;
+    startingNewRef.current = switching;
+    setBusy(true);
+    setStartingModelId(model.id);
+    beginServiceStarting(model.id);
+    lifecycleStartingAtRef.current = Date.now();
+    setMenuModelId(null);
+    setServiceAbnormal(false);
+    inferenceTrackerRef.current.reset();
+    setLatestInference(null);
+    setInferenceHistory([]);
+    setTokSample(null);
+    dockAutoCollapseRef.current = true;
+    pendingStartedToastRef.current = modelTitle(model);
+    appendLog(t("toast.starting", { model: modelTitle(model), profile: `${profile.name} [${engineName}]` }));
+
+    // 2. 若当前有其他模型正在运行或处于启动中 -> 先停止旧模型，再切换启动新选择的模型
+    if (switching) {
       stopIntendedRef.current = true;
-      endServiceStarting();
-      pendingStartedToastRef.current = null;
       appendLog("正在停止当前服务并切换启动新模型…", "system");
       try {
-        if (isTauri()) {
-          await stopServer();
-        } else {
-          setStatus(EMPTY_STATUS);
-        }
+        if (isTauri()) await stopServer();
+        else setStatus(EMPTY_STATUS);
       } catch (err) {
         console.warn("停止前序服务失败", err);
       }
+      if (seq !== startSeqRef.current) return;
+      // 停止旧服务可能耗时数秒：重置轮询宽限窗口，避免过期 running=false 误杀新启动的过渡动画
+      lifecycleStartingAtRef.current = Date.now();
     }
 
     // 启动前安全检测：检查后台是否有未被托管的残留 llama-server，防止双模型并发占用显存
     if (isTauri()) {
       try {
         const orphanInfo = await checkOrphanServer();
+        if (seq !== startSeqRef.current) return;
         if (orphanInfo.hasOrphan && orphanInfo.pids.length > 0) {
+          endServiceStarting();
+          setBusy(false);
+          pendingStartedToastRef.current = null;
+          dockAutoCollapseRef.current = false;
           setOrphanPendingModel(model);
           setOrphanPids(orphanInfo.pids);
           setOrphanProcesses(orphanInfo.processes ?? null);
@@ -330,14 +378,16 @@ export function useServiceController({ config, configReady, pageRef, status, set
       } catch { }
     }
 
-    const engineName = profile.engineId
-      ? config.engines?.find((e) => e.id === profile.engineId)?.name || profile.engineId
-      : config.engines?.find((e) => e.id === config.activeEngineId)?.name || "默认引擎";
-    setBusy(true); setStartingModelId(model.id); beginServiceStarting(model.id); lifecycleStartingAtRef.current = Date.now(); setMenuModelId(null); appendLog(t("toast.starting", { model: modelTitle(model), profile: `${profile.name} [${engineName}]` }));
     try {
-      if (isTauri()) setStatus(await startServer(model.id, profile.id));
-      else {
+      if (isTauri()) {
+        const next = await startServer(model.id, profile.id);
+        if (seq !== startSeqRef.current) return;
+        startingNewRef.current = false;
+        setStatus(next);
+      } else {
         await new Promise((resolve) => window.setTimeout(resolve, 650));
+        if (seq !== startSeqRef.current) return;
+        startingNewRef.current = false;
         setStatus({
           running: true,
           pid: 18420,
@@ -350,14 +400,10 @@ export function useServiceController({ config, configReady, pageRef, status, set
           engineName,
           engineBackend: profile.engineId ? config.engines?.find((e) => e.id === profile.engineId)?.backend : "cuda",
         });
-        [`llama_model_loader: loaded meta data with ${model.parameters} parameters`, `load_tensors: offloading ${profile.gpuLayers} repeating layers to GPU`, `llama_context: n_ctx = ${profile.contextSize}, n_batch = ${profile.batchSize}, n_ubatch = ${profile.ubatchSize}`, `server is listening on http://${profile.host}:${profile.port}`].forEach((line, index) => window.setTimeout(() => { appendLog(line, "stdout"); if (index === 3) markServiceReady(); }, 180 * index));
+        [`llama_model_loader: loaded meta data with ${model.parameters} parameters`, `load_tensors: offloading ${profile.gpuLayers} repeating layers to GPU`, `llama_context: n_ctx = ${profile.contextSize}, n_batch = ${profile.batchSize}, n_ubatch = ${profile.ubatchSize}`, `server is listening on http://${profile.host}:${profile.port}`].forEach((line, index) => window.setTimeout(() => { if (seq !== startSeqRef.current) return; appendLog(line, "stdout"); if (index === 3) markServiceReady(); }, 180 * index));
       }
+      if (seq !== startSeqRef.current) return;
       setServiceAbnormal(false); // 启动成功 → 清除异常标记
-      inferenceTrackerRef.current.reset();
-      setLatestInference(null);
-      setInferenceHistory([]);
-      setTokSample(null);
-      dockAutoCollapseRef.current = true; // 武装：本次启动期间收到就绪日志后自动收起 Dock
       appendLog(`[engine] ${engineName}`, "system");
       const currentEng = profile.engineId ? config.engines?.find((e) => e.id === profile.engineId) : config.engines?.find((e) => e.id === config.activeEngineId);
       const isLlama = !currentEng || currentEng.engineType === "llamacpp" || !currentEng.engineType;
@@ -369,10 +415,19 @@ export function useServiceController({ config, configReady, pageRef, status, set
       }
       if (pageRef.current !== "logs") setLogDockOpen(true); // 所有 Dock 页启动时自动展开，显示加载日志；就绪后自动收起（日志整页本身就在看日志）
       // 「已启动」提示延迟到服务真正就绪后再播报（与 Dock 收起、旋转动画结束同步）；若就绪日志已提前到达则立即补播报
-      pendingStartedToastRef.current = modelTitle(model);
       if (!serviceStartingRef.current) markServiceReady();
-    } catch (error) { pendingStartedToastRef.current = null; setStartingModelId(null); appendLog(t("log.startFailed", { error: String(error) }), "stderr"); setServiceAbnormal(true); dockAutoCollapseRef.current = false; endServiceStarting(); if (pageRef.current !== "logs") setLogDockOpen(true); setToast(t("toast.startFailedToast")); }
-    finally { setBusy(false); }
+    } catch (error) {
+      if (seq !== startSeqRef.current) return;
+      pendingStartedToastRef.current = null;
+      appendLog(t("log.startFailed", { error: String(error) }), "stderr");
+      setServiceAbnormal(true);
+      dockAutoCollapseRef.current = false;
+      endServiceStarting();
+      if (pageRef.current !== "logs") setLogDockOpen(true);
+      setToast(t("toast.startFailedToast"));
+    } finally {
+      if (seq === startSeqRef.current) setBusy(false);
+    }
   };
 
   /** 清空当前模型会话的推理性能历史与统计 */

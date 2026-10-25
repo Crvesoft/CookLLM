@@ -121,10 +121,10 @@ export async function onTrayViewError(handler: (errorMessage: string) => void): 
   return listen<string>("tray_view_error", (event) => handler(event.payload));
 }
 
-/** 服务生命周期事件载荷：托盘 / 主界面任一侧发生启动、停止、失败时由后端广播 */
+/** 服务生命周期事件载荷：托盘 / 主界面任一侧发生启动、就绪、停止、失败时由后端广播 */
 export interface ServerLifecyclePayload {
-  /** starting = 进程已拉起（端口尚未就绪）；stopped = 主动停止；failed = 启动失败 / 进程意外退出 */
-  phase: "starting" | "stopped" | "failed";
+  /** starting = 进程已拉起（接口尚未就绪）；ready = HTTP 接口可服务；stopped = 主动停止；failed = 启动失败 / 进程意外退出 */
+  phase: "starting" | "ready" | "stopped" | "failed";
   /** starting 时携带新服务的完整状态（running: true） */
   status?: ServerStatus | null;
   /** failed 时携带错误信息 */

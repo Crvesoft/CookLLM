@@ -94,8 +94,11 @@
   box-shadow: 0 0 14px rgba(43, 89, 72, .18);
 }
 
-.launcher-capsule.busy {
-  border-color: #5a4325;
+.launcher-capsule.busy:not(.abnormal) {
+  border-color: #8a5a22;
+  background: #1f1f1f;
+  box-shadow: none;
+  animation: pending-breathe-dark 1.8s ease-in-out infinite;
 }
 
 /* 异常态：红色只用于服务异常，不再与停止动作共用 */
@@ -331,6 +334,10 @@ select option:checked {
 
 .launcher-capsule.running .capsule-divider {
   background: rgba(43, 89, 72, .6);
+}
+
+.launcher-capsule.busy:not(.abnormal) .capsule-divider {
+  background: #333333;
 }
 
 .capsule-btn {

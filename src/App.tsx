@@ -30,7 +30,8 @@ import { useToast } from "./hooks/useToast";
 /**
  * 服务「真正就绪」日志特征：引擎加载完毕并开始监听。
  * llama.cpp 输出 "server is listening on ..."，Ninfer 输出 "listening on http://..."。
- * 不可使用探针的「服务已就绪 (http://...)」——那只是端口刚通，模型权重/CUDA graph 仍在加载。
+ * 这是最快的就绪信号；后端探针还会在 HTTP 接口真正可服务后广播 ready，
+ * 兜底日志文案随引擎版本变化的场景（如 Ninfer 未输出可匹配的监听行）。
  */
 const READY_LOG_RE = /is listening|listening on/i;
 
@@ -181,7 +182,7 @@ export default function App() {
             if (!active) return;
             queueLogs([payload]);
             // 服务「真正」就绪 = 引擎加载完毕并开始监听（llama.cpp: server is listening / Ninfer: listening on）。
-            // 注意：不能用探针的「服务已就绪」，那时端口刚通、模型尚未加载完。
+            // 与后端探针广播的 ready 事件互为兜底：任一先到都会收尾过渡动画。
             // 该信号同时驱动「自动收起 Dock」「结束启动旋转动画」「播报已启动」，保证三者同步完成。
             if (READY_LOG_RE.test(payload.line)) markServiceReady();
 
