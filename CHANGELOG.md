@@ -2,6 +2,18 @@
 
 本文档是发布流程提取 Release Notes 的唯一数据源（`.github/workflows/release.yml` 会自动读取，请在每次发版前更新本文件）。
 
+## v0.4.2
+
+#### 🚀 新增图表与卡片优化
+
+- **分析页新增图表**：新增 实时 Decode / Prefill 图表， TTFT首字token延迟、MTP 接受率卡片（未开 MTP 自动隐藏）
+- **优化卡片动画**：模型卡片启动中统一琥珀呼吸态；修复启动按钮不跟手，就绪判定改为 HTTP 探针。
+
+#### 🛠️ 分析采样修复及调优
+
+- **采样修复**：补齐采样间隔内结束的尾部突发，Prefill 回显限定 60 秒窗口。
+- **Prefill 计数**：llama.cpp的Prefill计数 改用 `n_prompt_tokens_processed`。
+
 ## v0.4.1
 
 #### ✨ 打磨界面细节
