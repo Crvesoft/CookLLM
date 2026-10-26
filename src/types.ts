@@ -289,6 +289,22 @@ export interface InferenceMetrics {
   taskId?: string;
   /** 总耗时 (ms) */
   totalTimeMs?: number | null;
+  /** MTP 草稿被接受的 token 数（NInfer mtp accepted / llama.cpp draft acceptance） */
+  mtpAcceptedTokens?: number | null;
+  /** MTP 草稿生成的 token 数 */
+  mtpDraftTokens?: number | null;
+  /** MTP 草稿接受率 (0 ~ 100) */
+  mtpAcceptRatio?: number | null;
+}
+
+/** 每秒实时吞吐采样点（分析页实时 Decode / Prefill 曲线） */
+export interface RealtimeTpsSample {
+  /** 采样时刻（毫秒时间戳） */
+  t: number;
+  /** 该秒内的 Decode 速率，空闲为 0 */
+  decodeTps: number;
+  /** 该秒内的 Prefill 速率，无预热为 0 */
+  prefillTps: number;
 }
 
 export interface LlamaLogPayload {

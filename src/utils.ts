@@ -1,4 +1,4 @@
-import type { EngineType, InferenceMetrics, LlamaLogPayload, ModelAsset, ShortcutsConfig } from "./types";
+import type { EngineType, InferenceMetrics, LlamaLogPayload, ModelAsset, RealtimeTpsSample, ShortcutsConfig } from "./types";
 import { formatMessage, getLocale } from "./i18n";
 import { writeClipboard } from "./tauri";
 
@@ -115,7 +115,7 @@ export const lineKind = (stream: LlamaLogPayload["stream"], line: string): "syst
 };
 
 export interface LogTimingFragment {
-  type: "task_start" | "task_end" | "prefill" | "decode" | "decode_progress" | "total" | "cache" | "ttft" | "queue" | "generic_speed";
+  type: "task_start" | "task_end" | "prefill" | "decode" | "decode_progress" | "total" | "cache" | "ttft" | "queue" | "generic_speed" | "mtp";
   taskId?: string;
   speed?: number; // tokens/sec
   tokens?: number;
@@ -124,6 +124,9 @@ export interface LogTimingFragment {
   cachedTokens?: number;
   totalPromptTokens?: number;
   cacheHitRatio?: number;
+  mtpAcceptedTokens?: number;
+  mtpDraftTokens?: number;
+  mtpAcceptRatio?: number;
 }
 
 /**
@@ -256,6 +259,19 @@ export function parseInferenceLogFragments(line: string): LogTimingFragment[] {
           taskId: reqId,
           timeMs: totalTimeMs,
           tokens: decodeTokens,
+        });
+      }
+
+      // MTP 草稿接受率（done 行实时给出 176/287 (61.3%)）；放在数据片段之后，
+      // 让 tracker 能优先归属到本轮正在跟踪的数据行
+      const mtpMatch = line.match(/\bmtp\s+accepted\s+(\d+)\s*\/\s*(\d+)\s*\(([0-9.]+)\s*%\)/i);
+      if (mtpMatch) {
+        fragments.push({
+          type: "mtp",
+          taskId: reqId,
+          mtpAcceptedTokens: parseInt(mtpMatch[1], 10),
+          mtpDraftTokens: parseInt(mtpMatch[2], 10),
+          mtpAcceptRatio: parseFloat(mtpMatch[3]),
         });
       }
     }
@@ -473,6 +489,23 @@ export function parseInferenceLogFragments(line: string): LogTimingFragment[] {
     });
   }
 
+  // 5.5 MTP / 投机解码接受率（llama.cpp b11877 任务结束日志）：
+  // "slot release_slot_: id 0 | task 0 | draft acceptance = 0.61500 (  176 accepted /  287 generated), mean len =  2.09"
+  // 仅含完整计数的行可解析；restore checkpoint 变体没有数字，直接忽略
+  const draftAcceptMatch = line.match(/draft\s+acceptance\s*=\s*([0-9.]+)\s*\(\s*(\d+)\s+accepted\s*\/\s*(\d+)\s+generated\s*\)/i);
+  if (draftAcceptMatch) {
+    const drafted = parseInt(draftAcceptMatch[3], 10);
+    if (drafted > 0) {
+      fragments.push({
+        type: "mtp",
+        taskId,
+        mtpAcceptedTokens: parseInt(draftAcceptMatch[2], 10),
+        mtpDraftTokens: drafted,
+        mtpAcceptRatio: parseFloat((parseFloat(draftAcceptMatch[1]) * 100).toFixed(1)),
+      });
+    }
+  }
+
   // 6. 通用 tokens/sec 或 t/s 兜底（仅在未识别出专用片段时）
   if (fragments.length === 0) {
     const genericMatch = line.match(/([0-9]+(?:\.[0-9]+)?)\s*(?:tokens?|toks?|runs?|t)(?:\/|\s+per\s+)(?:seconds?|secs?|s)\b/i)
@@ -532,16 +565,30 @@ export class InferenceTracker {
     return Boolean(this.current.id);
   }
 
+  private currentHasData(): boolean {
+    return (
+      this.current.decodeTokens != null ||
+      this.current.prefillTokens != null ||
+      this.current.promptTokens != null ||
+      this.current.cachedTokens != null ||
+      this.current.cacheHitRatio != null ||
+      this.current.decodeTps != null ||
+      this.current.prefillTps != null
+    );
+  }
+
   public processLine(line: string): { updated: boolean; latest: InferenceMetrics | null; isTurnFinished: boolean } {
     const frags = parseInferenceLogFragments(line);
     if (!frags.length) return { updated: false, latest: this.getLatest(), isTurnFinished: false };
 
     const now = Date.now();
     let hasFinishedFrag = false;
+    let latestOverride: InferenceMetrics | null = null;
 
     for (const frag of frags) {
       // 任务启动或 taskId 发生更迭：提交上一轮，开启新一轮
-      if (frag.type === "task_start" || (frag.taskId && this.current.taskId && frag.taskId !== this.current.taskId)) {
+      // MTP 接受率是任务结束后的补充行，迟到的旧 taskId 不能触发轮次更迭
+      if (frag.type !== "mtp" && (frag.type === "task_start" || (frag.taskId && this.current.taskId && frag.taskId !== this.current.taskId))) {
         if (frag.type === "task_start" && frag.taskId && this.current.taskId === frag.taskId) {
           // 同一请求重复的 task_start（如 /stats 轮询先建轮、随后 req#N started 日志才到达）：
           // 仅刷新心跳并沿用当前轮，避免把一次请求拆成两轮
@@ -561,12 +608,38 @@ export class InferenceTracker {
         }
       }
 
-      if (!this.current.id) {
+      // MTP 接受率只有引擎在任务收尾时给出（llama.cpp release 行 / NInfer done 行）：
+      // 归属到正在跟踪且 taskId 匹配的轮次；否则回填最近一条同 taskId 的历史轮，
+      // 绝不因迟到的补充行新开或提交轮次
+      if (frag.type === "mtp") {
+        const fields: Partial<InferenceMetrics> = {
+          mtpAcceptedTokens: frag.mtpAcceptedTokens ?? null,
+          mtpDraftTokens: frag.mtpDraftTokens ?? null,
+          mtpAcceptRatio: frag.mtpAcceptRatio ?? null,
+        };
+        const currentHasData = this.currentHasData();
+        const currentMatches =
+          currentHasData && (frag.taskId == null || this.current.taskId == null || frag.taskId === this.current.taskId);
+        if (currentMatches) {
+          Object.assign(this.current, fields);
+          this.current.lastUpdateAt = now;
+        } else {
+          const idx = frag.taskId != null ? this.history.findIndex((item) => item.taskId === frag.taskId) : -1;
+          if (idx >= 0) {
+            this.history[idx] = { ...this.history[idx], ...fields };
+            latestOverride = this.history[idx];
+          }
+        }
+        continue;
+      }
+
+      // task_end 只是收尾信号：没有活跃轮次时不能凭空创建空轮次（否则永远停在「推理中」）
+      if (!this.current.id && frag.type !== "task_end") {
         this.current.id = `inf-${now}-${Math.random().toString(36).slice(2, 6)}`;
         this.current.timestamp = now;
         if (frag.taskId) this.current.taskId = frag.taskId;
         if (frag.type === "task_start") this.current.taskStartTime = now;
-      } else if (frag.taskId && !this.current.taskId) {
+      } else if (this.current.id && frag.taskId && !this.current.taskId) {
         this.current.taskId = frag.taskId;
       }
 
@@ -640,6 +713,10 @@ export class InferenceTracker {
       }
       const finished = this.commitCurrent();
       return { updated: true, latest: finished || this.getLatest(), isTurnFinished: true };
+    }
+
+    if (latestOverride) {
+      return { updated: true, latest: latestOverride, isTurnFinished: false };
     }
 
     // 实时更新当前快照
@@ -891,6 +968,11 @@ export class InferenceTracker {
       const thinkingTokens = num(res.model_thinking_tokens);
       const computedPrefill = num(res.computed_prefill_tokens)
         ?? (promptTokens != null ? Math.max(0, promptTokens - cachedTokens) : null);
+      // MTP 投机统计：request_done.speculative（NInfer 官方监测平台同源）
+      const spec = r.speculative && typeof r.speculative === "object" ? (r.speculative as Record<string, unknown>) : null;
+      const specAccepted = num(spec?.accepted_tokens);
+      const specDrafted = num(spec?.drafted_tokens);
+      const hasMtp = spec?.backend === "mtp" && specDrafted != null && specDrafted > 0;
       const exact: Partial<InferenceMetrics> = {
         taskId,
         instanceId: instanceId ?? null,
@@ -907,6 +989,9 @@ export class InferenceTracker {
         decodeTimeMs: decodeMs != null ? Math.round(decodeMs * 1000) : null,
         decodeTps: decodeMs != null && decodeMs > 0 && decodeTokens != null ? parseFloat((decodeTokens / decodeMs).toFixed(1)) : null,
         totalTimeMs: totalMs != null ? Math.round(totalMs * 1000) : null,
+        mtpAcceptedTokens: hasMtp ? specAccepted : null,
+        mtpDraftTokens: hasMtp ? specDrafted : null,
+        mtpAcceptRatio: hasMtp && specAccepted != null ? parseFloat(((specAccepted / (specDrafted as number)) * 100).toFixed(1)) : null,
       };
 
       // 1) 活跃轮次同实例同 taskId（或轮询兜底开的无 taskId 轮，开始时间早于本 done 记录）：
@@ -1015,6 +1100,9 @@ export class InferenceTracker {
       ttftMs: this.current.ttftMs ?? this.current.prefillTimeMs ?? null,
       queueMs: this.current.queueMs ?? null,
       thinkingTokens: this.current.thinkingTokens ?? null,
+      mtpAcceptedTokens: this.current.mtpAcceptedTokens ?? null,
+      mtpDraftTokens: this.current.mtpDraftTokens ?? null,
+      mtpAcceptRatio: this.current.mtpAcceptRatio ?? null,
       totalTimeMs: this.current.totalTimeMs ?? (
         (this.current.prefillTimeMs || 0) + (this.current.decodeTimeMs || 0) || null
       ),
@@ -1056,6 +1144,156 @@ export class InferenceTracker {
     this.ninferInstanceId = null;
     this.ninferLogSinceTs = Date.now();
   }
+}
+
+export interface RealtimeThroughputInput {
+  /** 本次采样时刻（毫秒时间戳） */
+  now: number;
+  /** 引擎当前是否有请求在处理（空闲时输出 0 并重置差分基线） */
+  active: boolean;
+  /** 累计解码 token 数（NInfer /stats 计数器或 llama /slots 当前任务 predicted_n） */
+  decodeTokens: number | null;
+  /** 累计预热 token 数（NInfer /stats 计数器或 llama /slots 当前任务 prompt_n） */
+  prefillTokens: number | null;
+  /** llama.cpp 任务标识：任务切换时重置差分，避免跨任务串数 */
+  taskKey?: string | null;
+  /** 端点给出的 Prefill 速率（llama /slots.timings.prompt_per_second），用于不足 1 秒的快速预热 */
+  prefillRateHint?: number | null;
+}
+
+/**
+ * 每秒实时吞吐采样器：对引擎累计计数器做差分得到 1 秒粒度的真实速率。
+ * NInfer 用 /stats.counters（跨请求累计，无需任务键），llama.cpp 用 /slots 的任务级
+ * predicted_n / prompt_n（换任务时基线重置），兼容 ninfer_kvmem 与 llama-kvmem 分支。
+ */
+export interface LlamaSlotSample {
+  active: boolean;
+  decodeTokens: number | null;
+  prefillTokens: number | null;
+  taskKey: string | null;
+  prefillRateHint: number | null;
+}
+
+/**
+ * 从 llama.cpp /slots 提取实时计数。
+ * 新版 llama.cpp（b11877 起）的 n_prompt_tokens 是上下文总长度：每生成一个 token 都会 push 进 slot.prompt.tokens，
+ * 拿它做差分会让 Prefill 曲线跟着 Decode 走；必须使用 n_prompt_tokens_processed（仅本轮实际计算的提示词）。
+ */
+export function extractLlamaSlotSample(data: unknown): LlamaSlotSample {
+  const list = Array.isArray(data)
+    ? data
+    : data && typeof data === "object" && Array.isArray((data as any).value)
+      ? (data as any).value
+      : [];
+  const busy = list.filter((slot: any) => slot?.is_processing);
+  if (!busy.length) {
+    return { active: false, decodeTokens: null, prefillTokens: null, taskKey: null, prefillRateHint: null };
+  }
+  const timingsOf = (slot: any) => (slot?.timings && typeof slot.timings === "object" ? slot.timings : null);
+  const num = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+  let decodeTokens = 0;
+  let prefillTokens = 0;
+  for (const slot of busy) {
+    const timings = timingsOf(slot);
+    decodeTokens += num(timings?.predicted_n ?? slot?.next_token?.[0]?.n_decoded ?? slot?.n_decoded ?? slot?.predicted_n);
+    prefillTokens += num(slot?.n_prompt_tokens_processed ?? timings?.prompt_n ?? slot?.prompt_n);
+  }
+  const rateHint = busy.length === 1
+    ? (timingsOf(busy[0])?.prompt_per_second ?? busy[0]?.prompt_per_second ?? null)
+    : null;
+  return {
+    active: true,
+    decodeTokens,
+    prefillTokens,
+    taskKey: busy.map((slot: any) => String(slot?.id_task ?? "")).join(","),
+    prefillRateHint: typeof rateHint === "number" && Number.isFinite(rateHint) ? rateHint : null,
+  };
+}
+
+export class RealtimeThroughputSampler {
+  private base: { at: number; decode: number | null; prefill: number | null; taskKey: string | null } | null = null;
+
+  public reset(): void {
+    this.base = null;
+  }
+
+  public sample(input: RealtimeThroughputInput): RealtimeTpsSample {
+    const decode = typeof input.decodeTokens === "number" && Number.isFinite(input.decodeTokens) ? input.decodeTokens : null;
+    const prefill = typeof input.prefillTokens === "number" && Number.isFinite(input.prefillTokens) ? input.prefillTokens : null;
+    const hint = typeof input.prefillRateHint === "number" && Number.isFinite(input.prefillRateHint) && input.prefillRateHint > 0
+      ? input.prefillRateHint
+      : null;
+    const taskKey = input.taskKey ?? null;
+    const zero: RealtimeTpsSample = { t: input.now, decodeTps: 0, prefillTps: 0 };
+    const rebase = () => {
+      this.base = { at: input.now, decode, prefill, taskKey };
+    };
+    // 快速预热（<1s）在首个采样点就已完成：直接采用端点速率，避免差分窗口漏掉整段预热
+    const fastPrefill = hint != null && (prefill ?? 0) > 0 ? capRate(hint, 100000) : 0;
+
+    if (!input.active) {
+      // 请求可能在两个采样点之间就结束（短请求、或收尾不足 1s 的尾段）：
+      // 累计计数器在空闲采样点仍包含尾部增量，先补发这一 tick 的速率再重置基线，避免整段突发被静默丢弃。
+      // llama.cpp 空闲时 /slots 不返回计数（decode/prefill 为 null），天然不会误报。
+      const prev = this.base;
+      const idleDtSec = prev ? (input.now - prev.at) / 1000 : 0;
+      if (
+        !prev ||
+        prev.taskKey !== taskKey ||
+        !(idleDtSec > 0) ||
+        idleDtSec > 3 ||
+        decode == null ||
+        prefill == null ||
+        prev.decode == null ||
+        prev.prefill == null
+      ) {
+        rebase();
+        return zero;
+      }
+      const dDecode = decode - prev.decode;
+      const dPrefill = prefill - prev.prefill;
+      rebase();
+      if (dDecode < 0 || dPrefill < 0) return zero;
+      return {
+        t: input.now,
+        decodeTps: dDecode > 0 ? capRate(dDecode / idleDtSec, 10000) : 0,
+        prefillTps: dPrefill > 0 ? capRate(dPrefill / idleDtSec, 100000) : 0,
+      };
+    }
+
+    const prev = this.base;
+    if (!prev) {
+      rebase();
+      return zero;
+    }
+    if (prev.taskKey !== taskKey) {
+      rebase();
+      return { t: input.now, decodeTps: 0, prefillTps: fastPrefill };
+    }
+
+    const dtSec = (input.now - prev.at) / 1000;
+    if (!(dtSec > 0) || dtSec > 3) {
+      rebase();
+      return zero;
+    }
+
+    const dDecode = decode != null && prev.decode != null ? decode - prev.decode : 0;
+    const dPrefill = prefill != null && prev.prefill != null ? prefill - prev.prefill : 0;
+    rebase();
+
+    // 计数器回退（引擎重启 / 槽位复用）时只重新建立基线，绝不上报负速率
+    if (dDecode < 0 || dPrefill < 0) return zero;
+
+    return {
+      t: input.now,
+      decodeTps: dDecode > 0 ? capRate(dDecode / dtSec, 10000) : 0,
+      prefillTps: dPrefill > 0 ? capRate(hint ?? dPrefill / dtSec, 100000) : 0,
+    };
+  }
+}
+
+function capRate(value: number, max: number): number {
+  return Math.round(Math.min(Math.max(0, value), max) * 10) / 10;
 }
 
 export type RoundStatus =

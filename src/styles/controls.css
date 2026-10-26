@@ -479,29 +479,6 @@
   box-shadow: 0 0 6px #54e4a6
 }
 
-.starting-badge {
-  display: flex;
-  flex: none;
-  align-items: center;
-  gap: 3px;
-  padding: 2px 4px;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  color: #fbbf24;
-  background: #2b2115;
-  white-space: nowrap;
-  font: 600 11px JetBrains Mono, monospace;
-}
-
-.starting-badge i {
-  width: 4px;
-  height: 4px;
-  border-radius: 50%;
-  background: #fbbf24;
-  box-shadow: 0 0 6px rgba(245, 158, 11, .5);
-  animation: pulse-busy 1s ease-in-out infinite;
-}
-
 .ghost-icon {
   width: 28px;
   height: 28px

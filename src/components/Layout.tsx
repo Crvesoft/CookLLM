@@ -4,7 +4,7 @@ import type React from "react";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { isTauri } from "../tauri";
-import type { GpuStats, InferenceMetrics, LlamaLogPayload, ModelAsset, Page, ServerStatus } from "../types";
+import type { GpuStats, InferenceMetrics, LlamaLogPayload, ModelAsset, Page, RealtimeTpsSample, ServerStatus } from "../types";
 import { cn, lineKind, modelTitle, timeLabel, copyTextToClipboard, formatLogsPlainText } from "../utils";
 import { LlamaMark } from "./LlamaMark";
 import MiniStatusBar from "./MiniStatusBar";
@@ -199,6 +199,8 @@ export function LogsPage({
   tokPerSec,
   latestMetrics,
   inferenceHistory,
+  realtimeSamples,
+  mtpEnabled,
   onClearHistory,
   onClear,
 }: {
@@ -207,6 +209,8 @@ export function LogsPage({
   tokPerSec?: number | null;
   latestMetrics?: InferenceMetrics | null;
   inferenceHistory?: InferenceMetrics[];
+  realtimeSamples?: RealtimeTpsSample[];
+  mtpEnabled?: boolean;
   onClearHistory?: () => void;
   onClear: () => void;
 }) {
@@ -300,6 +304,9 @@ export function LogsPage({
           <InferenceInspector
             metrics={latestMetrics ?? null}
             history={inferenceHistory || []}
+            realtime={realtimeSamples || []}
+            mtpEnabled={mtpEnabled}
+            serviceRunning={status.running}
             onClearHistory={onClearHistory}
             mode="page"
           />

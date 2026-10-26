@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Activity } from "lucide-react";
 import { useI18n } from "../i18n";
-import type { InferenceMetrics } from "../types";
+import type { InferenceMetrics, RealtimeTpsSample } from "../types";
 import {
   cn,
   computeSessionStats,
@@ -11,10 +11,15 @@ import {
   type InferenceFilterType,
 } from "../utils";
 import { HistoryDetailsTable, InferenceFilterDropdown } from "./InferenceCharts";
+import { RealtimeThroughputRow } from "./InferenceRealtime";
+import { pointsToSmoothPath, useElementSize } from "./inferenceChartUtils";
 
 interface InferenceInspectorProps {
   metrics: InferenceMetrics | null;
   history: InferenceMetrics[];
+  realtime?: RealtimeTpsSample[];
+  mtpEnabled?: boolean;
+  serviceRunning?: boolean;
   onClearHistory?: () => void;
   compact?: boolean;
   mode?: "dock" | "page";
@@ -26,81 +31,6 @@ function speed(value: number | null | undefined): string {
   return value == null || !Number.isFinite(value) ? "—" : value.toFixed(2);
 }
 
-/** 动态监听容器尺寸，保证 SVG 在 1:1 坐标系下渲染，圆形与描边绝对保真、不被拉伸变形 */
-function useElementSize<T extends HTMLElement>() {
-  const ref = useRef<T>(null);
-  const [size, setSize] = useState<{ width: number; height: number }>({ width: 330, height: 110 });
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const rect = el.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      setSize({ width: Math.round(rect.width), height: Math.round(rect.height) });
-    }
-    const ro = new ResizeObserver((entries) => {
-      const entry = entries[0];
-      if (entry && entry.contentRect.width > 0 && entry.contentRect.height > 0) {
-        setSize({
-          width: Math.round(entry.contentRect.width),
-          height: Math.round(entry.contentRect.height),
-        });
-      }
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  return [ref, size] as const;
-}
-
-/** 将离散折线坐标转换为平滑三次贝塞尔曲线及闭合面积路径，消除生硬尖锐折角 */
-function pointsToSmoothPath(
-  pts: [number, number][],
-  baselineY: number,
-  padT: number
-): { lineD: string; areaD: string } {
-  if (pts.length < 2) return { lineD: "", areaD: "" };
-  if (pts.length === 2) {
-    const [p0, p1] = pts;
-    const dx = p1[0] - p0[0];
-    const cp1x = p0[0] + dx * 0.45;
-    const cp2x = p1[0] - dx * 0.45;
-    const lineD = `M ${p0[0].toFixed(1)} ${p0[1].toFixed(1)} C ${cp1x.toFixed(1)} ${p0[1].toFixed(1)}, ${cp2x.toFixed(1)} ${p1[1].toFixed(1)}, ${p1[0].toFixed(1)} ${p1[1].toFixed(1)}`;
-    const areaD = `${lineD} L ${p1[0].toFixed(1)} ${baselineY.toFixed(1)} L ${p0[0].toFixed(1)} ${baselineY.toFixed(1)} Z`;
-    return { lineD, areaD };
-  }
-
-  // 多轮次使用 Catmull-Rom 三次贝塞尔样条平滑，消除剧烈的锯齿折角
-  const tension = 0.2;
-  let lineD = `M ${pts[0][0].toFixed(1)} ${pts[0][1].toFixed(1)}`;
-
-  for (let i = 0; i < pts.length - 1; i++) {
-    const p0 = pts[Math.max(0, i - 1)];
-    const p1 = pts[i];
-    const p2 = pts[i + 1];
-    const p3 = pts[Math.min(pts.length - 1, i + 2)];
-
-    let cp1x = p1[0] + (p2[0] - p0[0]) * tension;
-    let cp1y = p1[1] + (p2[1] - p0[1]) * tension;
-
-    let cp2x = p2[0] - (p3[0] - p1[0]) * tension;
-    let cp2y = p2[1] - (p3[1] - p1[1]) * tension;
-
-    // 约束控制点不超出图表上下边界
-    cp1y = Math.max(padT, Math.min(baselineY, cp1y));
-    cp2y = Math.max(padT, Math.min(baselineY, cp2y));
-
-    lineD += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2[0].toFixed(1)} ${p2[1].toFixed(1)}`;
-  }
-
-  const startX = pts[0][0].toFixed(1);
-  const endX = pts[pts.length - 1][0].toFixed(1);
-  const bY = baselineY.toFixed(1);
-  const areaD = `${lineD} L ${endX} ${bY} L ${startX} ${bY} Z`;
-
-  return { lineD, areaD };
-}
 
 interface ThroughputTrendCardProps {
   turns: { item: InferenceMetrics; live: boolean; order: number }[];
@@ -813,6 +743,9 @@ function ThroughputTrendCard({
           </div>
         )}
       </div>
+
+      {/* 口径说明：历史曲线是每轮请求的平均吞吐，避免与下方逐秒实时卡片混淆 */}
+      <div className="inf-trend-foot" title={t("perf.trendScopeHint")}>{t("perf.trendScope")}</div>
     </div>
   );
 }
@@ -835,6 +768,9 @@ function clock(timestamp: number): string {
 export default function InferenceInspector({
   metrics,
   history,
+  realtime,
+  mtpEnabled,
+  serviceRunning,
   mode = "dock",
   dockHeight,
 }: InferenceInspectorProps) {
@@ -926,6 +862,27 @@ export default function InferenceInspector({
   }, [filteredTurns]);
 
   if (!selected) {
+    // 服务运行中但还没有任何推理轮次时，分析页仍展示实时图表，避免实时吞吐被空态整页遮住
+    if (mode === "page" && (serviceRunning || (realtime && realtime.length > 0))) {
+      return (
+        <div className="inf-inspector mode-page">
+          <div className="inf-page-main">
+            <RealtimeThroughputRow
+              samples={realtime || []}
+              running={serviceRunning}
+              turns={allTurns}
+              mtpEnabled={mtpEnabled}
+            />
+            <div className="inf-page-card inf-page-empty">
+              <div className="inf-empty-content">
+                <span className="inf-empty-dash">—</span>
+                <span>{t("perf.waitingInference")}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    }
     return (
       <div className={cn("inf-inspector inf-empty", mode === "page" ? "mode-page" : "mode-dock")}>
         <div className="inf-empty-content">
@@ -1209,6 +1166,14 @@ export default function InferenceInspector({
             sessionStats={sessionStats}
           />
         </div>
+
+        {/* 实时曲线：Decode / Prefill 逐秒；TTFT 与 MTP 草稿接受率按轮次补充解释指标 */}
+        <RealtimeThroughputRow
+          samples={realtime || []}
+          running={serviceRunning}
+          turns={allTurns}
+          mtpEnabled={mtpEnabled}
+        />
 
         {/* 底部：全量历史轮次明细表（沉浸式填满剩余空白空间，联动数据筛选） */}
         <HistoryDetailsTable

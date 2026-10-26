@@ -15,6 +15,8 @@ import {
   parseNinferDurationMs,
   parseInferenceLogFragments,
   InferenceTracker,
+  RealtimeThroughputSampler,
+  extractLlamaSlotSample,
   computeSessionStats,
   type LogTimingFragment,
 } from "../src/utils";
@@ -81,12 +83,15 @@ check("B16 kvmem cachedTokens", frag(lineKvmem, "cache")?.cachedTokens, 48);
 check("B17 kvmem queue 毫秒", frag(lineKvmem, "queue")?.timeMs, 28);
 check("B18 kvmem total 秒格式", frag(lineKvmem, "total")?.timeMs, 2100);
 check("B19 kvmem 无 mtp 幽灵片段", parseInferenceLogFragments(lineKvmem).some((f) => f.type === "generic_speed"), false);
+check("B20 kvmem mtp 接受数", frag(lineKvmem, "mtp")?.mtpAcceptedTokens, 176);
+check("B21 kvmem mtp 草稿数", frag(lineKvmem, "mtp")?.mtpDraftTokens, 287);
+check("B22 kvmem mtp 接受率", frag(lineKvmem, "mtp")?.mtpAcceptRatio, 61.3);
 
 // cancelled 终止行：无任何指标片段
 const lineCancelled = "req#9 cancelled during transport | openai-chat | HTTP 499 | client disconnected";
 {
   const frags = parseInferenceLogFragments(lineCancelled);
-  check("B20 cancelled 仅 task_end", frags.map((f) => f.type).join(","), "task_end");
+  check("B23 cancelled 仅 task_end", frags.map((f) => f.type).join(","), "task_end");
 }
 
 /* ============ C. InferenceTracker.processLine ============ */
@@ -114,6 +119,19 @@ const lineCancelled = "req#9 cancelled during transport | openai-chat | HTTP 499
   const round = tracker.getHistory()[0];
   check("C9 短请求 queueMs 空", round.queueMs, null);
   check("C10 短请求 total", round.totalTimeMs, 859);
+}
+
+// NInfer done 行尾的 mtp 段归属到本轮，且不额外产生轮次
+{
+  const tracker = new InferenceTracker();
+  tracker.processLine("req#4 started | openai-chat non-stream | 1 message | max output 256");
+  const res = tracker.processLine(lineKvmem);
+  const round = tracker.getHistory()[0];
+  check("C11 mtp done 行立即结算", res.isTurnFinished, true);
+  check("C12 mtp 接受数落位", round.mtpAcceptedTokens, 176);
+  check("C13 mtp 草稿数落位", round.mtpDraftTokens, 287);
+  check("C14 mtp 接受率落位", round.mtpAcceptRatio, 61.3);
+  check("C15 mtp 不产生重复轮次", tracker.getHistory().length, 1);
 }
 
 /* ============ D. applyNinferRequestLog ============ */
@@ -214,6 +232,39 @@ const lineCancelled = "req#9 cancelled during transport | openai-chat | HTTP 499
     check("D16 活跃轮已归档清空", t5.hasActiveTurn(), false);
     check("D17 收编后 total 权威", t5.getHistory()[0].totalTimeMs, 1050);
   }
+
+  // speculative.backend === "mtp" 时按请求写入接受率；backend none 不产生 MTP 数据
+  {
+    const t6 = new InferenceTracker();
+    t6.reset();
+    const now = Date.now();
+    t6.applyNinferRequestLog([{ event: "server_start", server_instance_id: "serve-MTP", timestamp_unix_ms: now }]);
+    t6.applyNinferRequestLog([{
+      event: "request_done", server_instance_id: "serve-MTP", timestamp_unix_ms: now + 100,
+      request: { request_id: 11 },
+      result: { prompt_tokens: 68, completion_tokens: 256, computed_prefill_tokens: 20, prefix_cache_hit_tokens: 48 },
+      timings_seconds: { ttft: 0.0655, total: 2.1 },
+      speculative: { backend: "mtp", accepted_tokens: 176, drafted_tokens: 287, rounds: 57 },
+    }]);
+    const mtpRound = t6.getHistory()[0];
+    check("D18 JSONL mtp 接受数", mtpRound.mtpAcceptedTokens, 176);
+    check("D19 JSONL mtp 草稿数", mtpRound.mtpDraftTokens, 287);
+    check("D20 JSONL mtp 接受率", mtpRound.mtpAcceptRatio, 61.3);
+
+    const t7 = new InferenceTracker();
+    t7.reset();
+    const nowNone = Date.now();
+    t7.applyNinferRequestLog([{ event: "server_start", server_instance_id: "serve-NO", timestamp_unix_ms: nowNone }]);
+    t7.applyNinferRequestLog([{
+      event: "request_done", server_instance_id: "serve-NO", timestamp_unix_ms: nowNone + 100,
+      request: { request_id: 12 },
+      result: { prompt_tokens: 68, completion_tokens: 256, prefix_cache_hit_tokens: 0 },
+      timings_seconds: { ttft: 0.0655, total: 2.1 },
+      speculative: { backend: "none", accepted_tokens: 0, drafted_tokens: 0, rounds: 0 },
+    }]);
+    check("D21 backend none 不写接受率", t7.getHistory()[0].mtpAcceptRatio, null);
+    check("D22 backend none 不写草稿数", t7.getHistory()[0].mtpDraftTokens, null);
+  }
 }
 
 /* ============ E. computeSessionStats.totalPromptTokens ============ */
@@ -241,6 +292,124 @@ const lineCancelled = "req#9 cancelled during transport | openai-chat | HTTP 499
   check("F4 llama.cpp decode 速率(±0.01)", Math.abs((f2?.speed ?? 0) - 61.11) < 0.01, true);
   const line3 = "total time =       4254.40 ms";
   check("F5 llama.cpp total", frag(line3, "total")?.timeMs, 4254.4);
+}
+
+/* ============ G. 每秒实时吞吐采样器 ============ */
+{
+  // NInfer 计数器差分：首帧建基线，之后按 Δtokens / Δt 出速率
+  const t = new RealtimeThroughputSampler();
+  check("G1 首帧基线", t.sample({ now: 1000, active: true, decodeTokens: 100, prefillTokens: 0 }).decodeTps, 0);
+  const g2 = t.sample({ now: 2000, active: true, decodeTokens: 170, prefillTokens: 0 });
+  check("G2 1s Decode 差分", g2.decodeTps, 70);
+  const g3 = t.sample({ now: 3000, active: true, decodeTokens: 240, prefillTokens: 500 });
+  check("G3 1s Prefill 差分", g3.prefillTps, 500);
+  const g4 = t.sample({ now: 4000, active: false, decodeTokens: 240, prefillTokens: 500 });
+  check("G4 空闲归零", [g4.decodeTps, g4.prefillTps], [0, 0]);
+
+  // llama.cpp 任务切换：新任务首帧不继承旧任务速率，后续差分正常
+  const l = new RealtimeThroughputSampler();
+  l.sample({ now: 1000, active: true, decodeTokens: 0, prefillTokens: 0, taskKey: "1" });
+  l.sample({ now: 2000, active: true, decodeTokens: 50, prefillTokens: 491, taskKey: "1", prefillRateHint: 851 });
+  const g5 = l.sample({ now: 3000, active: true, decodeTokens: 10, prefillTokens: 20, taskKey: "2", prefillRateHint: 851 });
+  check("G5 任务切换重置", [g5.decodeTps, g5.prefillTps], [0, 851]);
+  const g6 = l.sample({ now: 4000, active: true, decodeTokens: 45, prefillTokens: 20, taskKey: "2" });
+  check("G6 新任务 1s 差分", g6.decodeTps, 35);
+
+  // 计数器回退与超长间隔：只重设基线，不上报负速率或跨空闲混算
+  const r = new RealtimeThroughputSampler();
+  r.sample({ now: 1000, active: true, decodeTokens: 500, prefillTokens: 0 });
+  const g7 = r.sample({ now: 2000, active: true, decodeTokens: 100, prefillTokens: 0 });
+  check("G7 计数器回退归零", g7.decodeTps, 0);
+  const g8 = r.sample({ now: 6000, active: true, decodeTokens: 200, prefillTokens: 0 });
+  check("G8 长间隔重置", g8.decodeTps, 0);
+
+  // 两个采样点之间完成的短请求：空闲采样点补发尾部差量，不能整段丢弃
+  const shortReq = new RealtimeThroughputSampler();
+  shortReq.sample({ now: 1000, active: false, decodeTokens: 0, prefillTokens: 0 });
+  const g9 = shortReq.sample({ now: 2000, active: false, decodeTokens: 101, prefillTokens: 60 });
+  check("G9 空闲 tick 补发尾部速率", [g9.decodeTps, g9.prefillTps], [101, 60]);
+  const g10 = shortReq.sample({ now: 3000, active: false, decodeTokens: 101, prefillTokens: 60 });
+  check("G10 补发后回到零", [g10.decodeTps, g10.prefillTps], [0, 0]);
+
+  // 空闲采样点计数器回退（引擎重启）或间隔过长时不补发
+  const g11 = shortReq.sample({ now: 4000, active: false, decodeTokens: 10, prefillTokens: 5 });
+  check("G11 空闲计数器回退归零", [g11.decodeTps, g11.prefillTps], [0, 0]);
+  const g12 = shortReq.sample({ now: 12000, active: false, decodeTokens: 90, prefillTokens: 60 });
+  check("G12 空闲长间隔不补发", [g12.decodeTps, g12.prefillTps], [0, 0]);
+
+  // llama.cpp 空闲时 taskKey 变为 null 且计数缺失：不得把任务尾差算成速率
+  const llamaIdle = new RealtimeThroughputSampler();
+  llamaIdle.sample({ now: 1000, active: true, decodeTokens: 500, prefillTokens: 4330, taskKey: "7" });
+  const g13 = llamaIdle.sample({ now: 2000, active: false, decodeTokens: null, prefillTokens: null, taskKey: null });
+  check("G13 llama 空闲缺失计数不补发", [g13.decodeTps, g13.prefillTps], [0, 0]);
+}
+
+/* ============ H. llama.cpp /slots 实时计数提取（b11877 新语义） ============ */
+{
+  // b11877：n_prompt_tokens 是上下文总长（生成时持续增长），n_prompt_tokens_processed 才是本轮实际计算的提示词
+  const duringPrefill = extractLlamaSlotSample([{
+    id: 0, id_task: 7, is_processing: true,
+    n_prompt_tokens: 4670, n_prompt_tokens_processed: 2256,
+    next_token: [{ n_decoded: 0 }],
+  }]);
+  check("H1 Prefill 取 processed 而非上下文总长", duringPrefill.prefillTokens, 2256);
+  check("H2 进行中小任务 Decode 计数", duringPrefill.decodeTokens, 0);
+
+  const duringDecode = extractLlamaSlotSample([{
+    id: 0, id_task: 7, is_processing: true,
+    n_prompt_tokens: 5190, n_prompt_tokens_processed: 4330,
+    next_token: [{ n_decoded: 520 }],
+  }]);
+  check("H3 生成阶段 Prefill 计数不再随上下文增长", duringDecode.prefillTokens, 4330);
+  check("H4 生成阶段 Decode 计数", duringDecode.decodeTokens, 520);
+
+  // 同一轮继续生成：上下文总长 +70，processed 保持不变 → Prefill 差分为 0
+  const s = new RealtimeThroughputSampler();
+  s.sample({ now: 1000, ...duringDecode });
+  const h5 = s.sample({ now: 2000, ...extractLlamaSlotSample([{
+    id: 0, id_task: 7, is_processing: true,
+    n_prompt_tokens: 5260, n_prompt_tokens_processed: 4330,
+    next_token: [{ n_decoded: 590 }],
+  }]) });
+  check("H5 生成阶段 Prefill 速率为 0", h5.prefillTps, 0);
+  check("H6 生成阶段 Decode 速率正常", h5.decodeTps, 70);
+
+  // 旧版 llama.cpp：仅提供 timings 时仍可回退
+  const legacy = extractLlamaSlotSample([{
+    id: 0, id_task: 9, is_processing: true,
+    timings: { prompt_n: 491, predicted_n: 40, prompt_per_second: 851 },
+  }]);
+  check("H7 旧版 timings 回退", [legacy.decodeTokens, legacy.prefillTokens, legacy.prefillRateHint], [40, 491, 851]);
+
+  // 空闲槽位不参与计数
+  const idle = extractLlamaSlotSample([{ id: 0, is_processing: false, n_prompt_tokens: 5190, n_prompt_tokens_processed: 4330 }]);
+  check("H8 空闲槽位归零", [idle.active, idle.decodeTokens, idle.prefillTokens], [false, null, null]);
+}
+
+/* ============ I. llama.cpp MTP 草稿接受率 ============ */
+{
+  const release = "slot release_slot_: id 0 | task 7 | draft acceptance = 0.61500 (  176 accepted /  287 generated), mean len =  2.09";
+  const f = frag(release, "mtp");
+  check("I1 llama.cpp 接受数", f?.mtpAcceptedTokens, 176);
+  check("I2 llama.cpp 草稿数", f?.mtpDraftTokens, 287);
+  check("I3 llama.cpp 接受率百分化", f?.mtpAcceptRatio, 61.5);
+
+  // 未开启 MTP 时接受率行没有计数（0/0），不能生成 0% 数据点
+  const zeroRelease = "slot release_slot_: id 0 | task 8 | draft acceptance = 0.00000 (    0 accepted /    0 generated), mean len =  0.00";
+  check("I4 0/0 不产生 mtp 片段", parseInferenceLogFragments(zeroRelease).some((x) => x.type === "mtp"), false);
+
+  // release 行晚于本轮归档：按 taskId 回填已有轮次，不新开轮次、不弹幽灵
+  const tracker = new InferenceTracker();
+  tracker.processLine("slot print_timing: id 0 | task 7 | n_gen = 40, tg = 61.1 t/s, tg_3s = 60.0 t/s");
+  tracker.processLine("total time =       4254.40 ms");
+  const before = tracker.getHistory().length;
+  const res = tracker.processLine(release);
+  const h = tracker.getHistory();
+  check("I5 迟到接受率回填不新增轮次", h.length, before);
+  check("I6 回填轮次接受率", h[0].mtpAcceptRatio, 61.5);
+  check("I7 回填后无活跃轮次", tracker.hasActiveTurn(), false);
+  check("I8 latest 指向回填轮次", res.latest?.mtpAcceptRatio, 61.5);
+  check("I9 回填不改动完成态", res.isTurnFinished, false);
 }
 
 /* ============ 汇总 ============ */

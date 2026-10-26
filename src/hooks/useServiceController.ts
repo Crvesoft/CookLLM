@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { checkOrphanServer, getGpuStats, getServerStatus, isTauri, killOrphanServer, readNinferRequestLog, startServer, stopServer, type OrphanProcessItem, type ServerLifecyclePayload } from "../tauri";
-import type { AppConfig, GpuStats, InferenceMetrics, ModelAsset, Page, ServerStatus, TokSample } from "../types";
-import { EMPTY_STATUS, InferenceTracker, modelTitle, shallowEqualFields } from "../utils";
+import type { AppConfig, GpuStats, InferenceMetrics, ModelAsset, Page, RealtimeTpsSample, ServerStatus, TokSample } from "../types";
+import { EMPTY_STATUS, InferenceTracker, RealtimeThroughputSampler, extractLlamaSlotSample, modelTitle, shallowEqualFields } from "../utils";
 import type { AppendLog, Translate } from "./types";
 
 interface UseServiceControllerOptions {
@@ -31,6 +31,9 @@ export function useServiceController({ config, configReady, pageRef, status, set
   const inferenceTrackerRef = useRef(new InferenceTracker());
   const [latestInference, setLatestInference] = useState<InferenceMetrics | null>(null);
   const [inferenceHistory, setInferenceHistory] = useState<InferenceMetrics[]>([]);
+  /** 每秒实时吞吐采样：分析页 Decode / Prefill 两张实时曲线共用（120 秒环形缓冲） */
+  const realtimeSamplerRef = useRef(new RealtimeThroughputSampler());
+  const [realtimeSamples, setRealtimeSamples] = useState<RealtimeTpsSample[]>([]);
   /** GPU 实时指标（nvidia-smi，2s 轮询；浏览器模式恒为 null；初始从本地缓存读取实现首帧秒显） */
   const [gpuStats, setGpuStats] = useState<GpuStats | null>(() => {
     try {
@@ -230,6 +233,73 @@ export function useServiceController({ config, configReady, pageRef, status, set
     const timer = window.setInterval(refresh, 2000);
     return () => { active = false; window.clearInterval(timer); };
   }, [gpuMonitorEnabled, configReady]);
+
+  /**
+   * 每秒实时吞吐采样：状态轮询保持 2s，这里单独以 1s 节奏读取引擎计数器差分，
+   * 为分析页提供真正的逐秒 Decode / Prefill 曲线（NInfer 与 llama.cpp 家族共用同一采样器）。
+   */
+  useEffect(() => {
+    const port = status.port;
+    const enabled = isTauri() && status.running && Boolean(port) && !serviceStarting;
+    if (!enabled) {
+      realtimeSamplerRef.current.reset();
+      setRealtimeSamples((prev) => (prev.length ? [] : prev));
+      return;
+    }
+    const isNinfer = status.engineType === "ninfer" || status.engineType === "ninfer_kvmem";
+    const sampler = realtimeSamplerRef.current;
+    sampler.reset();
+    setRealtimeSamples([]);
+    let alive = true;
+
+    const push = (sample: RealtimeTpsSample) => {
+      if (!alive) return;
+      setRealtimeSamples((prev) => {
+        const next = [...prev, sample];
+        return next.length > 120 ? next.slice(next.length - 120) : next;
+      });
+    };
+
+    const tick = () => {
+      if (isNinfer) {
+        void fetch(`http://127.0.0.1:${port}/stats`, { signal: AbortSignal.timeout(1000) })
+          .then((r) => (r.ok ? r.json() : null))
+          .catch(() => null)
+          .then((stats) => {
+            if (!alive) return;
+            const counters = stats?.counters;
+            const reqs = stats?.requests;
+            const processing = Boolean(counters && reqs && (reqs.running > 0 || reqs.prefilling > 0 || reqs.decode_ready > 0));
+            push(sampler.sample({
+              now: Date.now(),
+              active: processing,
+              decodeTokens: typeof counters?.committed_decode_tokens === "number" ? counters.committed_decode_tokens : null,
+              prefillTokens: typeof counters?.computed_prefill_tokens === "number" ? counters.computed_prefill_tokens : null,
+            }));
+          });
+        return;
+      }
+      void fetch(`http://127.0.0.1:${port}/slots`, { signal: AbortSignal.timeout(1000) })
+        .then((r) => (r.ok ? r.json() : null))
+        .catch(() => null)
+        .then((data) => {
+          if (!alive) return;
+          const sample = extractLlamaSlotSample(data);
+          push(sampler.sample({
+            now: Date.now(),
+            active: sample.active,
+            decodeTokens: sample.decodeTokens,
+            prefillTokens: sample.prefillTokens,
+            taskKey: sample.taskKey,
+            prefillRateHint: sample.prefillRateHint,
+          }));
+        });
+    };
+
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => { alive = false; window.clearInterval(timer); };
+  }, [serviceStarting, status.engineType, status.port, status.running]);
 
   /** 检测进程意外退出（运行中 → 停止，且不是主动停止）：标记服务异常并自动展开 Dock 显示 ERROR */
   const prevRunningRef = useRef(false);
@@ -433,8 +503,10 @@ export function useServiceController({ config, configReady, pageRef, status, set
   /** 清空当前模型会话的推理性能历史与统计 */
   const handleClearInferenceStats = () => {
     inferenceTrackerRef.current.reset();
+    realtimeSamplerRef.current.reset();
     setLatestInference(null);
     setInferenceHistory([]);
+    setRealtimeSamples([]);
     setTokSample(null);
   };
 
@@ -468,6 +540,7 @@ export function useServiceController({ config, configReady, pageRef, status, set
 
   return {
     serviceAbnormal, tokSample, setTokSample, inferenceTrackerRef, latestInference, setLatestInference, inferenceHistory, setInferenceHistory,
+    realtimeSamples,
     gpuStats, setGpuStats, busy, serviceStarting, startingModelId,
     markServiceReady, serverLifecycleHandlerRef,
     handleStart, handleStop, handleClearInferenceStats,

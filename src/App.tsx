@@ -89,6 +89,7 @@ export default function App() {
   } = useDownloads({ config, configRef, configReady, persist, setToast, appendLog, setSelectedProfiles, t });
   const {
     serviceAbnormal, tokSample, setTokSample, inferenceTrackerRef, latestInference, setLatestInference, inferenceHistory, setInferenceHistory,
+    realtimeSamples,
     gpuStats, setGpuStats, busy, serviceStarting, startingModelId,
     markServiceReady, serverLifecycleHandlerRef,
     handleStart, handleStop, handleClearInferenceStats,
@@ -282,6 +283,14 @@ export default function App() {
   const activeModel = config.models.find((model) => model.id === status.modelId);
   const activeProfile = activeModel?.profiles.find((profile) => profile.id === status.profileId);
 
+  /** 当前运行预设是否开启 MTP / 投机解码（分析页据此决定是否展示接受率卡片） */
+  const mtpEnabled = useMemo(() => {
+    if (!activeProfile) return false;
+    if (status.engineType === "ninfer_kvmem") return true; // KVMem 引擎强制开启 MTP
+    if (status.engineType === "ninfer") return activeProfile.specMtp ?? activeProfile.mtp;
+    return activeProfile.mtp || Boolean(activeProfile.mtpDraftPath?.trim());
+  }, [activeProfile, status.engineType]);
+
   /** 底部状态栏胶囊展示的引擎分支：运行中准确展示当前服务实际使用的引擎分支，未运行时展示全局默认引擎 */
   const dockEngine = useMemo(() => {
     if (status.running) {
@@ -366,6 +375,8 @@ export default function App() {
           tokPerSec={tokSample ? tokSample.rate : null}
           latestMetrics={latestInference}
           inferenceHistory={inferenceHistory}
+          realtimeSamples={realtimeSamples}
+          mtpEnabled={mtpEnabled}
           onClearHistory={handleClearInferenceStats}
           onClear={clearLogs}
         />

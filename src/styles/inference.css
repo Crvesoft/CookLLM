@@ -405,6 +405,256 @@
   }
 }
 
+/* 实时区窄卡片一行：Decode / Prefill 逐秒，TTFT 与 MTP 草稿接受率按轮次；窄窗口降为两列 */
+.inf-realtime-row {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+
+/* MTP 未开启时隐藏第四列，三张卡片等宽铺满 */
+.inf-realtime-row.cols-3 {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.inf-realtime-card {
+  min-width: 0;
+  height: 168px;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  gap: 3px;
+  overflow: hidden;
+  --rt-ttft: #a78bfa;
+  --rt-mtp: #f472b6;
+}
+
+.inf-realtime-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex: 0 0 auto;
+}
+
+.inf-realtime-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: #8490a2;
+  font: 600 12px JetBrains Mono, monospace;
+  white-space: nowrap;
+}
+
+.inf-realtime-title svg {
+  color: #6b7788;
+  flex: none;
+}
+
+.inf-realtime-title .rt-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  flex: none;
+}
+
+.inf-realtime-card.decode .rt-dot {
+  background: #ff8c42;
+  box-shadow: 0 0 5px rgba(255, 140, 66, 0.55);
+}
+
+.inf-realtime-card.prefill .rt-dot {
+  background: #38bdf8;
+  box-shadow: 0 0 5px rgba(56, 189, 248, 0.55);
+}
+
+.inf-realtime-card.ttft .rt-dot {
+  background: var(--rt-ttft);
+  box-shadow: 0 0 5px rgba(167, 139, 250, 0.5);
+}
+
+.inf-realtime-card.mtp .rt-dot {
+  background: var(--rt-mtp);
+  box-shadow: 0 0 5px rgba(244, 114, 182, 0.5);
+}
+
+.inf-realtime-head-right {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.inf-realtime-window {
+  color: #5b6676;
+  font: 10px JetBrains Mono, monospace;
+  white-space: nowrap;
+}
+
+.inf-realtime-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  height: 15px;
+  padding: 0 5px;
+  border: 1px solid #2c2c2c;
+  border-radius: 999px;
+  color: #7b889a;
+  font: 600 9px JetBrains Mono, monospace;
+  letter-spacing: 0.04em;
+}
+
+.inf-realtime-state i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #64748b;
+}
+
+.inf-realtime-state.live {
+  color: #34d399;
+  border-color: rgba(52, 211, 153, 0.35);
+  background: rgba(52, 211, 153, 0.08);
+}
+
+.inf-realtime-state.live i {
+  background: #34d399;
+  box-shadow: 0 0 5px rgba(52, 211, 153, 0.5);
+}
+
+/* 数值与副标题纵向排列，把整张卡片的横向空间留给曲线 */
+.inf-realtime-metric {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.inf-realtime-now {
+  color: #e6ebf3;
+  font: 600 19px/1.15 JetBrains Mono, monospace;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+}
+
+.inf-realtime-card.decode .inf-realtime-now {
+  color: #ff9d5c;
+}
+
+.inf-realtime-card.prefill .inf-realtime-now {
+  color: #38bdf8;
+}
+
+.inf-realtime-card.ttft .inf-realtime-now {
+  color: var(--rt-ttft);
+}
+
+.inf-realtime-card.mtp .inf-realtime-now {
+  color: var(--rt-mtp);
+}
+
+.inf-realtime-now small {
+  margin-left: 2px;
+  color: #7b889a;
+  font: 500 10px JetBrains Mono, monospace;
+}
+
+/* Prefill 当前秒无活动时回显最近一次突发，弱化显示避免误读为当前值 */
+.inf-realtime-now.stale {
+  opacity: 0.62;
+}
+
+.inf-realtime-sub {
+  color: #5b6676;
+  font: 10px JetBrains Mono, monospace;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.inf-realtime-chart {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+.inf-realtime-svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.rt-grid line {
+  stroke: rgba(255, 255, 255, 0.07);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.inf-realtime-axis {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  justify-content: space-between;
+  color: #4d5766;
+  font: 9px JetBrains Mono, monospace;
+  pointer-events: none;
+}
+
+.inf-realtime-empty {
+  position: absolute;
+  inset: 0 0 10px;
+  display: grid;
+  place-items: center;
+  color: #556272;
+  font: 10px JetBrains Mono, monospace;
+  text-align: center;
+  pointer-events: none;
+}
+
+.inf-realtime-tip {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  padding: 1px 5px;
+  border: 1px solid #333333;
+  border-radius: 3px;
+  background: rgba(20, 20, 20, 0.92);
+  color: #e6ebf3;
+  font: 10px JetBrains Mono, monospace;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+@media (max-width: 1000px) {
+  .inf-realtime-row,
+  .inf-realtime-row.cols-3 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .inf-realtime-row,
+  .inf-realtime-row.cols-3 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* 分析页尚无任何推理轮次时，仍展示实时图表 + 等待占位 */
+.inf-page-empty {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+}
+
 .inf-trend-title-wrap {
   display: flex;
   align-items: center;
@@ -634,6 +884,19 @@
   font: 9.5px JetBrains Mono, monospace;
   line-height: 14px;
   flex-shrink: 0;
+}
+
+/* 口径说明：历史曲线按轮次取均值，非逐秒实时值 */
+.inf-trend-foot {
+  flex: 0 0 auto;
+  padding-top: 2px;
+  color: #7b889a;
+  font: 9.5px JetBrains Mono, monospace;
+  text-align: right;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: help;
 }
 
 .inf-table-actions {
@@ -1373,6 +1636,75 @@
   border-color: #e2e8f0;
 }
 
+[data-theme="light"] .inf-realtime-title {
+  color: #475569;
+}
+
+[data-theme="light"] .inf-realtime-title svg {
+  color: #94a3b8;
+}
+
+[data-theme="light"] .inf-realtime-card .rt-dot {
+  box-shadow: none;
+}
+
+[data-theme="light"] .inf-realtime-card {
+  --rt-ttft: #7c3aed;
+  --rt-mtp: #db2777;
+}
+
+[data-theme="light"] .inf-realtime-window,
+[data-theme="light"] .inf-realtime-sub,
+[data-theme="light"] .inf-realtime-axis {
+  color: #94a3b8;
+}
+
+[data-theme="light"] .inf-realtime-now {
+  color: #0f172a;
+}
+
+[data-theme="light"] .inf-realtime-card.decode .inf-realtime-now {
+  color: #ea580c;
+}
+
+[data-theme="light"] .inf-realtime-card.prefill .inf-realtime-now {
+  color: #0284c7;
+}
+
+[data-theme="light"] .inf-realtime-now small {
+  color: #64748b;
+}
+
+[data-theme="light"] .inf-realtime-state {
+  border-color: #e2e8f0;
+  color: #64748b;
+}
+
+[data-theme="light"] .inf-realtime-state.live {
+  color: #059669;
+  border-color: rgba(5, 150, 105, 0.3);
+  background: rgba(16, 185, 129, 0.08);
+}
+
+[data-theme="light"] .inf-realtime-state.live i {
+  background: #10b981;
+  box-shadow: none;
+}
+
+[data-theme="light"] .rt-grid line {
+  stroke: rgba(15, 35, 70, 0.08);
+}
+
+[data-theme="light"] .inf-realtime-empty {
+  color: #94a3b8;
+}
+
+[data-theme="light"] .inf-realtime-tip {
+  border-color: #e2e8f0;
+  background: #ffffff;
+  color: #0f172a;
+}
+
 [data-theme="light"] .trend-grid line {
   stroke: rgba(15, 35, 70, 0.08);
 }
@@ -1453,6 +1785,10 @@
 [data-theme="light"] .inf-trend-badge {
   background: #e2e8f0;
   color: #475569;
+}
+
+[data-theme="light"] .inf-trend-foot {
+  color: #64748b;
 }
 
 [data-theme="light"] .legend-item.decode {

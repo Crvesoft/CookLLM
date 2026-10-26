@@ -240,17 +240,6 @@
   box-shadow: 0 0 6px rgba(30, 158, 99, .45);
 }
 
-[data-theme="light"] .starting-badge {
-  color: #b45309;
-  background: #ffffff;
-  border-color: #e5a04e;
-}
-
-[data-theme="light"] .starting-badge i {
-  background: #b45309;
-  box-shadow: 0 0 6px rgba(217, 119, 6, .35);
-}
-
 [data-theme="light"] .launch-button {
   color: #bd5c16;
   border-color: #efd3a6;
