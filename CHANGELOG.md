@@ -2,6 +2,17 @@
 
 本文档是发布流程提取 Release Notes 的唯一数据源（`.github/workflows/release.yml` 会自动读取，请在每次发版前更新本文件）。
 
+## v0.4.3
+
+#### 🚀 适配Kvmem v0.19.0
+
+- **算法可选**：NInfer / KVMem 预设新增「投机采样算法」（原生 MTP / DFlash 2 / DFlash），最终分别以 `--spec mtp|dflash|dflash2` 启动；llama.cpp 侧新增 DFlash 并行草稿，走 `--spec-type draft-dflash` 加伴随草稿模型（`-md`）。
+- **草稿步长**：DFlash 家族草稿宽度开放 1–15，默认 5；MTP 保持默认 4。切换算法时同步校正 N-gram 步长——DFlash 默认关闭，切回 MTP 恢复到 31。
+
+#### 📊 调整分析采样规则
+
+- **会话均值**：平均 Decode / Prefill 改为「总 token ÷ 总耗时」，轮次长短不一时不会被短轮次带偏。
+
 ## v0.4.2
 
 #### 🚀 新增图表与卡片优化
