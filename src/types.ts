@@ -63,6 +63,8 @@ export interface Profile {
   mtp: boolean;
   mtpDraftPath?: string;
   specDraftNMax: number;
+  /** 投机采样模式（none 关闭，mtp 内置 MTP，dflash DFlash/DFlash2 并行草稿，draft 传统外置草稿模型） */
+  specType?: "none" | "mtp" | "dflash" | "draft";
   cacheTypeK: string;
   cacheTypeV: string;
   jinja: boolean;
@@ -101,6 +103,8 @@ export interface Profile {
   deviceProfilePath?: string;
   /** ninfer 专属：自适应 MTP 投机采样开关 */
   specMtp?: boolean;
+  /** ninfer 专属：投机加速算法（mtp 原生 MTP，dflash2 DFlash 2，dflash DFlash） */
+  ninferSpecType?: "mtp" | "dflash" | "dflash2";
   /** ninfer 专属：MTP 草稿 Token 步数（--draft-tokens N） */
   draftTokens?: number;
   /** ninfer 专属：自适应草稿衰减（--adaptive-mtp） */
@@ -259,10 +263,14 @@ export interface TokSample {
 export interface InferenceMetrics {
   id: string;
   timestamp: number;
+  /** 最近一次指标刷新时间 (ms)：timestamp 是轮次开始时间，活跃判定必须看这个字段 */
+  updatedAt?: number | null;
   /** 实际逐字生成速率 (Decode, tokens/sec) */
   decodeTps?: number | null;
   /** 生成 Token 数量 */
   decodeTokens?: number | null;
+  /** Decode 阶段开始时间 (ms)，用于生成中计算本轮累计均值 */
+  decodeStartAt?: number | null;
   /** 生成阶段耗时 (ms) */
   decodeTimeMs?: number | null;
   /** 预热/首字提示词处理速率 (Prefill, tokens/sec) */
@@ -295,6 +303,8 @@ export interface InferenceMetrics {
   mtpDraftTokens?: number | null;
   /** MTP 草稿接受率 (0 ~ 100) */
   mtpAcceptRatio?: number | null;
+  /** 本轮投机采样后端（mtp / dflash / dflash2 / mixed），用于接受率卡片自识别算法名 */
+  specBackend?: string | null;
 }
 
 /** 每秒实时吞吐采样点（分析页实时 Decode / Prefill 曲线） */

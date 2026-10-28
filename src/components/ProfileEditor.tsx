@@ -137,19 +137,37 @@ export default function ProfileEditor({
   const update = <K extends keyof Profile>(key: K, value: Profile[K]) => setDraft((current) => ({ ...current, [key]: value }));
   const number = (key: keyof Profile) => (event: ChangeEvent<HTMLInputElement>) => update(key, Number(event.target.value) as never);
   const select = (key: keyof Profile) => (event: ChangeEvent<HTMLSelectElement>) => update(key, event.target.value as never);
-  const mtpMode: "none" | "mtp" | "draft" = draft.mtp ? "mtp" : draft.mtpDraftPath !== undefined && draft.mtpDraftPath !== null ? "draft" : "none";
+  const specMode: "none" | "mtp" | "dflash" | "draft" = draft.specType ?? (
+    draft.mtp ? "mtp" : draft.mtpDraftPath !== undefined && draft.mtpDraftPath !== null ? "draft" : "none"
+  );
+  const ninferSpecHint =
+    !(draft.specMtp ?? true) ? "--spec"
+      : draft.ninferSpecType === "dflash2" ? "--spec dflash2"
+        : draft.ninferSpecType === "dflash" ? "--spec dflash"
+          : "--spec mtp";
 
-  const changeSpecMode = (next: "none" | "mtp" | "draft") => {
+  const changeSpecMode = (next: "none" | "mtp" | "dflash" | "draft") => {
     setMtpDraftError(null);
     if (next === "none") {
-      update("mtp", false);
-      update("mtpDraftPath", undefined);
+      setDraft((cur) => ({ ...cur, specType: "none", mtp: false, mtpDraftPath: undefined }));
     } else if (next === "mtp") {
-      update("mtp", true);
-      update("mtpDraftPath", undefined);
+      setDraft((cur) => ({ ...cur, specType: "mtp", mtp: true, mtpDraftPath: undefined }));
+    } else if (next === "dflash") {
+      setDraft((cur) => ({
+        ...cur,
+        specType: "dflash",
+        mtp: false,
+        mtpDraftPath: cur.mtpDraftPath ?? "",
+        specDraftNMax: cur.specDraftNMax && cur.specDraftNMax > 0 ? cur.specDraftNMax : 4,
+      }));
     } else {
-      update("mtp", false);
-      if (draft.mtpDraftPath == null) update("mtpDraftPath", "");
+      setDraft((cur) => ({
+        ...cur,
+        specType: "draft",
+        mtp: false,
+        mtpDraftPath: cur.mtpDraftPath ?? "",
+        specDraftNMax: cur.specDraftNMax && cur.specDraftNMax > 0 ? cur.specDraftNMax : 3,
+      }));
     }
   };
 
@@ -766,75 +784,141 @@ export default function ProfileEditor({
               </div>
             </div>
             {isNinfer ? (
-              <div className="form-grid two">
-                <Field label={t("f.specMtp")} hint="--spec mtp">
-                  <ToggleBox
-                    icon={<Zap size={14} />}
-                    checked={draft.specMtp ?? true}
-                    onChange={(next) => update("specMtp", next)}
-                    activeLabel={t("f.toggleEnabled")}
-                    inactiveLabel={t("f.toggleDisabled")}
-                  />
-                </Field>
-                <Field label={t("f.adaptiveMtp")} hint="--adaptive-mtp">
-                  <ToggleBox
-                    checked={draft.adaptiveMtp ?? true}
-                    onChange={(next) => update("adaptiveMtp", next)}
-                    disabled={!(draft.specMtp ?? true)}
-                    activeLabel={t("f.toggleEnabled")}
-                    inactiveLabel={t("f.toggleDisabled")}
-                  />
-                </Field>
-                <Field label={t("f.draftTokens")} hint="--draft-tokens">
-                  <input
-                    type="number"
-                    min="1"
-                    max="8"
-                    step="1"
-                    disabled={!(draft.specMtp ?? true)}
-                    value={draft.draftTokens ?? 2}
-                    onChange={number("draftTokens")}
-                  />
-                </Field>
-                <Field label={t("f.ngramDraftTokens")} hint="--ngram-draft-tokens">
-                  <input
-                    type="number"
-                    min="0"
-                    max="8"
-                    step="1"
-                    value={draft.ngramDraftTokens ?? 0}
-                    onChange={number("ngramDraftTokens")}
-                  />
-                </Field>
+              <div className="section-grid-stack">
+                <div className="form-grid two">
+                  <Field label={t("f.specMtp")} hint={ninferSpecHint}>
+                    <ToggleBox
+                      icon={<Zap size={14} />}
+                      checked={draft.specMtp ?? true}
+                      onChange={(next) => update("specMtp", next)}
+                      activeLabel={t("f.toggleEnabled")}
+                      inactiveLabel={t("f.toggleDisabled")}
+                    />
+                  </Field>
+                  <Field label={t("f.ninferSpecAlgorithm")} hint="--spec">
+                    <select
+                      disabled={!(draft.specMtp ?? true)}
+                      value={draft.ninferSpecType ?? "mtp"}
+                      onChange={(e) => {
+                        const next = e.target.value as "mtp" | "dflash" | "dflash2";
+                        setDraft((cur) => ({
+                          ...cur,
+                          ninferSpecType: next,
+                          // DFlash 家族不依赖 ngram 复制加速，切换过去时回到关闭态；切回 MTP 回到其默认宽度
+                          ngramDraftTokens: next === "mtp" ? (cur.ngramDraftTokens || 31) : 0,
+                          // 草稿步长同步回到各算法默认：DFlash 家族 5，MTP 4
+                          draftTokens: next === "mtp" ? 4 : 5,
+                        }));
+                      }}
+                    >
+                      <option value="mtp">{t("ninfer.specMtp")}</option>
+                      <option value="dflash2">{t("ninfer.specDflash2")}</option>
+                      <option value="dflash">{t("ninfer.specDflash")}</option>
+                    </select>
+                  </Field>
+                </div>
+                {(draft.specMtp ?? true) && (
+                  (draft.ninferSpecType === "dflash2" || draft.ninferSpecType === "dflash") ? (
+                    <div className="form-grid two">
+                      <Field label={t("f.draftTokens")} hint="--draft-tokens">
+                        <input
+                          type="number"
+                          min="1"
+                          max="15"
+                          step="1"
+                          value={draft.draftTokens ?? 5}
+                          onChange={number("draftTokens")}
+                        />
+                      </Field>
+                      <Field label={t("f.ngramDraftTokens")} hint="--ngram-draft-tokens">
+                        <input
+                          type="number"
+                          min="0"
+                          max="63"
+                          step="1"
+                          value={draft.ngramDraftTokens ?? 0}
+                          onChange={number("ngramDraftTokens")}
+                        />
+                      </Field>
+                    </div>
+                  ) : (
+                    <div className="form-grid three">
+                      <Field label={t("f.draftTokens")} hint="--draft-tokens">
+                        <input
+                          type="number"
+                          min="1"
+                          max="15"
+                          step="1"
+                          value={draft.draftTokens ?? 4}
+                          onChange={number("draftTokens")}
+                        />
+                      </Field>
+                      <Field label={t("f.ngramDraftTokens")} hint="--ngram-draft-tokens">
+                        <input
+                          type="number"
+                          min="0"
+                          max="63"
+                          step="1"
+                          value={draft.ngramDraftTokens ?? 31}
+                          onChange={number("ngramDraftTokens")}
+                        />
+                      </Field>
+                      <Field label={t("f.adaptiveMtp")} hint="--adaptive-mtp">
+                        <ToggleBox
+                          checked={draft.adaptiveMtp ?? true}
+                          onChange={(next) => update("adaptiveMtp", next)}
+                          activeLabel={t("f.toggleEnabled")}
+                          inactiveLabel={t("f.toggleDisabled")}
+                        />
+                      </Field>
+                    </div>
+                  )
+                )}
               </div>
             ) : (
               <div className="form-grid">
-                {mtpMode === "none" && (
+                {specMode === "none" && (
                   <Field label={t("f.specMode")} hint="--spec-type">
-                    <select value={mtpMode} onChange={(e) => changeSpecMode(e.target.value as "none" | "mtp" | "draft")}>
+                    <select value={specMode} onChange={(e) => changeSpecMode(e.target.value as "none" | "mtp" | "dflash" | "draft")}>
                       <option value="none">{t("spec.off")}</option>
                       <option value="mtp">{t("spec.builtin")}</option>
+                      <option value="dflash">{t("spec.dflash")}</option>
                       <option value="draft">{t("spec.external")}</option>
                     </select>
                   </Field>
                 )}
-                {mtpMode !== "none" && (
+                {specMode !== "none" && (
                   <>
                     <div className="form-grid two spec-two">
                       <Field label={t("f.specMode")} hint="--spec-type">
-                        <select value={mtpMode} onChange={(e) => changeSpecMode(e.target.value as "none" | "mtp" | "draft")}>
+                        <select value={specMode} onChange={(e) => changeSpecMode(e.target.value as "none" | "mtp" | "dflash" | "draft")}>
                           <option value="none">{t("spec.off")}</option>
                           <option value="mtp">{t("spec.builtin")}</option>
+                          <option value="dflash">{t("spec.dflash")}</option>
                           <option value="draft">{t("spec.external")}</option>
                         </select>
                       </Field>
-                      <Field label={t("f.specDraftNMax")} hint="--spec-draft-n-max">
+                      <Field
+                        label={t("f.specDraftNMax")}
+                        hint={specMode === "dflash" ? "--spec-draft-n-max (建议 4~8)" : "--spec-draft-n-max"}
+                      >
                         <input type="number" min="1" step="1" value={draft.specDraftNMax} onChange={number("specDraftNMax")} />
                       </Field>
                     </div>
-                    {mtpMode === "draft" && (
-                      <Field label={t("f.draftModelPath")} hint="-md">
-                        <PickerGroup value={draft.mtpDraftPath ?? ""} placeholder={t("filePicker.externalPlaceholder")} browseLabel={t("browse")} replaceLabel={t("filePicker.replace")} clearLabel={t("filePicker.clear")} onPick={attachMtpDraft} onClear={() => { update("mtpDraftPath", undefined); setMtpDraftError(null); }} />
+                    {(specMode === "dflash" || specMode === "draft") && (
+                      <Field
+                        label={specMode === "dflash" ? t("f.dflashModelPath") : t("f.draftModelPath")}
+                        hint={specMode === "dflash" ? "-md (DFlash/DFlash2 GGUF)" : "-md"}
+                      >
+                        <PickerGroup
+                          value={draft.mtpDraftPath ?? ""}
+                          placeholder={specMode === "dflash" ? t("filePicker.dflashPlaceholder") : t("filePicker.externalPlaceholder")}
+                          browseLabel={t("browse")}
+                          replaceLabel={t("filePicker.replace")}
+                          clearLabel={t("filePicker.clear")}
+                          onPick={attachMtpDraft}
+                          onClear={() => { update("mtpDraftPath", undefined); setMtpDraftError(null); }}
+                        />
                       </Field>
                     )}
                   </>
@@ -882,9 +966,9 @@ export default function ProfileEditor({
                         useAltPrefixCaching: draft.useAltPrefixCaching ?? true,
                         deviceSnapshotSlots: typeof draft.deviceSnapshotSlots === "number" && draft.deviceSnapshotSlots > 0 ? Math.trunc(draft.deviceSnapshotSlots) : undefined,
                         specMtp: draft.specMtp ?? true,
-                        draftTokens: draft.draftTokens ?? 2,
+                        draftTokens: draft.draftTokens ?? ((draft.ninferSpecType ?? "mtp") === "mtp" ? 4 : 5),
                         adaptiveMtp: draft.adaptiveMtp ?? true,
-                        ngramDraftTokens: draft.ngramDraftTokens ?? 0,
+                        ngramDraftTokens: draft.ngramDraftTokens ?? ((draft.ninferSpecType ?? "mtp") === "mtp" ? 31 : 0),
                         defaultMaxTokens: Math.max(0, Math.trunc(draft.defaultMaxTokens ?? 0)),
                         topK: typeof draft.topK === "number" && draft.topK > 0 ? Math.min(20, Math.trunc(draft.topK)) : undefined,
                         seed: typeof draft.seed === "number" && draft.seed >= 0 ? Math.trunc(draft.seed) : undefined,

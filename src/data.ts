@@ -298,9 +298,9 @@ export function mergeImportedConfig(
   };
 }
 export const DEFAULT_PROFILES: Profile[] = [
-  { id: "balanced", name: "均衡模式", description: "日常对话与编码的推荐配置", host: "0.0.0.0", port: 9931, gpuLayers: 35, contextSize: 8192, threads: 8, parallel: 1, batchSize: 512, ubatchSize: 256, flashAttention: true, ncmoeLayers: 0, mtp: false, mtpDraftPath: undefined, specDraftNMax: 3, cacheTypeK: "f32", cacheTypeV: "f32", jinja: true, reasoning: "auto", reasoningEffort: "auto", reasoningBudget: -1, noMmprojOffload: false, loadMode: "mmap", temperature: 0.7, topP: 0.9, minP: 0.05, repeatPenalty: 1.1, extraArgs: "", kvmemBudget: 36864, kvmemGenReserve: 16384 },
-  { id: "deep-thought", name: "深度思考", description: "长上下文与稳定输出，适合复杂推理", host: "0.0.0.0", port: 9931, gpuLayers: 48, contextSize: 32768, threads: 10, parallel: 1, batchSize: 512, ubatchSize: 256, flashAttention: true, ncmoeLayers: 0, mtp: false, mtpDraftPath: undefined, specDraftNMax: 3, cacheTypeK: "q8_0", cacheTypeV: "q8_0", jinja: true, reasoning: "on", reasoningEffort: "high", reasoningBudget: -1, noMmprojOffload: false, loadMode: "mmap", temperature: 0.55, topP: 0.92, minP: 0.03, repeatPenalty: 1.08, extraArgs: "", kvmemBudget: 36864, kvmemGenReserve: 16384 },
-  { id: "low-memory", name: "低显存", description: "保守卸载与小批次，降低资源占用", host: "0.0.0.0", port: 9931, gpuLayers: 12, contextSize: 4096, threads: 6, parallel: 1, batchSize: 128, ubatchSize: 128, flashAttention: true, ncmoeLayers: 0, mtp: false, mtpDraftPath: undefined, specDraftNMax: 3, cacheTypeK: "f16", cacheTypeV: "f16", jinja: false, reasoning: "auto", reasoningEffort: "auto", reasoningBudget: -1, noMmprojOffload: false, loadMode: "mmap", temperature: 0.75, topP: 0.9, minP: 0.05, repeatPenalty: 1.12, extraArgs: "", kvmemBudget: 36864, kvmemGenReserve: 16384 },
+  { id: "balanced", name: "均衡模式", description: "日常对话与编码的推荐配置", host: "0.0.0.0", port: 9931, gpuLayers: 35, contextSize: 8192, threads: 8, parallel: 1, batchSize: 512, ubatchSize: 256, flashAttention: true, ncmoeLayers: 0, mtp: false, mtpDraftPath: undefined, specDraftNMax: 3, specType: "none", cacheTypeK: "f32", cacheTypeV: "f32", jinja: true, reasoning: "auto", reasoningEffort: "auto", reasoningBudget: -1, noMmprojOffload: false, loadMode: "mmap", temperature: 0.7, topP: 0.9, minP: 0.05, repeatPenalty: 1.1, extraArgs: "", kvmemBudget: 36864, kvmemGenReserve: 16384 },
+  { id: "deep-thought", name: "深度思考", description: "长上下文与稳定输出，适合复杂推理", host: "0.0.0.0", port: 9931, gpuLayers: 48, contextSize: 32768, threads: 10, parallel: 1, batchSize: 512, ubatchSize: 256, flashAttention: true, ncmoeLayers: 0, mtp: false, mtpDraftPath: undefined, specDraftNMax: 3, specType: "none", cacheTypeK: "q8_0", cacheTypeV: "q8_0", jinja: true, reasoning: "on", reasoningEffort: "high", reasoningBudget: -1, noMmprojOffload: false, loadMode: "mmap", temperature: 0.55, topP: 0.92, minP: 0.03, repeatPenalty: 1.08, extraArgs: "", kvmemBudget: 36864, kvmemGenReserve: 16384 },
+  { id: "low-memory", name: "低显存", description: "保守卸载与小批次，降低资源占用", host: "0.0.0.0", port: 9931, gpuLayers: 12, contextSize: 4096, threads: 6, parallel: 1, batchSize: 128, ubatchSize: 128, flashAttention: true, ncmoeLayers: 0, mtp: false, mtpDraftPath: undefined, specDraftNMax: 3, specType: "none", cacheTypeK: "f16", cacheTypeV: "f16", jinja: false, reasoning: "auto", reasoningEffort: "auto", reasoningBudget: -1, noMmprojOffload: false, loadMode: "mmap", temperature: 0.75, topP: 0.9, minP: 0.05, repeatPenalty: 1.12, extraArgs: "", kvmemBudget: 36864, kvmemGenReserve: 16384 },
 ];
 
 /** ninfer 模型导入时的默认预设：对齐 NInfer 官方 64K 纯文本推荐配置，仅此一个 */
@@ -321,6 +321,7 @@ export const DEFAULT_NINFER_PROFILES: Profile[] = [
     ncmoeLayers: 0,
     mtp: true,
     specDraftNMax: 4,
+    specType: "none",
     cacheTypeK: "k8v4",
     cacheTypeV: "k8v4",
     jinja: true,
@@ -341,6 +342,7 @@ export const DEFAULT_NINFER_PROFILES: Profile[] = [
     deviceIndex: 0,
     deviceProfile: "auto",
     specMtp: true,
+    ninferSpecType: "mtp",
     draftTokens: 4,
     adaptiveMtp: true,
     ngramDraftTokens: 31,
@@ -415,6 +417,8 @@ export function migrateConfig(config: AppConfig): AppConfig {
         const hasMtp = typeof (p as Partial<Profile>).mtp === "boolean";
         const hasMtpDraft = typeof (p as Partial<Profile>).mtpDraftPath === "string" && Boolean((p as Partial<Profile>).mtpDraftPath?.trim());
         const hasSpecDraftNMax = typeof (p as Partial<Profile>).specDraftNMax === "number";
+        const hasSpecType = typeof (p as Partial<Profile>).specType === "string";
+        const hasNinferSpecType = typeof (p as Partial<Profile>).ninferSpecType === "string";
         const rawBudget = (p as Partial<Profile>).reasoningBudget;
         const hasReasoningBudget = typeof rawBudget === "number" && Number.isFinite(rawBudget);
         const hasNoMmprojOffload = typeof (p as Partial<Profile>).noMmprojOffload === "boolean";
@@ -426,6 +430,10 @@ export function migrateConfig(config: AppConfig): AppConfig {
           mtp: hasMtp ? (p as Profile).mtp : false,
           mtpDraftPath: hasMtpDraft ? (p as Profile).mtpDraftPath : undefined,
           specDraftNMax: hasSpecDraftNMax ? (p as Profile).specDraftNMax : 3,
+          specType: hasSpecType
+            ? (p as Profile).specType
+            : (hasMtp && (p as Profile).mtp ? "mtp" : hasMtpDraft ? "draft" : "none"),
+          ninferSpecType: hasNinferSpecType ? (p as Profile).ninferSpecType : "mtp",
           reasoningBudget: hasReasoningBudget ? Math.max(-1, Math.trunc(rawBudget!)) : -1,
           noMmprojOffload: hasNoMmprojOffload ? (p as Profile).noMmprojOffload : false,
           kvmemBudget: hasKvmemBudget ? (p as Profile).kvmemBudget : 36864,

@@ -564,6 +564,12 @@
   font: 11px JetBrains Mono, monospace;
 }
 
+/* 统计口径提示（含进行中轮次）：右侧低对比度标注 */
+.inf-session-head em {
+  font-style: normal;
+  opacity: 0.75;
+}
+
 .inf-session-grid {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));

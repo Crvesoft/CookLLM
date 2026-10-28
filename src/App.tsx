@@ -286,10 +286,21 @@ export default function App() {
   /** 当前运行预设是否开启 MTP / 投机解码（分析页据此决定是否展示接受率卡片） */
   const mtpEnabled = useMemo(() => {
     if (!activeProfile) return false;
-    if (status.engineType === "ninfer_kvmem") return true; // KVMem 引擎强制开启 MTP
+    if (status.engineType === "ninfer_kvmem") return activeProfile.specMtp ?? true;
     if (status.engineType === "ninfer") return activeProfile.specMtp ?? activeProfile.mtp;
+    if (activeProfile.specType) {
+      return activeProfile.specType !== "none";
+    }
     return activeProfile.mtp || Boolean(activeProfile.mtpDraftPath?.trim());
   }, [activeProfile, status.engineType]);
+
+  /** 当前运行预设的投机算法：分析页接受率卡片据此显示 MTP / DFlash / DFlash 2 */
+  const specBackend = useMemo(() => {
+    if (!mtpEnabled || !activeProfile) return null;
+    if (status.engineType === "ninfer" || status.engineType === "ninfer_kvmem") return activeProfile.ninferSpecType ?? "mtp";
+    if (activeProfile.ninferSpecType) return activeProfile.ninferSpecType;
+    return activeProfile.specType === "mtp" ? "mtp" : null;
+  }, [mtpEnabled, activeProfile, status.engineType]);
 
   /** 底部状态栏胶囊展示的引擎分支：运行中准确展示当前服务实际使用的引擎分支，未运行时展示全局默认引擎 */
   const dockEngine = useMemo(() => {
@@ -377,6 +388,7 @@ export default function App() {
           inferenceHistory={inferenceHistory}
           realtimeSamples={realtimeSamples}
           mtpEnabled={mtpEnabled}
+          specBackend={specBackend}
           onClearHistory={handleClearInferenceStats}
           onClear={clearLogs}
         />

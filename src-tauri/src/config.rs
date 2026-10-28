@@ -79,6 +79,9 @@ pub(crate) struct Profile {
     pub(crate) mtp_draft_path: Option<String>,
     #[serde(default = "default_spec_draft_n_max")]
     pub(crate) spec_draft_n_max: u32,
+    /// 投机采样模式（none / mtp / dflash / draft）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) spec_type: Option<String>,
     #[serde(default = "default_cache_type")]
     pub(crate) cache_type_k: String,
     #[serde(default = "default_cache_type")]
@@ -139,7 +142,10 @@ pub(crate) struct Profile {
     /// ninfer 专属：自适应 MTP 投机采样开关
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) spec_mtp: Option<bool>,
-    /// ninfer 专属：MTP 草稿 Token 步数（--draft-tokens N）
+    /// ninfer 专属：投机采样算法（mtp / dflash / dflash2）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) ninfer_spec_type: Option<String>,
+    /// ninfer 专属：草稿 Token 步数（--draft-tokens N，DFlash 家族默认 5、MTP 默认 4）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) draft_tokens: Option<u32>,
     /// ninfer 专属：自适应草稿衰减（--adaptive-mtp）
@@ -392,6 +398,7 @@ impl Default for AppConfig {
                 mtp: false,
                 mtp_draft_path: None,
                 spec_draft_n_max: default_spec_draft_n_max(),
+                spec_type: None,
                 cache_type_k: default_cache_type(),
                 cache_type_v: default_cache_type(),
                 jinja: true,
@@ -416,6 +423,7 @@ impl Default for AppConfig {
                 chat_template_path: None,
                 device_profile_path: None,
                 spec_mtp: None,
+                ninfer_spec_type: None,
                 draft_tokens: None,
                 adaptive_mtp: None,
                 ngram_draft_tokens: None,

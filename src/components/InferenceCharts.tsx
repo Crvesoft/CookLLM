@@ -2,7 +2,7 @@ import { Zap, Filter, ChevronDown, Check } from "lucide-react";
 import React, { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import type { InferenceMetrics } from "../types";
-import { cn, classifyRoundStatus, type InferenceFilterType } from "../utils";
+import { cn, classifyRoundStatus, liveRoundDecodeTps, type InferenceFilterType } from "../utils";
 
 export interface TurnData {
   item: InferenceMetrics;
@@ -184,6 +184,9 @@ export function HistoryDetailsTable({
               const promptTokens = item.promptTokens ?? ((item.prefillTokens ?? 0) + (item.cachedTokens ?? 0));
               const decodeTokens = item.decodeTokens ?? 0;
               const cacheRatio = item.cacheHitRatio ?? (promptTokens > 0 && item.cachedTokens != null ? (item.cachedTokens / promptTokens) * 100 : null);
+              // 活跃轮次与顶部大看板同口径：展示本轮累计均值，完成后自然收敛到引擎权威值
+              const decodeRate = (live ? liveRoundDecodeTps(item) : null)
+                ?? (item.decodeTps != null && item.decodeTps > 0 ? item.decodeTps : null);
 
               const status = classifyRoundStatus(item, live);
               const statusLabel =
@@ -215,9 +218,9 @@ export function HistoryDetailsTable({
                     </span>
                   </td>
                   <td className="col-time">{clock(item.timestamp)}</td>
-                  <td className={cn("col-speed text-decode", (!item.decodeTps || item.decodeTps <= 0) && "text-muted")}>
-                    <b>{item.decodeTps != null && item.decodeTps > 0 ? `${speed(item.decodeTps)}` : "—"}</b>
-                    {item.decodeTps != null && item.decodeTps > 0 && <small> tok/s</small>}
+                  <td className={cn("col-speed text-decode", decodeRate == null && "text-muted")}>
+                    <b>{decodeRate != null ? `${speed(decodeRate)}` : "—"}</b>
+                    {decodeRate != null && <small> tok/s</small>}
                   </td>
                   <td className={cn("col-speed text-prefill", (!item.prefillTps || item.prefillTps <= 0) && "text-muted")}>
                     <b>{item.prefillTps != null && item.prefillTps > 0 ? `${speed(item.prefillTps)}` : "—"}</b>

@@ -201,6 +201,7 @@ export function LogsPage({
   inferenceHistory,
   realtimeSamples,
   mtpEnabled,
+  specBackend,
   onClearHistory,
   onClear,
 }: {
@@ -211,6 +212,7 @@ export function LogsPage({
   inferenceHistory?: InferenceMetrics[];
   realtimeSamples?: RealtimeTpsSample[];
   mtpEnabled?: boolean;
+  specBackend?: string | null;
   onClearHistory?: () => void;
   onClear: () => void;
 }) {
@@ -306,6 +308,7 @@ export function LogsPage({
             history={inferenceHistory || []}
             realtime={realtimeSamples || []}
             mtpEnabled={mtpEnabled}
+            specBackend={specBackend}
             serviceRunning={status.running}
             onClearHistory={onClearHistory}
             mode="page"

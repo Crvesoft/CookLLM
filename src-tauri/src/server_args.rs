@@ -282,10 +282,29 @@ pub(crate) fn build_server_launch(app: &AppHandle, model_id: &str, profile_id: &
             return Err(format!("图像识别模型（mmproj）不存在：{}", mmproj));
         }
     }
+    let engine_type = detect_engine_type(&chosen_path);
     let mtp_draft_path = profile.mtp_draft_path.as_deref().filter(|p| !p.trim().is_empty());
-    if let Some(draft) = mtp_draft_path {
-        if !PathBuf::from(draft).exists() {
-            return Err(format!("Draft/MTP 模型不存在：{}", draft));
+    let resolved_spec_mode = profile.spec_type.as_deref().unwrap_or_else(|| {
+        if profile.mtp {
+            "mtp"
+        } else if mtp_draft_path.is_some() {
+            "draft"
+        } else {
+            "none"
+        }
+    });
+    if engine_type != "ninfer" && engine_type != "ninfer_kvmem" {
+        if resolved_spec_mode == "dflash" || resolved_spec_mode == "draft" {
+            let draft = mtp_draft_path.ok_or_else(|| {
+                if resolved_spec_mode == "dflash" {
+                    "已启用 DFlash 投机采样，但未指定伴随草稿模型路径（-md）".to_string()
+                } else {
+                    "已启用外置草稿模型，但未指定草稿模型路径（-md）".to_string()
+                }
+            })?;
+            if !PathBuf::from(draft).exists() {
+                return Err(format!("Draft/DFlash 草稿模型不存在：{}", draft));
+            }
         }
     }
 
@@ -295,7 +314,6 @@ pub(crate) fn build_server_launch(app: &AppHandle, model_id: &str, profile_id: &
         extra_tokens.iter().any(|arg| arg == flag || arg.starts_with(&format!("{flag}=")))
     };
 
-    let engine_type = detect_engine_type(&chosen_path);
     let mut command = Command::new(&chosen_path);
     // 自动将子进程工作目录（Cwd）切换到引擎根目录（如 E:\AI\ninfer-run），
     // 确保与 NInferManager 官方启动机制 100% 一致，使相对路径（如 config/...）与引擎模块平滑加载
@@ -461,38 +479,53 @@ pub(crate) fn build_server_launch(app: &AppHandle, model_id: &str, profile_id: &
             }
         }
 
-        // 9. 投机采样 (MTP / Draft)
-        // 注意：ninfer-kvmem-server 引擎强制要求 MTP (1..15) 与 Ngram (1..63) 投机采样。
+        // 9. 投机采样 (MTP / DFlash / DFlash2 / Draft)
+        // KVMem 引擎默认开启投机采样，但后端算法与草稿宽度均可配置（--spec mtp|dflash|dflash2）。
         let need_spec = if engine_type == "ninfer_kvmem" {
-            true // KVMem 核心必须开启 MTP
+            profile.spec_mtp.unwrap_or(true)
         } else {
             profile.spec_mtp.unwrap_or(profile.mtp)
         };
 
         if need_spec && !has_extra_arg("--spec") {
-            command.arg("--spec").arg("mtp");
+            let spec_mode = match profile.ninfer_spec_type.as_deref() {
+                Some("dflash2") => "dflash2",
+                Some("dflash") => "dflash",
+                _ => "mtp",
+            };
+            command.arg("--spec").arg(spec_mode);
+            let default_tokens = if spec_mode == "dflash2" || spec_mode == "dflash" { 5 } else { 4 };
             let draft_tokens = profile.draft_tokens.unwrap_or_else(|| {
-                if profile.spec_draft_n_max > 0 { profile.spec_draft_n_max } else { 4 }
+                // spec_draft_n_max 是 llama.cpp 的草稿宽度，只在 MTP 下沿用兜底；DFlash 家族用自身默认
+                if spec_mode == "mtp" && profile.spec_draft_n_max > 0 { profile.spec_draft_n_max } else { default_tokens }
             }).clamp(1, 15);
             command.arg("--draft-tokens").arg(draft_tokens.to_string());
 
-            let need_adaptive = if engine_type == "ninfer_kvmem" {
-                true
-            } else {
-                profile.adaptive_mtp.unwrap_or(true)
-            };
-            if need_adaptive && !has_extra_arg("--adaptive-mtp") {
+            let need_adaptive = profile.adaptive_mtp.unwrap_or(true);
+            if need_adaptive && spec_mode == "mtp" && !has_extra_arg("--adaptive-mtp") {
                 command.arg("--adaptive-mtp");
             }
 
-            let mut ngram = profile.ngram_draft_tokens.unwrap_or(31);
-            if profile.parallel > 1 && ngram > 15 {
-                ngram = 15;
+            // 0 表示关闭 ngram 复制草稿，必须原样传递；DFlash 不依赖 ngram 提速，默认关闭
+            let default_ngram = if spec_mode == "mtp" { 31 } else { 0 };
+            let mut ngram = profile.ngram_draft_tokens.unwrap_or(default_ngram);
+            if ngram > 0 {
+                // DFlash 的复制轮在启动预热（CUDA Graph 捕获）时按 ngram 宽度建帧，
+                // 宽度小于草稿宽度会直接崩溃：neural proposal is outside its supported frame
+                if spec_mode != "mtp" {
+                    ngram = ngram.max(draft_tokens);
+                }
+                if profile.parallel > 1 && ngram > 15 {
+                    ngram = 15;
+                }
             }
-            command.arg("--ngram-draft-tokens").arg(ngram.clamp(1, 63).to_string());
+            command.arg("--ngram-draft-tokens").arg(ngram.min(63).to_string());
             if !has_extra_arg("--ngram-min-match") {
                 command.arg("--ngram-min-match").arg("12");
             }
+        } else if engine_type == "ninfer_kvmem" && !has_extra_arg("--spec") {
+            // KVMem 检测到伴随权重时会自动启用 MTP，显式 none 才能让用户真正关闭投机采样
+            command.arg("--spec").arg("none");
         }
 
         // 10. 深度思考
@@ -659,9 +692,6 @@ pub(crate) fn build_server_launch(app: &AppHandle, model_id: &str, profile_id: &
                 command.arg("--no-mmproj-offload");
             }
         }
-        if let Some(draft) = mtp_draft_path {
-            command.arg("-md").arg(draft);
-        }
         command
             .arg("--host").arg(&profile.host)
             .arg("--port").arg(profile.port.to_string())
@@ -712,11 +742,39 @@ pub(crate) fn build_server_launch(app: &AppHandle, model_id: &str, profile_id: &
         if profile.ncmoe_layers > 0 {
             command.arg("-ncmoe").arg(profile.ncmoe_layers.to_string());
         }
-        if profile.mtp && mtp_draft_path.is_none() {
-            command.arg("--spec-type").arg("draft-mtp");
-        }
-        if profile.mtp || mtp_draft_path.is_some() {
-            command.arg("--spec-draft-n-max").arg(profile.spec_draft_n_max.to_string());
+        match resolved_spec_mode {
+            "dflash" => {
+                if let Some(draft) = mtp_draft_path {
+                    if !has_extra_arg("-md") && !has_extra_arg("--model-draft") {
+                        command.arg("-md").arg(draft);
+                    }
+                }
+                if !has_extra_arg("--spec-type") {
+                    command.arg("--spec-type").arg("draft-dflash");
+                }
+                if !has_extra_arg("--spec-draft-n-max") {
+                    command.arg("--spec-draft-n-max").arg(profile.spec_draft_n_max.to_string());
+                }
+            }
+            "draft" => {
+                if let Some(draft) = mtp_draft_path {
+                    if !has_extra_arg("-md") && !has_extra_arg("--model-draft") {
+                        command.arg("-md").arg(draft);
+                    }
+                }
+                if !has_extra_arg("--spec-draft-n-max") {
+                    command.arg("--spec-draft-n-max").arg(profile.spec_draft_n_max.to_string());
+                }
+            }
+            "mtp" => {
+                if !has_extra_arg("--spec-type") {
+                    command.arg("--spec-type").arg("draft-mtp");
+                }
+                if !has_extra_arg("--spec-draft-n-max") {
+                    command.arg("--spec-draft-n-max").arg(profile.spec_draft_n_max.to_string());
+                }
+            }
+            _ => {}
         }
         if profile.jinja {
             command.arg("--jinja");

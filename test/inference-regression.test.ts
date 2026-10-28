@@ -18,8 +18,11 @@ import {
   RealtimeThroughputSampler,
   extractLlamaSlotSample,
   computeSessionStats,
+  liveRoundDecodeTps,
+  specAlgorithmLabel,
   type LogTimingFragment,
 } from "../src/utils";
+import type { InferenceMetrics } from "../src/types";
 
 let pass = 0;
 let fail = 0;
@@ -94,6 +97,25 @@ const lineCancelled = "req#9 cancelled during transport | openai-chat | HTTP 499
   check("B23 cancelled 仅 task_end", frags.map((f) => f.type).join(","), "task_end");
 }
 
+// dflash / dflash2 沿用 accepted 计数格式；与 ngram 混合时后端名变为 mixed speculation
+const lineDflash2 = "req#5 done | openai-chat | stop token | prompt 68 | output 256 | cache 0 (0.0%) | TTFT 60.2 ms | total 1.9s | prefill 880.1 tok/s | decode 95.4 tok/s | dflash2 accepted 120/240 (50.0%)";
+check("B24 dflash2 接受数", frag(lineDflash2, "mtp")?.mtpAcceptedTokens, 120);
+check("B25 dflash2 草稿数", frag(lineDflash2, "mtp")?.mtpDraftTokens, 240);
+check("B26 dflash2 接受率", frag(lineDflash2, "mtp")?.mtpAcceptRatio, 50);
+const lineMixed = lineDflash2.replace("dflash2 accepted", "mixed speculation accepted");
+check("B27 mixed speculation 接受率", frag(lineMixed, "mtp")?.mtpAcceptRatio, 50);
+// 后端名随 --spec 变化，接受率卡片据此显示 MTP / DFlash / DFlash 2
+check("B28 kvmem 后端名 mtp", frag(lineKvmem, "mtp")?.specBackend, "mtp");
+check("B29 dflash2 后端名", frag(lineDflash2, "mtp")?.specBackend, "dflash2");
+check("B30 mixed 后端名", frag(lineMixed, "mtp")?.specBackend, "mixed speculation");
+
+// 接受率卡片标题：按后端显示算法名，未识别（mixed / llama.cpp 外部草稿）回退通用标题
+check("B31 标题 mtp", specAlgorithmLabel("mtp"), "MTP");
+check("B32 标题 dflash", specAlgorithmLabel("dflash"), "DFlash");
+check("B33 标题 dflash2", specAlgorithmLabel("dflash2"), "DFlash 2");
+check("B34 标题 mixed 回退", specAlgorithmLabel("mixed speculation"), null);
+check("B35 标题缺省回退", specAlgorithmLabel(undefined), null);
+
 /* ============ C. InferenceTracker.processLine ============ */
 // 复合时长 done 行不应触发墙钟回填
 {
@@ -132,6 +154,24 @@ const lineCancelled = "req#9 cancelled during transport | openai-chat | HTTP 499
   check("C13 mtp 草稿数落位", round.mtpDraftTokens, 287);
   check("C14 mtp 接受率落位", round.mtpAcceptRatio, 61.3);
   check("C15 mtp 不产生重复轮次", tracker.getHistory().length, 1);
+}
+
+// 活跃轮次快照必须带最近刷新时间：分析页据此判定「生成中」，避免长生成被当成已完成轮次
+{
+  const tracker = new InferenceTracker();
+  const slots = [{ is_processing: true }];
+  const baseStats = {
+    requests: { running: 1, prefilling: 0, decode_ready: 1 },
+    counters: { committed_decode_tokens: 1000, computed_prefill_tokens: 100, reused_prompt_tokens: 0 },
+  };
+  tracker.updateFromNinfer({ stats: baseStats, slots });
+  const res = tracker.updateFromNinfer({
+    stats: { ...baseStats, counters: { ...baseStats.counters, committed_decode_tokens: 1050 } },
+    slots,
+  });
+  check("C16 快照带最近刷新时间", typeof res.latest?.updatedAt, "number");
+  check("C17 刷新时间不早于开始时间", (res.latest?.updatedAt ?? 0) >= (res.latest?.timestamp ?? 0), true);
+  check("C18 活跃轮次暂无总耗时", res.latest?.totalTimeMs, null);
 }
 
 /* ============ D. applyNinferRequestLog ============ */
@@ -264,6 +304,20 @@ const lineCancelled = "req#9 cancelled during transport | openai-chat | HTTP 499
     }]);
     check("D21 backend none 不写接受率", t7.getHistory()[0].mtpAcceptRatio, null);
     check("D22 backend none 不写草稿数", t7.getHistory()[0].mtpDraftTokens, null);
+
+    const t8 = new InferenceTracker();
+    t8.reset();
+    const nowDf = Date.now();
+    t8.applyNinferRequestLog([{ event: "server_start", server_instance_id: "serve-DF", timestamp_unix_ms: nowDf }]);
+    t8.applyNinferRequestLog([{
+      event: "request_done", server_instance_id: "serve-DF", timestamp_unix_ms: nowDf + 100,
+      request: { request_id: 13 },
+      result: { prompt_tokens: 68, completion_tokens: 256, prefix_cache_hit_tokens: 0 },
+      timings_seconds: { ttft: 0.0655, total: 2.1 },
+      speculative: { backend: "dflash2", accepted_tokens: 120, drafted_tokens: 240, rounds: 40 },
+    }]);
+    check("D23 JSONL dflash2 接受率", t8.getHistory()[0].mtpAcceptRatio, 50);
+    check("D24 JSONL dflash2 后端名", t8.getHistory()[0].specBackend, "dflash2");
   }
 }
 
@@ -277,6 +331,18 @@ const lineCancelled = "req#9 cancelled during transport | openai-chat | HTTP 499
   check("E1 累计输入", stats.totalPromptTokens, 275);
   check("E2 累计产出", stats.totalTokens, 406);
   check("E3 轮次数", stats.turns, 3);
+  check("E4 平均 Decode 按总产出÷总耗时", stats.avgDecodeTps, 94.5);
+}
+
+// 会话均值 = 总 token ÷ 总耗时（长轮次主导），不是各轮速率的算术平均
+{
+  const stats = computeSessionStats([
+    { id: "a", timestamp: 1, decodeTokens: 51, decodeTps: 102, decodeTimeMs: 500, prefillTokens: 100, prefillTps: 500, prefillTimeMs: 200 },
+    { id: "b", timestamp: 2, decodeTokens: 32553, decodeTps: 111.1, decodeTimeMs: 292900, prefillTokens: 900, prefillTps: 300, prefillTimeMs: 3000 },
+  ]);
+  check("E5 平均 Decode = 总产出 ÷ 总 Decode 时长", stats.avgDecodeTps, 111.1);
+  check("E6 平均 Prefill = 总预热 token ÷ 总预热时长", stats.avgPrefillTps, 312.5);
+  check("E7 峰值仍取单轮最高", stats.peakDecodeTps, 111.1);
 }
 
 /* ============ F. llama.cpp 旧语义回归 ============ */
@@ -410,6 +476,22 @@ const lineCancelled = "req#9 cancelled during transport | openai-chat | HTTP 499
   check("I7 回填后无活跃轮次", tracker.hasActiveTurn(), false);
   check("I8 latest 指向回填轮次", res.latest?.mtpAcceptRatio, 61.5);
   check("I9 回填不改动完成态", res.isTurnFinished, false);
+}
+
+/* ============ J. liveRoundDecodeTps ============ */
+{
+  const base: InferenceMetrics = {
+    id: "live",
+    timestamp: 1000,
+    decodeTokens: 400,
+    decodeStartAt: 1000,
+    updatedAt: 5000,
+  };
+  check("J1 生成中本轮累计均值", liveRoundDecodeTps(base), 100);
+  check("J2 首字 3 秒内回退瞬时值", liveRoundDecodeTps({ ...base, updatedAt: 3500 }), null);
+  check("J3 缺 Decode 起点不计算", liveRoundDecodeTps({ ...base, decodeStartAt: null }), null);
+  check("J4 无产出 tokens 不计算", liveRoundDecodeTps({ ...base, decodeTokens: 0 }), null);
+  check("J5 缺刷新时间时用 now 兜底", liveRoundDecodeTps({ ...base, updatedAt: undefined }, 5000), 100);
 }
 
 /* ============ 汇总 ============ */

@@ -127,6 +127,7 @@ export interface LogTimingFragment {
   mtpAcceptedTokens?: number;
   mtpDraftTokens?: number;
   mtpAcceptRatio?: number;
+  specBackend?: string;
 }
 
 /**
@@ -262,16 +263,18 @@ export function parseInferenceLogFragments(line: string): LogTimingFragment[] {
         });
       }
 
-      // MTP 草稿接受率（done 行实时给出 176/287 (61.3%)）；放在数据片段之后，
+      // 草稿接受率（done 行实时给出 176/287 (61.3%)）；后端名随 --spec 变化
+      // （mtp / dflash / dflash2，与 ngram 混合时是 mixed speculation），放在数据片段之后，
       // 让 tracker 能优先归属到本轮正在跟踪的数据行
-      const mtpMatch = line.match(/\bmtp\s+accepted\s+(\d+)\s*\/\s*(\d+)\s*\(([0-9.]+)\s*%\)/i);
-      if (mtpMatch) {
+      const specMatch = line.match(/\b(mtp|dflash2?|mixed speculation)\s+accepted\s+(\d+)\s*\/\s*(\d+)\s*\(([0-9.]+)\s*%\)/i);
+      if (specMatch) {
         fragments.push({
           type: "mtp",
           taskId: reqId,
-          mtpAcceptedTokens: parseInt(mtpMatch[1], 10),
-          mtpDraftTokens: parseInt(mtpMatch[2], 10),
-          mtpAcceptRatio: parseFloat(mtpMatch[3]),
+          specBackend: specMatch[1].toLowerCase(),
+          mtpAcceptedTokens: parseInt(specMatch[2], 10),
+          mtpDraftTokens: parseInt(specMatch[3], 10),
+          mtpAcceptRatio: parseFloat(specMatch[4]),
         });
       }
     }
@@ -616,6 +619,7 @@ export class InferenceTracker {
           mtpAcceptedTokens: frag.mtpAcceptedTokens ?? null,
           mtpDraftTokens: frag.mtpDraftTokens ?? null,
           mtpAcceptRatio: frag.mtpAcceptRatio ?? null,
+          ...(frag.specBackend ? { specBackend: frag.specBackend } : {}),
         };
         const currentHasData = this.currentHasData();
         const currentMatches =
@@ -809,6 +813,13 @@ export class InferenceTracker {
     }
     if (data.decodeTokens != null && data.decodeTokens > 0 && (this.current.decodeTokens == null || data.decodeTokens > this.current.decodeTokens)) {
       this.current.decodeTokens = data.decodeTokens;
+      // llama.cpp 只给当前任务的 predicted_n：按速率反推 Decode 起点，供生成中本轮均值使用
+      if (this.current.decodeStartAt == null) {
+        const rate = data.decodeTps != null && data.decodeTps > 0 ? data.decodeTps : this.current.decodeTps;
+        if (rate != null && rate > 0) {
+          this.current.decodeStartAt = Math.round(now - (data.decodeTokens / rate) * 1000);
+        }
+      }
       changed = true;
     }
     // 预热指标以 /slots 为准：短提示词不会打印 prompt processing 行，只有端点有完整数值
@@ -906,6 +917,8 @@ export class InferenceTracker {
       const dReused = cReused != null && prevBase.reused != null ? cReused - prevBase.reused : 0;
       if (dDecode > 0) {
         this.current.decodeTokens = (this.current.decodeTokens || 0) + dDecode;
+        // Decode 起点取上一个采样时刻：增量实际产生于 (prevBase.at, now] 窗口内
+        if (this.current.decodeStartAt == null) this.current.decodeStartAt = prevBase.at;
         const tps = dDecode / dtSec;
         if (tps > 0 && tps <= 5000) {
           this.current.decodeTps = parseFloat(tps.toFixed(1));
@@ -972,7 +985,8 @@ export class InferenceTracker {
       const spec = r.speculative && typeof r.speculative === "object" ? (r.speculative as Record<string, unknown>) : null;
       const specAccepted = num(spec?.accepted_tokens);
       const specDrafted = num(spec?.drafted_tokens);
-      const hasMtp = spec?.backend === "mtp" && specDrafted != null && specDrafted > 0;
+      // backend 随 --spec 变化（mtp / dflash / dflash2），none 表示本轮没有模型草稿
+      const hasSpec = typeof spec?.backend === "string" && spec.backend !== "none" && specDrafted != null && specDrafted > 0;
       const exact: Partial<InferenceMetrics> = {
         taskId,
         instanceId: instanceId ?? null,
@@ -989,9 +1003,10 @@ export class InferenceTracker {
         decodeTimeMs: decodeMs != null ? Math.round(decodeMs * 1000) : null,
         decodeTps: decodeMs != null && decodeMs > 0 && decodeTokens != null ? parseFloat((decodeTokens / decodeMs).toFixed(1)) : null,
         totalTimeMs: totalMs != null ? Math.round(totalMs * 1000) : null,
-        mtpAcceptedTokens: hasMtp ? specAccepted : null,
-        mtpDraftTokens: hasMtp ? specDrafted : null,
-        mtpAcceptRatio: hasMtp && specAccepted != null ? parseFloat(((specAccepted / (specDrafted as number)) * 100).toFixed(1)) : null,
+        mtpAcceptedTokens: hasSpec ? specAccepted : null,
+        mtpDraftTokens: hasSpec ? specDrafted : null,
+        mtpAcceptRatio: hasSpec && specAccepted != null ? parseFloat(((specAccepted / (specDrafted as number)) * 100).toFixed(1)) : null,
+        specBackend: hasSpec ? String(spec?.backend).toLowerCase() : null,
       };
 
       // 1) 活跃轮次同实例同 taskId（或轮询兜底开的无 taskId 轮，开始时间早于本 done 记录）：
@@ -1086,10 +1101,13 @@ export class InferenceTracker {
     return {
       id: this.current.id || `inf-${Date.now()}`,
       timestamp: this.current.timestamp || Date.now(),
+      // 快照新鲜度：长生成中 timestamp 不变，只有 lastUpdateAt 持续推进
+      updatedAt: this.current.lastUpdateAt ?? this.current.timestamp ?? Date.now(),
       taskId: this.current.taskId,
       instanceId: this.current.instanceId ?? null,
       decodeTps: this.current.decodeTps ?? null,
       decodeTokens: this.current.decodeTokens ?? null,
+      decodeStartAt: this.current.decodeStartAt ?? null,
       decodeTimeMs: this.current.decodeTimeMs ?? null,
       prefillTps: this.current.prefillTps ?? null,
       prefillTokens: this.current.prefillTokens ?? null,
@@ -1103,6 +1121,7 @@ export class InferenceTracker {
       mtpAcceptedTokens: this.current.mtpAcceptedTokens ?? null,
       mtpDraftTokens: this.current.mtpDraftTokens ?? null,
       mtpAcceptRatio: this.current.mtpAcceptRatio ?? null,
+      specBackend: this.current.specBackend ?? null,
       totalTimeMs: this.current.totalTimeMs ?? (
         (this.current.prefillTimeMs || 0) + (this.current.decodeTimeMs || 0) || null
       ),
@@ -1348,13 +1367,13 @@ export interface InferenceSessionStats {
   totalTokens: number;
   totalPromptTokens: number;
 
-  // Decode 统计（仅统计有效值 > 0，绝不把无效轮次当作 0 参与平均）
+  // Decode 统计：平均值为会话总产出 ÷ 总 Decode 耗时（按耗时加权，等价于「总 token ÷ 总时间」）
   avgDecodeTps: number | null;
   validDecodeTurns: number;
   peakDecodeTps: number | null;
   peakDecodeTurnOrder: number | null;
 
-  // Prefill 统计（仅统计有效值 > 0）
+  // Prefill 统计：平均值为会话总预热 token ÷ 总预热耗时
   avgPrefillTps: number | null;
   validPrefillTurns: number;
   peakPrefillTps: number | null;
@@ -1402,6 +1421,28 @@ export function matchesInferenceFilter(
   }
 }
 
+/** 投机后端名 → 卡片标题里的算法名；未识别（llama.cpp 外部草稿、混合投机）时返回 null 回退通用标题 */
+export function specAlgorithmLabel(backend?: string | null): string | null {
+  switch (backend) {
+    case "mtp": return "MTP";
+    case "dflash": return "DFlash";
+    case "dflash2": return "DFlash 2";
+    default: return null;
+  }
+}
+
+/**
+ * 生成中轮次的本轮累计均值（已产出 tokens ÷ 已 Decode 耗时）。
+ * 首字后 3 秒内样本过小、易被瞬时抖动带偏，返回 null 由调用方回退瞬时速率。
+ */
+export function liveRoundDecodeTps(item: InferenceMetrics, now: number = Date.now()): number | null {
+  if (item.decodeTokens == null || item.decodeTokens <= 0 || item.decodeStartAt == null) return null;
+  const elapsedMs = (item.updatedAt ?? now) - item.decodeStartAt;
+  if (elapsedMs < 3000) return null;
+  const tps = item.decodeTokens / (elapsedMs / 1000);
+  return tps > 0 && tps <= 5000 ? parseFloat(tps.toFixed(1)) : null;
+}
+
 export function computeSessionStats(
   history: InferenceMetrics[],
   orders?: number[]
@@ -1434,11 +1475,15 @@ export function computeSessionStats(
 
   let sumDecodeTps = 0;
   let countDecodeTps = 0;
+  let pooledDecodeTokens = 0;
+  let pooledDecodeMs = 0;
   let peakDecodeTps: number | null = null;
   let peakDecodeTurnOrder: number | null = null;
 
   let sumPrefillTps = 0;
   let countPrefillTps = 0;
+  let pooledPrefillTokens = 0;
+  let pooledPrefillMs = 0;
   let peakPrefillTps: number | null = null;
   let peakPrefillTurnOrder: number | null = null;
 
@@ -1457,7 +1502,7 @@ export function computeSessionStats(
     if (item.decodeTokens) totalGenTokens += item.decodeTokens;
     if (item.promptTokens) totalPrompt += item.promptTokens;
 
-    // Decode: 仅统计有效吞吐 > 0
+    // Decode: 仅统计有效吞吐 > 0；同时累计 tokens 与耗时用于加权平均
     if (item.decodeTps != null && item.decodeTps > 0) {
       sumDecodeTps += item.decodeTps;
       countDecodeTps++;
@@ -1465,15 +1510,34 @@ export function computeSessionStats(
         peakDecodeTps = item.decodeTps;
         peakDecodeTurnOrder = order;
       }
+      // 缺耗时（如 llama.cpp / 生成中轮次）时按 tokens ÷ 速率反推，保证加权口径一致
+      const decodeMs = item.decodeTimeMs != null && item.decodeTimeMs > 0
+        ? item.decodeTimeMs
+        : item.decodeTokens != null && item.decodeTokens > 0
+        ? (item.decodeTokens / item.decodeTps) * 1000
+        : 0;
+      if (item.decodeTokens != null && item.decodeTokens > 0 && decodeMs > 0) {
+        pooledDecodeTokens += item.decodeTokens;
+        pooledDecodeMs += decodeMs;
+      }
     }
 
-    // Prefill: 仅统计有效吞吐 > 0
+    // Prefill: 仅统计有效吞吐 > 0；同样按总 token ÷ 总耗时加权
     if (item.prefillTps != null && item.prefillTps > 0) {
       sumPrefillTps += item.prefillTps;
       countPrefillTps++;
       if (peakPrefillTps === null || item.prefillTps > peakPrefillTps) {
         peakPrefillTps = item.prefillTps;
         peakPrefillTurnOrder = order;
+      }
+      const prefillMs = item.prefillTimeMs != null && item.prefillTimeMs > 0
+        ? item.prefillTimeMs
+        : item.prefillTokens != null && item.prefillTokens > 0
+        ? (item.prefillTokens / item.prefillTps) * 1000
+        : 0;
+      if (item.prefillTokens != null && item.prefillTokens > 0 && prefillMs > 0) {
+        pooledPrefillTokens += item.prefillTokens;
+        pooledPrefillMs += prefillMs;
       }
     }
 
@@ -1494,15 +1558,21 @@ export function computeSessionStats(
     }
   }
 
+  // 会话均值优先用「总 token ÷ 总耗时」：轮次长短差异大时，算术平均会被短轮次带偏
+  const pooledAvg = (tokens: number, ms: number): number | null =>
+    tokens > 0 && ms > 0 ? parseFloat((tokens / (ms / 1000)).toFixed(1)) : null;
+
   return {
     turns: totalRounds,
     totalTokens: totalGenTokens,
     totalPromptTokens: totalPrompt,
-    avgDecodeTps: countDecodeTps ? parseFloat((sumDecodeTps / countDecodeTps).toFixed(1)) : null,
+    avgDecodeTps: pooledAvg(pooledDecodeTokens, pooledDecodeMs)
+      ?? (countDecodeTps ? parseFloat((sumDecodeTps / countDecodeTps).toFixed(1)) : null),
     validDecodeTurns: countDecodeTps,
     peakDecodeTps: peakDecodeTps !== null ? parseFloat((peakDecodeTps as number).toFixed(2)) : null,
     peakDecodeTurnOrder,
-    avgPrefillTps: countPrefillTps ? parseFloat((sumPrefillTps / countPrefillTps).toFixed(1)) : null,
+    avgPrefillTps: pooledAvg(pooledPrefillTokens, pooledPrefillMs)
+      ?? (countPrefillTps ? parseFloat((sumPrefillTps / countPrefillTps).toFixed(1)) : null),
     validPrefillTurns: countPrefillTps,
     peakPrefillTps: peakPrefillTps !== null ? parseFloat((peakPrefillTps as number).toFixed(2)) : null,
     peakPrefillTurnOrder,

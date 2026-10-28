@@ -6,6 +6,7 @@ import {
   cn,
   computeSessionStats,
   classifyRoundStatus,
+  liveRoundDecodeTps,
   matchesInferenceFilter,
   type RoundStatus,
   type InferenceFilterType,
@@ -19,6 +20,7 @@ interface InferenceInspectorProps {
   history: InferenceMetrics[];
   realtime?: RealtimeTpsSample[];
   mtpEnabled?: boolean;
+  specBackend?: string | null;
   serviceRunning?: boolean;
   onClearHistory?: () => void;
   compact?: boolean;
@@ -102,7 +104,8 @@ function ThroughputTrendCard({
       const status = classifyRoundStatus(turn.item, turn.live);
       const isLive = turn.live;
 
-      const rawDecode = turn.item.decodeTps != null && turn.item.decodeTps > 0 ? turn.item.decodeTps : null;
+      const rawDecode = (isLive ? liveRoundDecodeTps(turn.item) : null)
+        ?? (turn.item.decodeTps != null && turn.item.decodeTps > 0 ? turn.item.decodeTps : null);
       const rawPrefill = turn.item.prefillTps != null && turn.item.prefillTps > 0 ? turn.item.prefillTps : null;
 
       const x =
@@ -770,6 +773,7 @@ export default function InferenceInspector({
   history,
   realtime,
   mtpEnabled,
+  specBackend,
   serviceRunning,
   mode = "dock",
   dockHeight,
@@ -795,11 +799,14 @@ export default function InferenceInspector({
   /** 尚未进入历史的独立轮次快照 */
   const liveOnly = metrics && !liveInHistory ? metrics : null;
 
-  // 真正处于正在生成状态：未提交至历史、未产生最终总耗时、且在近期（6s内）有活跃数据流
+  // 真正处于正在生成状态：未提交至历史、未产生最终总耗时、且近期（6s内）有数据刷新
+  // 活跃判定必须用最近刷新时间：timestamp 是轮次开始时间，超过 6s 的长生成会误判为已完成，
+  // 导致进行中的瞬时速率被计入「本会话统计」的平均值
+  const liveActivityAt = liveOnly ? (liveOnly.updatedAt ?? liveOnly.timestamp ?? 0) : 0;
   const isTrulyLive = Boolean(
     liveOnly &&
     !liveOnly.totalTimeMs &&
-    (Date.now() - (liveOnly.timestamp || 0) < 6000)
+    (Date.now() - liveActivityAt < 6000)
   );
 
   // 新一轮真正开始生成时回到实时，避免用户停在上一轮看不到当前数据
@@ -856,10 +863,20 @@ export default function InferenceInspector({
     ?? null;
 
   const sessionStats = useMemo(() => {
-    const filteredHistory = filteredTurns.filter((t) => !t.live).map((t) => t.item);
-    const orders = filteredTurns.filter((t) => !t.live).map((t) => t.order);
-    return computeSessionStats(filteredHistory, orders);
+    // 进行中轮次按「本轮累计」口径参与统计：Decode 取本轮均值（瞬时值抖动大），
+    // Cache / TTFT 尚无权威值，置空不计入；这样首轮生成中也能看到会话统计
+    const items = filteredTurns.map((turn) => {
+      if (!turn.live) return turn.item;
+      return {
+        ...turn.item,
+        decodeTps: liveRoundDecodeTps(turn.item) ?? turn.item.decodeTps,
+        cacheHitRatio: null,
+      };
+    });
+    const orders = filteredTurns.map((turn) => turn.order);
+    return computeSessionStats(items, orders);
   }, [filteredTurns]);
+  const hasLiveSessionTurn = filteredTurns.some((turn) => turn.live);
 
   if (!selected) {
     // 服务运行中但还没有任何推理轮次时，分析页仍展示实时图表，避免实时吞吐被空态整页遮住
@@ -872,6 +889,7 @@ export default function InferenceInspector({
               running={serviceRunning}
               turns={allTurns}
               mtpEnabled={mtpEnabled}
+              specBackend={specBackend}
             />
             <div className="inf-page-card inf-page-empty">
               <div className="inf-empty-content">
@@ -918,15 +936,25 @@ export default function InferenceInspector({
   const prefillPct = prefillMs != null && timed > 0 ? Math.round((prefillMs / timed) * 100) : null;
   const decodePct = decodeMs != null && timed > 0 ? Math.max(0, 100 - (queuePct ?? 0) - (prefillPct ?? 0)) : null;
 
+  const selectedTurn = filteredTurns.find((turn) => turn.item.id === selected.id)
+    ?? allTurns.find((turn) => turn.item.id === selected.id);
+  const isSelectedLive = selectedTurn?.live ?? false;
+  const selectedOrder = selectedTurn?.order ?? 1;
+
+  // 生成中改用本轮累计均值（已产出 tokens ÷ 已 Decode 耗时）：瞬时窗口速率抖动大，
+  // 累计值随生成收敛，完成后与引擎权威值自然衔接；首字后 3 秒内仍展示瞬时值
+  const liveRoundAvg = isSelectedLive ? liveRoundDecodeTps(selected) : null;
+  const decodeRate = liveRoundAvg ?? selected.decodeTps;
+
   const decodeSub = decodeTokens > 0
-    ? `${tokens(decodeTokens)} tok${decodeMs ? ` · ${duration(decodeMs)}` : ""}${selected.thinkingTokens != null && selected.thinkingTokens > 0 ? ` · ${t("perf.thinkingTokens", { n: tokens(selected.thinkingTokens) })}` : ""}`
+    ? `${tokens(decodeTokens)} tok${liveRoundAvg != null ? ` · ${t("perf.roundAverage")}` : ""}${selected.thinkingTokens != null && selected.thinkingTokens > 0 ? ` · ${t("perf.thinkingTokens", { n: tokens(selected.thinkingTokens) })}` : ""}`
     : prefillPhase ? t("perf.pending") : "";
   const prefillSub = prefillTokens > 0
-    ? `${tokens(prefillTokens)} tok${prefillMs ? ` · ${duration(prefillMs)}` : ""}`
+    ? `${tokens(prefillTokens)} tok`
     : selected.prefillTps != null ? t("perf.inputProcessing") : "";
 
   const kpis: { key: string; value: string; name: string; sub: string }[] = [
-    { key: "decode", value: selected.decodeTps != null ? `${speed(selected.decodeTps)} tok/s` : "—", name: "Decode", sub: decodeSub },
+    { key: "decode", value: decodeRate != null ? `${speed(decodeRate)} tok/s` : "—", name: "Decode", sub: decodeSub },
     { key: "prefill", value: selected.prefillTps != null ? `${speed(selected.prefillTps)} tok/s` : "—", name: "Prefill", sub: prefillSub },
     {
       key: "ttft",
@@ -937,11 +965,6 @@ export default function InferenceInspector({
     },
     { key: "total", value: totalMs != null ? duration(totalMs) : "—", name: "Total", sub: totalMs != null ? t("perf.requestTime") : "" },
   ];
-
-  const selectedTurn = filteredTurns.find((turn) => turn.item.id === selected.id)
-    ?? allTurns.find((turn) => turn.item.id === selected.id);
-  const isSelectedLive = selectedTurn?.live ?? false;
-  const selectedOrder = selectedTurn?.order ?? 1;
 
   const isDockExpanded = mode === "dock" && (dockHeight == null || dockHeight >= 220);
 
@@ -954,6 +977,8 @@ export default function InferenceInspector({
             {allTurns.map((turn) => {
               const active = turn.item.id === selected.id;
               const isPinned = turn.item.id === pinnedId;
+              const turnRate = (turn.live ? liveRoundDecodeTps(turn.item) : null)
+                ?? (turn.item.decodeTps != null && turn.item.decodeTps > 0 ? turn.item.decodeTps : null);
               return (
                 <button
                   type="button"
@@ -962,8 +987,8 @@ export default function InferenceInspector({
                   onClick={() => setPinnedId(isPinned ? null : turn.item.id)}
                   title={
                     isPinned ? "已锁定该轮（点击取消锁定回到实时）" :
-                    turn.item.decodeTps != null && turn.item.decodeTps > 0
-                      ? `${t("perf.statDecode")}: ${turn.item.decodeTps.toFixed(2)} tok/s`
+                    turnRate != null
+                      ? `${t("perf.statDecode")}: ${turnRate.toFixed(2)} tok/s`
                       : turn.item.totalTimeMs != null && turn.item.totalTimeMs > 0
                       ? `${t("perf.totalTime")}: ${duration(turn.item.totalTimeMs)}`
                       : undefined
@@ -977,9 +1002,7 @@ export default function InferenceInspector({
                     </span>
                   </span>
                   <span className="inf-turn-rate">
-                    {turn.item.decodeTps != null && turn.item.decodeTps > 0
-                      ? `${turn.item.decodeTps.toFixed(1)} tok/s`
-                      : "—"}
+                    {turnRate != null ? `${turnRate.toFixed(1)} tok/s` : "—"}
                   </span>
                 </button>
               );
@@ -1047,6 +1070,7 @@ export default function InferenceInspector({
             <div className="inf-session">
               <div className="inf-session-head">
                 <span>{t("perf.sessionAvg")}</span>
+                {hasLiveSessionTurn && <em>{t("perf.includesLive")}</em>}
               </div>
               <div className="inf-session-grid">
                 <div><b>{sessionStats.turns}</b><em>{t("perf.statRequests")}</em></div>
@@ -1142,6 +1166,7 @@ export default function InferenceInspector({
             <div className="inf-session">
               <div className="inf-session-head">
                 <span>{t("perf.sessionAvg")}</span>
+                {hasLiveSessionTurn && <em>{t("perf.includesLive")}</em>}
               </div>
               <div className="inf-session-grid">
                 <div><b>{sessionStats.turns}</b><em>{t("perf.statRequests")}</em></div>
@@ -1167,12 +1192,13 @@ export default function InferenceInspector({
           />
         </div>
 
-        {/* 实时曲线：Decode / Prefill 逐秒；TTFT 与 MTP 草稿接受率按轮次补充解释指标 */}
+        {/* 实时曲线：Decode / Prefill 逐秒；TTFT 与草稿接受率按轮次补充解释指标 */}
         <RealtimeThroughputRow
           samples={realtime || []}
           running={serviceRunning}
           turns={allTurns}
           mtpEnabled={mtpEnabled}
+          specBackend={specBackend}
         />
 
         {/* 底部：全量历史轮次明细表（沉浸式填满剩余空白空间，联动数据筛选） */}

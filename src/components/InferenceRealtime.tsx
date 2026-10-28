@@ -4,7 +4,7 @@ import { Activity } from "lucide-react";
 import { useI18n } from "../i18n";
 import type { MessageKey } from "../i18n";
 import type { InferenceMetrics, RealtimeTpsSample } from "../types";
-import { cn } from "../utils";
+import { cn, specAlgorithmLabel } from "../utils";
 import { pointsToSmoothPath, useElementSize } from "./inferenceChartUtils";
 
 const WINDOW_MS = 60_000;
@@ -89,27 +89,35 @@ const TURN_STYLE: Record<
   },
 };
 
-/** 分析页实时区：Decode / Prefill 逐秒；TTFT 与 MTP 草稿接受率按轮次（MTP 未开启时自动隐藏） */
+/** 分析页实时区：Decode / Prefill 逐秒；TTFT 与草稿接受率按轮次（投机采样未开启时自动隐藏） */
 export function RealtimeThroughputRow({
   samples,
   running,
   turns,
   mtpEnabled,
+  specBackend,
 }: {
   samples: RealtimeTpsSample[];
   running?: boolean;
   turns?: RealtimeTurn[];
   mtpEnabled?: boolean;
+  /** 运行预设的投机算法（mtp / dflash / dflash2），无轮次数据时用于卡片标题 */
+  specBackend?: string | null;
 }) {
+  const { t } = useI18n();
   const turnList = turns || [];
-  // MTP 卡片：运行配置开启 MTP，或历史轮次已带接受率数据时展示；否则整列隐藏
+  // 接受率卡片：运行配置开启投机采样，或历史轮次已带接受率数据时展示；否则整列隐藏
   const showMtp = Boolean(mtpEnabled) || turnList.some((turn) => turn.item.mtpAcceptRatio != null);
+  // 轮次数据携带真实后端（含运行中切换过算法的情况），优先于预设配置
+  const activeBackend = turnList.find((turn) => turn.item.specBackend && turn.item.mtpAcceptRatio != null)?.item.specBackend ?? specBackend;
+  const specAlgo = specAlgorithmLabel(activeBackend);
+  const specTitle = specAlgo ? t("perf.specAccept", { spec: specAlgo }) : t("perf.specAcceptGeneric");
   return (
     <div className={cn("inf-realtime-row", !showMtp && "cols-3")}>
       <RealtimeThroughputCard kind="decode" samples={samples} running={running} />
       <RealtimeThroughputCard kind="prefill" samples={samples} running={running} />
       <RealtimeTurnCard kind="ttft" turns={turnList} running={running} />
-      {showMtp && <RealtimeTurnCard kind="mtp" turns={turnList} running={running} />}
+      {showMtp && <RealtimeTurnCard kind="mtp" turns={turnList} running={running} title={specTitle} />}
     </div>
   );
 }
@@ -314,8 +322,8 @@ function RealtimeThroughputCard({ kind, samples, running }: { kind: RealtimeKind
   );
 }
 
-/** 按轮次统计的窄卡片：TTFT 首字延迟 / MTP 草稿接受率 */
-function RealtimeTurnCard({ kind, turns, running }: { kind: TurnKind; turns: RealtimeTurn[]; running?: boolean }) {
+/** 按轮次统计的窄卡片：TTFT 首字延迟 / 草稿接受率 */
+function RealtimeTurnCard({ kind, turns, running, title }: { kind: TurnKind; turns: RealtimeTurn[]; running?: boolean; title?: string }) {
   const { t } = useI18n();
   const style = TURN_STYLE[kind];
   const [bodyRef, size] = useElementSize<HTMLDivElement>();
@@ -397,7 +405,7 @@ function RealtimeTurnCard({ kind, turns, running }: { kind: TurnKind; turns: Rea
     <div className={cn("inf-page-card", "inf-realtime-card", kind)}>
       {/* 按轮次归档的指标没有逐秒 LIVE/IDLE 语义，右上角只显示当前绘制的轮数 */}
       <CardHead
-        title={t(style.titleKey)}
+        title={title ?? t(style.titleKey)}
         windowText={hasData ? t("perf.turnWindow", { n: data.visible.length }) : ""}
         live={false}
         showState={false}
