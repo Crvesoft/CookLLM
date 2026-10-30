@@ -1,0 +1,421 @@
+/* ---- 智能推荐：选择器勾选与估算弹窗 ---- */
+:root {
+  --auto-accent: #b96a10;
+  --auto-accent-soft: #fdf2e1;
+  --auto-accent-line: #efd3a6;
+  --auto-accent-weak: #fffaf3;
+  --auto-bar: #e08b2d;
+}
+
+[data-theme="dark"] {
+  --auto-accent: #eaa657;
+  --auto-accent-soft: rgba(216, 138, 29, .16);
+  --auto-accent-line: rgba(216, 138, 29, .42);
+  --auto-accent-weak: rgba(216, 138, 29, .07);
+  --auto-bar: #d89a45;
+}
+
+.auto-modal {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  width: min(912px, 94vw);
+  max-height: min(90vh, 820px);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  animation: import-pop .18s ease;
+}
+
+.auto-modal>header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 15px 18px;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+.auto-icon-tile {
+  width: 38px;
+  height: 38px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  background: var(--auto-accent-soft);
+  color: var(--auto-accent);
+}
+
+.auto-head-text {
+  min-width: 0;
+}
+
+.auto-head-tagline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.auto-head-tagline span:first-child {
+  font: 600 11px "JetBrains Mono", Consolas, monospace;
+  letter-spacing: .11em;
+  color: var(--auto-accent);
+}
+
+.auto-head-text h2 {
+  margin: 4px 0 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.auto-head-spacer {
+  flex: 1;
+}
+
+.auto-body {
+  padding: 16px 20px 6px;
+  overflow: auto;
+}
+
+/* 估算依据 */
+.auto-basis {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  margin-bottom: 16px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.auto-basis>div {
+  padding: 11px 14px;
+  min-width: 0;
+}
+
+.auto-basis>div+div {
+  border-left: 1px solid var(--line-soft);
+}
+
+.auto-cap {
+  font: 600 10px "JetBrains Mono", Consolas, monospace;
+  letter-spacing: .12em;
+  color: var(--muted);
+}
+
+.auto-main-line {
+  margin-top: 5px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.auto-sub-line {
+  margin-top: 3px;
+  font-size: 11.5px;
+  color: var(--muted-2);
+}
+
+.auto-vram-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.auto-vram-row input {
+  width: 64px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  background: var(--panel);
+  color: var(--text);
+  font: 500 11.5px "JetBrains Mono", Consolas, monospace;
+}
+
+.auto-vram-row input:focus {
+  outline: none;
+  border-color: var(--auto-accent-line);
+}
+
+.auto-vram-row em {
+  font-style: normal;
+  font-size: 11px;
+}
+
+/* 引擎选择（NINFER 专用） */
+.auto-engine {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 14px;
+}
+
+.auto-engine > .auto-cap {
+  flex: none;
+}
+
+.auto-engine-tabs {
+  display: flex;
+  gap: 8px;
+}
+
+.auto-engine-tab {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 136px;
+  padding: 7px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--panel);
+  text-align: left;
+  transition: border-color .15s ease, background .15s ease;
+}
+
+.auto-engine-tab:not(.disabled):hover {
+  border-color: var(--line-strong);
+}
+
+.auto-engine-tab strong {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.auto-engine-tab small {
+  font: 500 10.5px "JetBrains Mono", Consolas, monospace;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.auto-engine-tab.active {
+  border-color: var(--auto-accent-line);
+  background: var(--auto-accent-soft);
+}
+
+.auto-engine-tab.active strong {
+  color: var(--auto-accent);
+}
+
+.auto-engine-tab.disabled {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+.auto-section-line {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 9px;
+}
+
+.auto-section-line strong {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.auto-section-line em {
+  font-style: normal;
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.auto-hint {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 14px 4px 16px;
+  font-size: 12.5px;
+  color: var(--muted-2);
+}
+
+.auto-hint.warn {
+  color: var(--auto-accent);
+}
+
+/* 档位卡 */
+.auto-tiers {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.auto-tier {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  padding: 13px 14px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 11px;
+  background: var(--panel);
+  text-align: left;
+  transition: border-color .15s ease, background .15s ease;
+}
+
+.auto-tier.on {
+  border-color: var(--auto-accent-line);
+  background: var(--auto-accent-weak);
+}
+
+.auto-tier-top {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.auto-tier-num {
+  width: 22px;
+  height: 22px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border: 1px solid var(--auto-accent-line);
+  border-radius: 6px;
+  background: var(--auto-accent-soft);
+  font: 600 10.5px "JetBrains Mono", Consolas, monospace;
+  color: var(--auto-accent);
+}
+
+.auto-tier-top h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.auto-tier-check {
+  margin-left: auto;
+  width: 16px;
+  height: 16px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1.5px solid var(--line-strong);
+  color: #fff;
+}
+
+.auto-tier.on .auto-tier-check {
+  border-color: var(--auto-bar);
+  background: var(--auto-bar);
+}
+
+.auto-tier-desc {
+  margin: 8px 0 11px;
+  min-height: 34px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: var(--muted-2);
+}
+
+.auto-vram-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.auto-vram-head b {
+  font: 600 12px "JetBrains Mono", Consolas, monospace;
+  color: var(--text-soft);
+}
+
+.auto-bar {
+  height: 6px;
+  margin: 6px 0 11px;
+  border-radius: 3px;
+  background: var(--panel-3);
+  overflow: hidden;
+}
+
+.auto-bar i {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: var(--auto-bar);
+  opacity: .72;
+}
+
+.auto-tier.on .auto-bar i {
+  opacity: 1;
+}
+
+.auto-spec {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 0;
+  border-top: 1px dashed var(--line-soft);
+  font-size: 11.5px;
+}
+
+.auto-spec span {
+  color: var(--muted-2);
+}
+
+.auto-spec b {
+  font: 500 11.5px "JetBrains Mono", Consolas, monospace;
+  color: var(--text-soft);
+}
+
+.auto-tier-foot {
+  margin-top: 9px;
+  font-size: 10.5px;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.auto-tier-foot.tight {
+  color: var(--auto-accent);
+}
+
+/* 估算加载骨架：沿用真实档位卡的字段布局，弹窗高度不跳变 */
+.auto-tier.skeleton {
+  pointer-events: none;
+}
+
+.auto-skel-line {
+  display: inline-block;
+  width: 84px;
+  height: 9px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #2e2e2e 25%, #383838 37%, #2e2e2e 63%);
+  background-size: 400% 100%;
+  animation: skeleton-loading 1.4s ease-in-out infinite;
+}
+
+.auto-spec .auto-skel-line,
+.auto-tier-foot .auto-skel-line {
+  width: 64px;
+}
+
+[data-theme="light"] .auto-skel-line {
+  background: linear-gradient(90deg, #eef1f6 25%, #f7f8fb 37%, #eef1f6 63%);
+  background-size: 400% 100%;
+}
+
+.auto-modal>footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 20px;
+  border-top: 1px solid var(--line-soft);
+}
+
+.auto-foot-note {
+  flex: 1;
+  font-size: 11.5px;
+  color: var(--muted);
+  line-height: 1.5;
+}

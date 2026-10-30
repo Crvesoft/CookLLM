@@ -371,14 +371,6 @@ export function defaultsFor(ids: string[]): Profile[] {
   return (owned.length ? owned : [DEFAULT_PROFILES[0]]).map((p) => ({ ...p, id: uid("profile") }));
 }
 
-/** 根据模型文件类型（.gguf / .ninfer）智能匹配生成全套初始预设副本 */
-export function defaultProfilesForModel(path: string): Profile[] {
-  if (path.toLowerCase().endsWith(".ninfer")) {
-    return DEFAULT_NINFER_PROFILES.map((p) => ({ ...p, id: uid("profile") }));
-  }
-  return defaultsFor(["balanced", "deep-thought", "low-memory"]);
-}
-
 export const DEMO_MODELS: ModelAsset[] = [
   { id: "qwen-25-32b", name: "Qwen 2.5 32B Instruct", path: "D:\\Models\\Qwen2.5-32B-Instruct-Q4_K_M.gguf", sizeBytes: 19_840_000_000, architecture: "Qwen2", quantization: "Q4_K_M", parameters: "32.8B", profiles: defaultsFor(["balanced", "deep-thought", "low-memory"]), accent: "violet" },
   { id: "llama-31-8b", name: "Llama 3.1 8B Instruct", path: "D:\\Models\\Meta-Llama-3.1-8B-Instruct-Q6_K.gguf", sizeBytes: 6_610_000_000, architecture: "Llama", quantization: "Q6_K", parameters: "8.0B", profiles: defaultsFor(["balanced", "low-memory"]), accent: "cyan" },

@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
-import { defaultProfilesForModel, uid } from "../data";
-import { inspectGguf } from "../tauri";
+import { DEFAULT_NINFER_PROFILES, DEFAULT_PROFILES, uid } from "../data";
+import { buildAutoProfiles, nvfp4SupportedOf } from "../autoProfiles";
+import { getHardwareInfo, inspectGguf } from "../tauri";
 import type { PickedFile } from "../tauri";
 import type { AppConfig, ModelAsset, Profile, ServerStatus } from "../types";
 import { ACCENTS, fileName, modelTitle, parseQuantization } from "../utils";
@@ -39,22 +40,48 @@ export function useModelLibrary({ config, status, persist, setToast, t }: UseMod
     const existing = new Set(config.models.map((model) => model.path));
     const fresh = paths.filter((item) => !existing.has(item.path));
     if (!fresh.length) return setToast(t("toast.alreadyInLibrary"));
+    const [hardware] = await Promise.all([getHardwareInfo().catch(() => null)]);
+    const vramMb = hardware?.vramTotalMb ?? 0;
     const additions: ModelAsset[] = [];
     for (const [index, item] of fresh.entries()) {
       const path = item.path;
       const isNinfer = path.toLowerCase().endsWith(".ninfer");
-      const meta = await inspectGguf(path).catch(() => ({ architecture: "", parameters: "", quantization: "" }));
-      const initialProfiles = defaultProfilesForModel(path);
+      const meta = await inspectGguf(path).catch(() => ({ architecture: "", parameters: "", quantization: "", blockCount: 0, attentionLayerCount: 0, headCount: 0, headCountKv: 0, headDim: 0, contextLength: 0, weightsBytes: 0 }));
+      // 文件头首个张量常是 Q6_K 输出层，K-quant 文件会被标错，文件名更能代表整体量化
+      const nameQuant = parseQuantization(path, "");
+      // 新模型入库即用智能推荐生成三档预设；估算不出来（读不到头信息 / 无显存 / 缺引擎）退回默认的均衡配置
+      const auto = buildAutoProfiles(
+        meta.blockCount > 0 && meta.weightsBytes > 0
+          ? {
+              blockCount: meta.blockCount,
+              attentionLayerCount: meta.attentionLayerCount,
+              headCountKv: meta.headCountKv,
+              headDim: meta.headDim,
+              contextLength: meta.contextLength,
+              weightsBytes: meta.weightsBytes,
+            }
+          : null,
+        {
+          vramMb,
+          cpuThreads: hardware?.cpuThreads ?? 0,
+          systemRamMb: hardware?.systemRamMb ?? 0,
+          nvfp4Supported: nvfp4SupportedOf(hardware ?? {}),
+        },
+        t,
+        { isNinfer, engines: config.engines },
+      );
+      const initialProfiles = auto?.profiles ?? [{ ...(isNinfer ? DEFAULT_NINFER_PROFILES[0] : DEFAULT_PROFILES[0]), id: uid("profile") }];
       additions.push({
         id: uid("model"),
         name: fileName(path).replace(/\.(gguf|ninfer)$/i, "").replace(/[-_]/g, " "),
         path,
         sizeBytes: item.sizeBytes,
         architecture: meta.architecture || (isNinfer ? "NINFER" : "GGUF"),
-        quantization: meta.quantization || parseQuantization(path, t("model.unknownQuant")),
+        quantization: nameQuant || meta.quantization || t("model.unknownQuant"),
         parameters: meta.parameters || path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase() || "—",
         metadataSource: meta.architecture || meta.quantization || meta.parameters ? (isNinfer ? "ninfer" : "gguf") : "filename",
         profiles: initialProfiles,
+        defaultProfileId: auto?.defaultProfileId ?? initialProfiles[0].id,
         accent: ACCENTS[(config.models.length + index) % ACCENTS.length]
       });
     }
@@ -114,6 +141,22 @@ export function useModelLibrary({ config, status, persist, setToast, t }: UseMod
     if (isDefault && model.defaultProfileId !== profile.id) setSelectedProfiles((previous) => ({ ...previous, [modelId]: profile.id }));
     await persist({ ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, profiles, defaultProfileId } : item)) }, t("toast.profileSaved"));
     setProfileEditing(null);
+  };
+
+  /** 智能推荐批量落地：一次写盘追加多套预设；模型尚无默认预设时以推荐档位兜底 */
+  const createProfiles = async (modelId: string, profiles: Profile[], options?: { defaultProfileId?: string }) => {
+    if (!profiles.length) return;
+    const model = config.models.find((item) => item.id === modelId);
+    if (!model) return;
+    const generated = new Set(profiles.map((profile) => profile.id));
+    const requested = options?.defaultProfileId && generated.has(options.defaultProfileId) ? options.defaultProfileId : undefined;
+    const defaultProfileId = model.defaultProfileId ?? requested;
+    const fallbackSelection = defaultProfileId ?? profiles[0].id;
+    setSelectedProfiles((previous) => (previous[modelId] ? previous : { ...previous, [modelId]: fallbackSelection }));
+    await persist(
+      { ...config, models: config.models.map((item) => (item.id === modelId ? { ...item, profiles: [...item.profiles, ...profiles], defaultProfileId } : item)) },
+      t("toast.profilesGenerated", { count: profiles.length }),
+    );
   };
 
   const deleteProfile = async (modelId: string, id: string) => {
@@ -217,7 +260,7 @@ export function useModelLibrary({ config, status, persist, setToast, t }: UseMod
     importOpen, setImportOpen, openImport, handleImportModels,
     filteredModels,
     addModelFromPaths, removeModel, reorderModels, removeMultipleModels,
-    upsertProfile, saveProfile, deleteProfile, reorderProfiles, deleteMultipleProfiles,
+    upsertProfile, saveProfile, createProfiles, deleteProfile, reorderProfiles, deleteMultipleProfiles,
     duplicateProfile, setDefaultProfile, renameModel, updateModelTags, setDefaultModel,
   };
 }

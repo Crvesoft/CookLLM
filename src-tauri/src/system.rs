@@ -107,6 +107,12 @@ pub(crate) struct HardwareInfo {
     vram_total_mb: Option<f64>,
     /// Windows 可见总物理内存（MiB）；非 Windows 平台为空
     system_ram_mb: Option<f64>,
+    /// 显卡名称（当前仅 NVIDIA 可读，其余为空）
+    gpu_name: Option<String>,
+    /// CUDA 计算能力主版本（Blackwell 为 12；供前端判断 nvfp4 等 Blackwell 专属 KV 精度，非 NVIDIA 为空）
+    compute_cap_major: Option<u32>,
+    /// 逻辑 CPU 线程数，供预设生成估算线程参数
+    cpu_threads: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -195,12 +201,39 @@ pub(crate) fn hardware_info() -> HardwareInfo {
     let vram_total_mb = info.supported.then_some(info.vram_total_mb).flatten();
     #[cfg(not(windows))]
     let vram_total_mb = None;
+    let gpu_name = if info.supported { query_gpu_name() } else { None };
+    let compute_cap_major = if info.supported { query_compute_cap_major() } else { None };
     HardwareInfo {
         vendor: info.vendor,
         supported: info.supported,
         vram_total_mb,
         system_ram_mb,
+        gpu_name,
+        compute_cap_major,
+        cpu_threads: std::thread::available_parallelism().ok().map(|count| count.get() as u32),
     }
+}
+
+/// 读取 CUDA 计算能力主版本（nvidia-smi 输出如 "12.0"），读取失败或非数字（"N/A"）时返回 None。
+fn query_compute_cap_major() -> Option<u32> {
+    let path = find_nvidia_smi()?;
+    let mut command = Command::new(&path);
+    command
+        .args(["--query-gpu=compute_cap", "--format=csv,noheader,nounits"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let output = command.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(output.stdout).ok()?;
+    let line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
+    line.split('.').next()?.trim().parse().ok()
 }
 
 /// 从文件名或路径文本中提取 CUDA 完整版本（如 "12.4"、"13.4"、"11.8"、"13.2.86"）

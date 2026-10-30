@@ -171,6 +171,16 @@ export interface GgufMeta {
   architecture: string;
   parameters: string;
   quantization: string;
+  /** 层数（用于估算 KV 缓存体积；读不到时为 0） */
+  blockCount: number;
+  /** 真正缓存 KV 的层数（混合架构里 SSM 层不带 KV，未识别时等于 blockCount） */
+  attentionLayerCount: number;
+  headCount: number;
+  headCountKv: number;
+  headDim: number;
+  contextLength: number;
+  /** 模型文件字节数，供显存估算 */
+  weightsBytes: number;
 }
 
 /** 读取 GGUF 文件头。浏览器模式或读取失败时返回空字段，调用方继续用文件名兜底。 */
@@ -179,9 +189,39 @@ export async function pathsExist(paths: string[]): Promise<string[]> {
   return invoke<string[]>("paths_exist", { paths });
 }
 
+const EMPTY_GGUF_META: GgufMeta = {
+  architecture: "",
+  parameters: "",
+  quantization: "",
+  blockCount: 0,
+  attentionLayerCount: 0,
+  headCount: 0,
+  headCountKv: 0,
+  headDim: 0,
+  contextLength: 0,
+  weightsBytes: 0,
+};
+
 export async function inspectGguf(path: string): Promise<GgufMeta> {
-  if (!isTauri()) return { architecture: "", parameters: "", quantization: "" };
+  if (!isTauri()) return { ...EMPTY_GGUF_META };
   return invoke<GgufMeta>("inspect_gguf", { path });
+}
+
+export interface HardwareInfo {
+  vendor: string;
+  supported: boolean;
+  vramTotalMb?: number | null;
+  systemRamMb?: number | null;
+  gpuName?: string | null;
+  /** CUDA 计算能力主版本（Blackwell 为 12；非 NVIDIA 为空），判断 nvfp4 是否可用 */
+  computeCapMajor?: number | null;
+  cpuThreads?: number | null;
+}
+
+/** 读取本机硬件能力（显卡 / 显存 / 内存 / 线程数），供智能推荐估算使用。 */
+export async function getHardwareInfo(): Promise<HardwareInfo | null> {
+  if (!isTauri()) return null;
+  return invoke<HardwareInfo>("hardware_info");
 }
 
 export interface ConfigBackupEnvelope {

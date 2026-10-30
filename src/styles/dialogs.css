@@ -953,8 +953,10 @@ body.reordering .profile-card:hover {
 
 .pick-model-list {
   display: grid;
+  /* auto 列会按文件名 max-content 撑开，窄窗口下会顶出横向滚动条 */
+  grid-template-columns: minmax(0, 1fr);
   gap: 8px;
-  padding: 16px 18px;
+  padding: 12px 18px 16px;
   max-height: 52vh;
   overflow: auto;
 }
@@ -1029,6 +1031,63 @@ body.reordering .profile-card:hover {
 .pick-model-item-right span:not(.hf-format-pill) {
   color: #6f7a8d;
   font: 11px/1.2 "JetBrains Mono", monospace;
+}
+
+/* 新建预设弹窗的创建方式选项：手动配置 / 智能推荐（选择记忆在本地） */
+.pick-modes {
+  display: grid;
+  /* 窄窗口自动落成上下两行，避免说明文字挤成三行 */
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 8px;
+  padding: 14px 18px 0;
+}
+
+.pick-mode {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  border: 1px solid #383838;
+  border-radius: 9px;
+  background: #1f1f1f;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: .15s ease;
+}
+
+.pick-mode:hover:not(.active):not(.disabled) {
+  border-color: #5a5a5a;
+  background: #232323;
+}
+
+.pick-mode.active {
+  border-color: var(--auto-accent);
+  background: rgba(221, 130, 57, 0.08);
+}
+
+.pick-mode.disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.pick-mode-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #f1f5f9;
+  font-size: 13.5px;
+  font-weight: 600;
+}
+
+.pick-mode.active .pick-mode-head {
+  color: var(--auto-accent);
+}
+
+.pick-mode-desc {
+  color: #8b95a7;
+  font-size: 11.5px;
+  line-height: 1.45;
 }
 
 /* 后台残留服务检测弹窗 */
@@ -1196,6 +1255,29 @@ body.reordering .profile-card:hover {
 [data-theme="light"] .pick-model-item-info small,
 [data-theme="light"] .pick-model-item-right span:not(.hf-format-pill) {
   color: #64748b;
+}
+
+[data-theme="light"] .pick-mode {
+  border-color: #e2e8f0;
+  background: #ffffff;
+}
+
+[data-theme="light"] .pick-mode:hover:not(.active):not(.disabled) {
+  border-color: #cbd5e1;
+  background: #ffffff;
+}
+
+[data-theme="light"] .pick-mode.active {
+  border-color: var(--auto-accent);
+  background: #fffaf5;
+}
+
+[data-theme="light"] .pick-mode-head {
+  color: #1f2937;
+}
+
+[data-theme="light"] .pick-mode-desc {
+  color: #8a94a6;
 }
 
 [data-theme="light"] .orphan-desc-text {

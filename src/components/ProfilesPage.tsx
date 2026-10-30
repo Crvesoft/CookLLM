@@ -1,10 +1,11 @@
-import { AlertTriangle, Check, Copy, Cpu, Gauge, LayoutGrid, List, ListChecks, MemoryStick, MoreHorizontal, Pencil, Plus, Star, Trash2, X } from "lucide-react";
+import { AlertTriangle, Check, Copy, Cpu, Gauge, LayoutGrid, List, ListChecks, MemoryStick, MoreHorizontal, Pencil, Plus, Sparkles, Star, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useI18n } from "../i18n";
 import { usePointerReorder } from "../hooks/usePointerReorder";
 import { DEFAULT_NINFER_PROFILES, DEFAULT_PROFILES, uid } from "../data";
 import type { LlamaEngine, ModelAsset, Profile } from "../types";
 import { ACCENTS, cn, fileName, modelTitle } from "../utils";
+import AutoProfileModal from "./AutoProfileModal";
 import ConfirmModal from "./ConfirmModal";
 import { ModelFormatBadge } from "./ModelFormatBadge";
 
@@ -25,6 +26,7 @@ export default function ProfilesPage({
   onSetDefault,
   onReorderProfile,
   onDeleteProfiles,
+  onCreateProfiles,
 }: {
   models: ModelAsset[];
   engines?: LlamaEngine[];
@@ -35,6 +37,7 @@ export default function ProfilesPage({
   onSetDefault: (modelId: string, profileId: string) => void;
   onReorderProfile: (modelId: string, profileIds: string[]) => void;
   onDeleteProfiles: (items: { modelId: string; profileId: string }[]) => Promise<void>;
+  onCreateProfiles: (modelId: string, profiles: Profile[], options?: { defaultProfileId?: string }) => void;
 }) {
   const { t } = useI18n();
   const [formatFilter, setFormatFilter] = useState<"all" | "gguf" | "ninfer">(() => {
@@ -53,8 +56,25 @@ export default function ProfilesPage({
 
   const [selectedModelId, setSelectedModelId] = useState<string>(ALL_MODELS);
   const [menuProfileId, setMenuProfileId] = useState<string | null>(null);
-  /** 「全部」模式下新建预设时，选择目标模型弹窗 */
-  const [pickModelOpen, setPickModelOpen] = useState(false);
+  /** 新建预设弹窗：选择目标模型，可勾选智能推荐 */
+  const [pickOpen, setPickOpen] = useState(false);
+  /** 弹窗内的创建方式，记忆上次选择：只用智能推荐或只用手动配置的用户不必每次切换 */
+  const [pickMode, setPickMode] = useState<"manual" | "smart">(() => {
+    try {
+      return localStorage.getItem("cookllm_profiles_pick_mode") === "smart" ? "smart" : "manual";
+    } catch {
+      return "manual";
+    }
+  });
+  const handlePickModeChange = (mode: "manual" | "smart") => {
+    setPickMode(mode);
+    try {
+      localStorage.setItem("cookllm_profiles_pick_mode", mode);
+    } catch { }
+  };
+  /** 智能推荐目标模型 id（渲染时从最新 models 取对象，避免读到旧快照） */
+  const [autoTargetId, setAutoTargetId] = useState<string | null>(null);
+  const autoModel = autoTargetId ? models.find((item) => item.id === autoTargetId) ?? null : null;
   /** 批量选择模式与拖拽排序状态 */
   const [selectMode, setSelectMode] = useState(false);
   const [selectedKeys, setSelectedKeys] = useState<Set<string>>(new Set());
@@ -128,16 +148,15 @@ export default function ProfilesPage({
     name: t("profile.newName"),
     description: t("profile.newDesc"),
   });
-  const create = () => {
+  const startCreate = () => {
     setMenuProfileId(null);
-    const targetPool = filteredModels.length ? filteredModels : models;
-    if (allMode) {
-      if (targetPool.length === 1) onEdit(targetPool[0].id, freshProfile(targetPool[0]));
-      else { setPickModelOpen(true); }
-    } else if (model) {
-      onEdit(model.id, freshProfile(model));
-    }
+    setPickOpen(true);
   };
+
+  /** 智能推荐支持 GGUF 与 NINFER，弹窗内部按格式切换估算模型 */
+  const autoModels = models;
+  /** 记忆的选择在无模型时退回手动配置，避免记住的智能推荐因列表为空而卡住 */
+  const smartPick = pickMode === "smart" && autoModels.length > 0;
 
   const profileCard = (owner: ModelAsset, profile: Profile, index: number) => {
     const isDefault = owner.defaultProfileId === profile.id;
@@ -469,7 +488,7 @@ export default function ProfilesPage({
           <button className={cn("secondary-button", selectMode && "active")} onClick={toggleSelectMode}>
             <ListChecks size={15} />{selectMode ? t("exitBulk") : t("bulkManage")}
           </button>
-          <button className="primary-button" onClick={create} disabled={!models.length} title={!models.length ? t("needModelFirst") : undefined}>
+          <button className="primary-button" onClick={startCreate} disabled={!models.length} title={!models.length ? t("needModelFirst") : undefined}>
             <Plus size={16} />{t("newProfile")}
           </button>
         </div>
@@ -535,7 +554,7 @@ export default function ProfilesPage({
               <div><Plus size={26} /></div>
               <h3>{t("emptyModelTitle")}</h3>
               <p>{t("emptyModelDesc", { name: modelTitle(model) })}</p>
-              <button className="secondary-button" onClick={create}>
+              <button className="secondary-button" onClick={startCreate}>
                 <Plus size={16} />{t("newProfile")}
               </button>
             </div>
@@ -549,26 +568,54 @@ export default function ProfilesPage({
         </div>
       )}
 
-      {pickModelOpen && (
-        <div className="modal-backdrop" onClick={(event) => event.target === event.currentTarget && setPickModelOpen(false)}>
+      {pickOpen && (
+        <div className="modal-backdrop" onClick={(event) => event.target === event.currentTarget && setPickOpen(false)}>
           <div className="confirm-modal pick-model-modal">
             <header>
               <h2>{t("pickModalTitle")}</h2>
-              <button className="ghost-icon" aria-label={t("ariaClose")} onClick={() => setPickModelOpen(false)}>
+              <button className="ghost-icon" aria-label={t("ariaClose")} onClick={() => setPickOpen(false)}>
                 <X size={18} />
               </button>
             </header>
-            <p>{t("pickModalDesc")}</p>
+            <div className="pick-modes" role="radiogroup" aria-label={t("pickModalTitle")}>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={!smartPick}
+                className={cn("pick-mode", !smartPick && "active")}
+                onClick={() => handlePickModeChange("manual")}
+              >
+                <span className="pick-mode-head">
+                  <Pencil size={13} />{t("autoProfile.tabManual")}
+                </span>
+                <span className="pick-mode-desc">{t("autoProfile.pickManualDesc")}</span>
+              </button>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={smartPick}
+                className={cn("pick-mode", smartPick && "active", !autoModels.length && "disabled")}
+                disabled={!autoModels.length}
+                title={autoModels.length ? undefined : t("autoProfile.needModels")}
+                onClick={() => handlePickModeChange("smart")}
+              >
+                <span className="pick-mode-head">
+                  <Sparkles size={13} />{t("autoProfile.button")}
+                </span>
+                <span className="pick-mode-desc">{t("autoProfile.pickSmartDesc")}</span>
+              </button>
+            </div>
             <div className="pick-model-list">
-              {(filteredModels.length ? filteredModels : models).map((item) => {
+              {(smartPick ? autoModels : filteredModels.length ? filteredModels : models).map((item) => {
                 const ninfer = isModelNinfer(item);
                 return (
                   <button
                     key={item.id}
                     className={cn("pick-model-item", ninfer ? "ninfer" : "gguf")}
                     onClick={() => {
-                      setPickModelOpen(false);
-                      onEdit(item.id, freshProfile(item));
+                      setPickOpen(false);
+                      if (smartPick) setAutoTargetId(item.id);
+                      else onEdit(item.id, freshProfile(item));
                     }}
                   >
                     <div className="pick-model-item-left">
@@ -589,12 +636,26 @@ export default function ProfilesPage({
               })}
             </div>
             <footer>
-              <button className="secondary-button" onClick={() => setPickModelOpen(false)}>
+              <button className="secondary-button" onClick={() => setPickOpen(false)}>
                 {t("cancel")}
               </button>
             </footer>
           </div>
         </div>
+      )}
+
+      {autoModel && (
+        <AutoProfileModal
+          model={autoModel}
+          baseProfile={autoModel.profiles[0] ?? (isModelNinfer(autoModel) ? DEFAULT_NINFER_PROFILES[0] : DEFAULT_PROFILES[0])}
+          engines={engines}
+          hasDefaultProfile={Boolean(autoModel.defaultProfileId)}
+          onClose={() => setAutoTargetId(null)}
+          onGenerate={(profiles, defaultProfileId) => {
+            onCreateProfiles(autoModel.id, profiles, { defaultProfileId });
+            setAutoTargetId(null);
+          }}
+        />
       )}
 
       {confirmDelete && (

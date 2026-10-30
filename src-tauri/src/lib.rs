@@ -438,13 +438,21 @@ struct PickedFile {
     size_bytes: u64,
 }
 
-/// GGUF 文件头里能稳定读到的模型信息。读失败时字段留空，由前端继续用文件名兜底。
+/// GGUF 文件头里能稳定读到的模型信息。读失败时字段留空，由前端继续用文件名兜底；
+/// 容量字段（层数 / KV 结构 / 权重体积）供「智能推荐」估算显存，读不到时为 0。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct GgufMeta {
     architecture: String,
     parameters: String,
     quantization: String,
+    block_count: u32,
+    attention_layer_count: u32,
+    head_count: u32,
+    head_count_kv: u32,
+    head_dim: u32,
+    context_length: u32,
+    weights_bytes: u64,
 }
 
 fn gguf_string(bytes: &[u8]) -> String {
@@ -505,9 +513,21 @@ fn gguf_type_name(value: u32) -> Option<&'static str> {
 /// 读取 GGUF 头部元数据：general.architecture、*.block_count、*.expert_count 与首个张量量化。
 /// 只顺序扫描键值，不把整个模型读进内存；遇到不认识的版本或损坏头即返回空结果。
 fn read_gguf_meta(path: &str) -> GgufMeta {
-    let empty = GgufMeta { architecture: String::new(), parameters: String::new(), quantization: String::new() };
+    let empty = GgufMeta {
+        architecture: String::new(),
+        parameters: String::new(),
+        quantization: String::new(),
+        block_count: 0,
+        attention_layer_count: 0,
+        head_count: 0,
+        head_count_kv: 0,
+        head_dim: 0,
+        context_length: 0,
+        weights_bytes: 0,
+    };
+    // 词表 / merges 数组有几十万个小字符串，必须走缓冲读取并整段跳过，否则逐条读会卡几十秒
     let mut file = match fs::File::open(path) {
-        Ok(file) => file,
+        Ok(file) => std::io::BufReader::with_capacity(256 * 1024, file),
         Err(_) => return empty,
     };
     use std::io::Read;
@@ -530,26 +550,45 @@ fn read_gguf_meta(path: &str) -> GgufMeta {
 
     let mut architecture = String::new();
     let mut explicit_params: f64 = 0.0;
+    let mut block_count: u32 = 0;
+    let mut full_attention_interval: u32 = 0;
+    let mut kv_array_len: u64 = 0;
+    let mut kv_array_nonzero: u32 = 0;
+    let mut head_count: u32 = 0;
+    let mut head_count_kv: u32 = 0;
+    let mut embedding_length: u32 = 0;
+    let mut key_length: u32 = 0;
+    let mut context_length: u32 = 0;
     let mut ok = true;
 
-    fn read_exact(file: &mut fs::File, len: usize) -> Option<Vec<u8>> {
+    fn read_exact(file: &mut impl Read, len: usize) -> Option<Vec<u8>> {
         if len > 64 * 1024 * 1024 {
             return None;
         }
         let mut buf = vec![0u8; len];
-        use std::io::Read;
         file.read_exact(&mut buf).ok()?;
         Some(buf)
     }
-    fn read_u32(file: &mut fs::File) -> Option<u32> {
+    fn skip_bytes(file: &mut impl Read, len: usize) -> Option<()> {
+        if len > 64 * 1024 * 1024 {
+            return None;
+        }
+        let copied = std::io::copy(&mut file.by_ref().take(len as u64), &mut std::io::sink()).ok()?;
+        if copied == len as u64 { Some(()) } else { None }
+    }
+    fn read_u32(file: &mut impl Read) -> Option<u32> {
         read_exact(file, 4).map(|buf| u32::from_le_bytes(buf.try_into().unwrap_or([0; 4])))
     }
-    fn read_u64(file: &mut fs::File) -> Option<u64> {
+    fn read_u64(file: &mut impl Read) -> Option<u64> {
         read_exact(file, 8).map(|buf| u64::from_le_bytes(buf.try_into().unwrap_or([0; 8])))
     }
-    fn read_string(file: &mut fs::File) -> Option<String> {
+    fn read_string(file: &mut impl Read) -> Option<String> {
         let len = read_u64(file)? as usize;
         read_exact(file, len).map(|buf| gguf_string(&buf))
+    }
+    fn skip_string(file: &mut impl Read) -> Option<()> {
+        let len = read_u64(file)? as usize;
+        skip_bytes(file, len)
     }
 
     for _ in 0..kv_count {
@@ -558,40 +597,83 @@ fn read_gguf_meta(path: &str) -> GgufMeta {
         let key_tail = key.rsplit('.').next().unwrap_or("");
         match value_type {
             8 => {
-                let Some(text) = read_string(&mut file) else { ok = false; break; };
-                if key == "general.architecture" && !text.is_empty() {
-                    architecture = text;
+                // 只有架构名需要内容，其余字符串（描述 / 对话模板等）直接跳过
+                if key == "general.architecture" {
+                    let Some(text) = read_string(&mut file) else { ok = false; break; };
+                    if !text.is_empty() {
+                        architecture = text;
+                    }
+                } else if skip_string(&mut file).is_none() {
+                    ok = false;
+                    break;
                 }
             }
             4 | 5 => {
                 let Some(raw) = read_u32(&mut file) else { ok = false; break; };
-                if key_tail == "parameter_count" {
-                    explicit_params = raw as f64;
+                match key_tail {
+                    "parameter_count" => explicit_params = raw as f64,
+                    "block_count" => block_count = raw,
+                    "full_attention_interval" => full_attention_interval = raw,
+                    "head_count" => head_count = raw,
+                    "head_count_kv" => head_count_kv = raw,
+                    "embedding_length" => embedding_length = raw,
+                    "key_length" => key_length = raw,
+                    "context_length" => context_length = raw,
+                    _ => {}
                 }
             }
-            6 | 7 | 10 | 11 | 12 => {
+            10 | 11 | 12 => {
                 let Some(raw) = read_u64(&mut file) else { ok = false; break; };
                 if key_tail == "parameter_count" {
                     explicit_params = raw as f64;
                 }
             }
-            0 | 1 | 24 | 25 | 26 | 27 | 28 | 30 => {
-                let len = match value_type { 24 | 26 => 4, 1 | 25 | 30 => 2, _ => 8 };
-                if read_exact(&mut file, len).is_none() { ok = false; break; }
+            0 | 1 | 7 => {
+                if read_exact(&mut file, 1).is_none() { ok = false; break; }
+            }
+            2 | 3 => {
+                if read_exact(&mut file, 2).is_none() { ok = false; break; }
+            }
+            6 => {
+                // f32：4 字节，按 8 字节读会把后续键值全部错位
+                if read_exact(&mut file, 4).is_none() { ok = false; break; }
             }
             9 => {
+                // 数组元素共用同一类型；head_count_kv 可能是逐层数组，取最大值做容量估算
+                let Some(array_type) = read_u32(&mut file) else { ok = false; break; };
                 let Some(len) = read_u64(&mut file) else { ok = false; break; };
+                if len > 1_000_000 { ok = false; break; }
+                if key_tail == "head_count_kv" {
+                    kv_array_len = len;
+                    kv_array_nonzero = 0;
+                }
                 let mut index = 0u64;
                 while index < len {
-                    let Some(nested) = read_u32(&mut file) else { ok = false; break; };
-                    let size = match nested {
-                        8 => read_u64(&mut file).unwrap_or(0) as usize,
-                        4 | 5 | 24 | 26 => 4,
-                        6 | 7 | 10 | 11 | 12 | 0 | 28 => 8,
-                        1 | 25 | 30 => 2,
+                    if array_type == 8 {
+                        // 词表 / merges 等字符串数组：只跳过内容，不构造 String
+                        if skip_string(&mut file).is_none() { ok = false; break; }
+                        index += 1;
+                        continue;
+                    }
+                    let size = match array_type {
+                        0 | 1 | 7 => 1,
+                        2 | 3 => 2,
+                        4 | 5 | 6 => 4,
+                        10 | 11 | 12 => 8,
                         _ => 0,
                     };
-                    if size == 0 || read_exact(&mut file, size).is_none() { ok = false; break; }
+                    if size == 0 { ok = false; break; }
+                    if key_tail == "head_count_kv" && size == 4 && (array_type == 4 || array_type == 5) {
+                        let Some(raw) = read_exact(&mut file, 4) else { ok = false; break; };
+                        let value = u32::from_le_bytes(raw.as_slice().try_into().unwrap_or([0; 4]));
+                        head_count_kv = head_count_kv.max(value);
+                        if value > 0 {
+                            kv_array_nonzero += 1;
+                        }
+                    } else if skip_bytes(&mut file, size).is_none() {
+                        ok = false;
+                        break;
+                    }
                     index += 1;
                 }
                 if !ok { break; }
@@ -618,10 +700,40 @@ fn read_gguf_meta(path: &str) -> GgufMeta {
 
     let parameters = if explicit_params > 0.0 { format_parameter_count(explicit_params) } else { String::new() };
 
+    let head_count_kv = if head_count_kv > 0 { head_count_kv } else { head_count };
+    // 混合架构（如 Qwen3.5 的 SSM + 全注意力）只有部分层缓存 KV：
+    // 逐层 head_count_kv 数组里的非零项数最能说明问题，其次按 full_attention_interval 推算。
+    let attention_layer_count = if block_count > 0 && kv_array_len == block_count as u64 && kv_array_nonzero > 0 {
+        kv_array_nonzero.min(block_count)
+    } else if block_count > 0 && full_attention_interval > 0 {
+        block_count.div_ceil(full_attention_interval).min(block_count)
+    } else {
+        block_count
+    };
+    let head_dim = if key_length > 0 {
+        key_length
+    } else if head_count > 0 && embedding_length > 0 {
+        embedding_length / head_count
+    } else {
+        0
+    };
+    let weights_bytes = fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+
     if !ok && architecture.is_empty() && parameters.is_empty() && quantization.is_empty() {
         return empty;
     }
-    GgufMeta { architecture, parameters, quantization }
+    GgufMeta {
+        architecture,
+        parameters,
+        quantization,
+        block_count,
+        attention_layer_count,
+        head_count,
+        head_count_kv,
+        head_dim,
+        context_length,
+        weights_bytes,
+    }
 }
 
 #[tauri::command]
@@ -677,7 +789,18 @@ fn extract_quant_from_name(name: &str) -> String {
 /// 读取 .ninfer 单容器头部元数据：
 /// 偏移 0..7 为魔数 NINFER\0\x03，偏移 8..15 为 64 位 JSON 长度，偏移 32 起为 UTF-8 JSON 架构定义。
 fn read_ninfer_meta(path: &str) -> GgufMeta {
-    let empty = GgufMeta { architecture: String::new(), parameters: String::new(), quantization: String::new() };
+    let empty = GgufMeta {
+        architecture: String::new(),
+        parameters: String::new(),
+        quantization: String::new(),
+        block_count: 0,
+        attention_layer_count: 0,
+        head_count: 0,
+        head_count_kv: 0,
+        head_dim: 0,
+        context_length: 0,
+        weights_bytes: 0,
+    };
     let mut file = match fs::File::open(path) {
         Ok(file) => file,
         Err(_) => return empty,
@@ -734,11 +857,112 @@ fn read_ninfer_meta(path: &str) -> GgufMeta {
     let parameters = extract_parameters_from_name(name_for_parse);
     let quantization = extract_quant_from_name(name_for_parse);
 
+    let text_config = value.pointer("/components/text/config");
+    let scalar = |key: &str| {
+        text_config
+            .and_then(|config| config.get(key))
+            .and_then(|field| field.as_u64())
+            .unwrap_or(0) as u32
+    };
+    let block_count = scalar("num_hidden_layers");
+    let head_count = scalar("num_attention_heads");
+    let head_count_kv = {
+        let kv = scalar("num_key_value_heads");
+        if kv > 0 { kv } else { head_count }
+    };
+    let head_dim = scalar("head_dim");
+    let context_length = scalar("max_position_embeddings");
+    // 混合架构（GDN + 全注意力）只有 full_attention 层带 KV；没有逐层表时按全部层处理
+    let attention_layer_count = text_config
+        .and_then(|config| config.get("layer_types"))
+        .and_then(|field| field.as_array())
+        .map(|layers| layers.iter().filter(|layer| layer.as_str() == Some("full_attention")).count() as u32)
+        .filter(|count| *count > 0)
+        .unwrap_or(block_count);
+
+    // 容器里同时装着视觉 / DFlash 权重，纯文本启动不应把它们算进显存预算
+    let text_weights = ninfer_text_weights(&value);
+    let weights_bytes = if text_weights > 0 {
+        text_weights
+    } else {
+        fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
+    };
+
     GgufMeta {
         architecture,
         parameters,
         quantization,
+        block_count,
+        attention_layer_count,
+        head_count,
+        head_count_kv,
+        head_dim,
+        context_length,
+        weights_bytes,
     }
+}
+
+/// 汇总 .ninfer 容器里 text / mtp / proposal 组件的张量体积（按绑定去重，共享张量只算一次）。
+fn ninfer_text_weights(value: &serde_json::Value) -> u64 {
+    use std::collections::{HashMap, HashSet};
+
+    let Some(objects) = value.get("objects") else {
+        return 0;
+    };
+    let object_values: Vec<&serde_json::Value> = if let Some(map) = objects.as_object() {
+        map.values().collect()
+    } else if let Some(list) = objects.as_array() {
+        list.iter().collect()
+    } else {
+        return 0;
+    };
+    let mut bytes_by_id: HashMap<&str, u64> = HashMap::new();
+    for object in object_values {
+        if object.get("kind").and_then(|kind| kind.as_str()) != Some("tensor") {
+            continue;
+        }
+        if let (Some(id), Some(bytes)) = (
+            object.get("id").and_then(|id| id.as_str()),
+            object.get("bytes").and_then(|bytes| bytes.as_u64()),
+        ) {
+            bytes_by_id.insert(id, bytes);
+        }
+    }
+    let Some(bindings) = value.get("bindings").and_then(|items| items.as_object()) else {
+        return bytes_by_id.values().sum();
+    };
+
+    let mut counted: HashSet<&str> = HashSet::new();
+    let mut total = 0u64;
+    for (name, binding) in bindings {
+        let component = name.split('/').next().unwrap_or_default();
+        if !matches!(component, "text" | "mtp" | "proposal") {
+            continue;
+        }
+        let ids: Vec<&str> = if let Some(id) = binding.get("object").and_then(|id| id.as_str()) {
+            vec![id]
+        } else {
+            binding
+                .get("parts")
+                .and_then(|parts| parts.as_array())
+                .map(|parts| {
+                    parts
+                        .iter()
+                        .filter_map(|part| part.get("object").and_then(|id| id.as_str()))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        for id in ids {
+            if !counted.insert(id) {
+                continue;
+            }
+            if let Some(bytes) = bytes_by_id.get(id) {
+                total += *bytes;
+            }
+        }
+    }
+    total
 }
 
 #[tauri::command]
@@ -793,6 +1017,51 @@ mod gguf_meta_tests {
     }
 
     #[test]
+    fn read_ninfer_meta_reads_text_capacity() {
+        let path = std::env::temp_dir().join("test-model-capacity.ninfer");
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"NINFER\0\x03");
+        let json = r#"{
+            "metadata":{"name":"Qwen3.8-27B-IQ3_S-mtp"},
+            "components":{"text":{"config":{
+                "architectures":["Qwen3_5ForCausalLM"],
+                "num_hidden_layers":64,
+                "num_attention_heads":24,
+                "num_key_value_heads":4,
+                "head_dim":256,
+                "max_position_embeddings":262144,
+                "layer_types":["linear_attention","linear_attention","linear_attention","full_attention"]
+            }}},
+            "objects":{
+                "0":{"id":"weight/000001","kind":"tensor","bytes":1000},
+                "1":{"id":"weight/000002","kind":"tensor","bytes":2000},
+                "2":{"id":"resource/text/tokenizer.json","kind":"resource","bytes":400}
+            },
+            "bindings":{
+                "text/token_embedding":{"object":"weight/000001"},
+                "text/output_head":{"parts":[{"object":"weight/000001","range":[0,500]}]},
+                "vision/projection":{"object":"weight/000002"}
+            }
+        }"#;
+        let json_bytes = json.as_bytes();
+        buf.extend_from_slice(&(json_bytes.len() as u64).to_le_bytes());
+        buf.extend_from_slice(&[0u8; 16]);
+        buf.extend_from_slice(json_bytes);
+        std::fs::write(&path, buf).unwrap();
+
+        let meta = read_ninfer_meta(&path.to_string_lossy());
+        assert_eq!(meta.block_count, 64);
+        assert_eq!(meta.attention_layer_count, 1);
+        assert_eq!(meta.head_count, 24);
+        assert_eq!(meta.head_count_kv, 4);
+        assert_eq!(meta.head_dim, 256);
+        assert_eq!(meta.context_length, 262144);
+        // 视觉权重不计入文本预算，共享张量只算一次
+        assert_eq!(meta.weights_bytes, 1000);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn read_gguf_meta_rejects_truncated_header() {
         let path = std::env::temp_dir().join("cookllm-truncated.gguf");
         std::fs::write(&path, b"GGUF").unwrap();
@@ -832,6 +1101,141 @@ mod gguf_meta_tests {
         assert_eq!(meta.parameters, "8.0B");
         assert_eq!(meta.quantization, "Q8_0");
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn read_gguf_meta_reads_kv_capacity_fields() {
+        fn push_u32(buf: &mut Vec<u8>, value: u32) {
+            buf.extend_from_slice(&value.to_le_bytes());
+        }
+        fn push_u64(buf: &mut Vec<u8>, value: u64) {
+            buf.extend_from_slice(&value.to_le_bytes());
+        }
+        fn push_str(buf: &mut Vec<u8>, value: &str) {
+            push_u64(buf, value.len() as u64);
+            buf.extend_from_slice(value.as_bytes());
+        }
+        fn push_u32_kv(buf: &mut Vec<u8>, key: &str, value: u32) {
+            push_str(buf, key);
+            push_u32(buf, 4);
+            push_u32(buf, value);
+        }
+
+        let mut buf = Vec::new();
+        buf.extend_from_slice(b"GGUF");
+        push_u32(&mut buf, 3);
+        push_u64(&mut buf, 0);
+        push_u64(&mut buf, 6);
+        push_str(&mut buf, "general.architecture");
+        push_u32(&mut buf, 8);
+        push_str(&mut buf, "qwen2");
+        push_u32_kv(&mut buf, "qwen2.block_count", 28);
+        push_u32_kv(&mut buf, "qwen2.attention.head_count", 28);
+        push_str(&mut buf, "qwen2.attention.head_count_kv");
+        push_u32(&mut buf, 9);
+        push_u32(&mut buf, 4);
+        push_u64(&mut buf, 4);
+        for value in [4u32, 4, 2, 2] {
+            push_u32(&mut buf, value);
+        }
+        push_u32_kv(&mut buf, "qwen2.attention.key_length", 128);
+        push_u32_kv(&mut buf, "qwen2.context_length", 32768);
+
+        let path = std::env::temp_dir().join("cookllm-capacity.gguf");
+        std::fs::write(&path, &buf).unwrap();
+        let meta = read_gguf_meta(&path.to_string_lossy());
+        assert_eq!(meta.architecture, "qwen2");
+        assert_eq!(meta.block_count, 28);
+        assert_eq!(meta.attention_layer_count, 28);
+        assert_eq!(meta.head_count, 28);
+        assert_eq!(meta.head_count_kv, 4);
+        assert_eq!(meta.head_dim, 128);
+        assert_eq!(meta.context_length, 32768);
+        assert_eq!(meta.weights_bytes, buf.len() as u64);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn read_gguf_meta_detects_hybrid_attention_layers() {
+        fn push_u32(buf: &mut Vec<u8>, value: u32) {
+            buf.extend_from_slice(&value.to_le_bytes());
+        }
+        fn push_u64(buf: &mut Vec<u8>, value: u64) {
+            buf.extend_from_slice(&value.to_le_bytes());
+        }
+        fn push_str(buf: &mut Vec<u8>, value: &str) {
+            push_u64(buf, value.len() as u64);
+            buf.extend_from_slice(value.as_bytes());
+        }
+        fn push_u32_kv(buf: &mut Vec<u8>, key: &str, value: u32) {
+            push_str(buf, key);
+            push_u32(buf, 4);
+            push_u32(buf, value);
+        }
+        fn push_kv_array(buf: &mut Vec<u8>, key: &str, values: &[u32]) {
+            push_str(buf, key);
+            push_u32(buf, 9);
+            push_u32(buf, 4);
+            push_u64(buf, values.len() as u64);
+            for value in values {
+                push_u32(buf, *value);
+            }
+        }
+
+        // Qwen3.5 混合架构：32 层里每 4 层才有一层全注意力（8 层带 KV）
+        let mut interval_buf = Vec::new();
+        interval_buf.extend_from_slice(b"GGUF");
+        push_u32(&mut interval_buf, 3);
+        push_u64(&mut interval_buf, 0);
+        push_u64(&mut interval_buf, 8);
+        push_str(&mut interval_buf, "general.architecture");
+        push_u32(&mut interval_buf, 8);
+        push_str(&mut interval_buf, "qwen35");
+        push_u32_kv(&mut interval_buf, "qwen35.block_count", 32);
+        push_u32_kv(&mut interval_buf, "qwen35.attention.head_count_kv", 4);
+        // 字符串数组（类似词表 tags）整段跳过，验证跳过后仍能读到后面的键
+        push_str(&mut interval_buf, "general.tags");
+        push_u32(&mut interval_buf, 9);
+        push_u32(&mut interval_buf, 8);
+        push_u64(&mut interval_buf, 2);
+        push_str(&mut interval_buf, "text-generation");
+        push_str(&mut interval_buf, "chat");
+        // f32 / bool 键穿插在中间，验证标量长度没读错位（f32 是 4 字节而非 8 字节）
+        push_str(&mut interval_buf, "qwen35.rope.freq_base");
+        push_u32(&mut interval_buf, 6);
+        interval_buf.extend_from_slice(&1_000_000f32.to_le_bytes());
+        push_str(&mut interval_buf, "qwen35.attention.causal");
+        push_u32(&mut interval_buf, 7);
+        interval_buf.push(1);
+        push_u32_kv(&mut interval_buf, "qwen35.full_attention_interval", 4);
+        push_u32_kv(&mut interval_buf, "qwen35.attention.key_length", 256);
+
+        let interval_path = std::env::temp_dir().join("cookllm-hybrid-interval.gguf");
+        std::fs::write(&interval_path, &interval_buf).unwrap();
+        let meta = read_gguf_meta(&interval_path.to_string_lossy());
+        assert_eq!(meta.block_count, 32);
+        assert_eq!(meta.attention_layer_count, 8);
+        let _ = std::fs::remove_file(interval_path);
+
+        // 逐层 head_count_kv 数组：非零项数直接给出带 KV 的层数
+        let mut array_buf = Vec::new();
+        array_buf.extend_from_slice(b"GGUF");
+        push_u32(&mut array_buf, 3);
+        push_u64(&mut array_buf, 0);
+        push_u64(&mut array_buf, 4);
+        push_str(&mut array_buf, "general.architecture");
+        push_u32(&mut array_buf, 8);
+        push_str(&mut array_buf, "qwen35");
+        push_u32_kv(&mut array_buf, "qwen35.block_count", 8);
+        push_kv_array(&mut array_buf, "qwen35.attention.head_count_kv", &[0, 4, 0, 4, 0, 4, 0, 4]);
+        push_u32_kv(&mut array_buf, "qwen35.attention.key_length", 256);
+
+        let array_path = std::env::temp_dir().join("cookllm-hybrid-array.gguf");
+        std::fs::write(&array_path, &array_buf).unwrap();
+        let meta = read_gguf_meta(&array_path.to_string_lossy());
+        assert_eq!(meta.block_count, 8);
+        assert_eq!(meta.attention_layer_count, 4);
+        let _ = std::fs::remove_file(array_path);
     }
 
     #[test]

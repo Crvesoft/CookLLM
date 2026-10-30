@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import { defaultProfilesForModel, uid } from "../data";
-import { getModelsDir, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, inspectGguf, isTauri, msDownload, onModelDownloadProgress, pickModelsDir, removeLocalFile, revealInFolder } from "../tauri";
+import { DEFAULT_NINFER_PROFILES, DEFAULT_PROFILES, uid } from "../data";
+import { buildAutoProfiles, nvfp4SupportedOf } from "../autoProfiles";
+import { getHardwareInfo, getModelsDir, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, inspectGguf, isTauri, msDownload, onModelDownloadProgress, pickModelsDir, removeLocalFile, revealInFolder } from "../tauri";
 import type { ActiveDownload, AppConfig, CommunitySource, DiskUsage, DownloadErrorCode, DownloadErrorPayload, ModelAsset, ModelDownloadProgress } from "../types";
 import { ACCENTS, fileName, parseQuantization } from "../utils";
 import type { AppendLog, PersistConfig, Translate } from "./types";
@@ -134,24 +135,49 @@ export function useDownloads({ config, configRef, configReady, persist, setToast
       const isNinfer = path.toLowerCase().endsWith(".ninfer");
       const isGguf = path.toLowerCase().endsWith(".gguf");
       const ext = (path.split(".").pop() || "FILE").toUpperCase();
-      const meta = await inspectGguf(path).catch(() => ({ architecture: "", parameters: "", quantization: "" }));
+      const meta = await inspectGguf(path).catch(() => ({ architecture: "", parameters: "", quantization: "", blockCount: 0, attentionLayerCount: 0, headCount: 0, headCountKv: 0, headDim: 0, contextLength: 0, weightsBytes: 0 }));
       const paramMatch = path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase();
       const parameters = meta.parameters || paramMatch || "—";
-      const initialProfiles = defaultProfilesForModel(path);
-      const defaultProfile = initialProfiles[0];
+      // 文件头首个张量常是 Q6_K 输出层，K-quant 文件会被标错，文件名更能代表整体量化
+      const nameQuant = parseQuantization(path, "");
+      // 入库即用智能推荐生成三档预设；估算不出来（读不到头信息 / 无显存 / 缺引擎）退回默认的均衡配置
+      const hardware = await getHardwareInfo().catch(() => null);
+      const auto = buildAutoProfiles(
+        meta.blockCount > 0 && meta.weightsBytes > 0
+          ? {
+              blockCount: meta.blockCount,
+              attentionLayerCount: meta.attentionLayerCount,
+              headCountKv: meta.headCountKv,
+              headDim: meta.headDim,
+              contextLength: meta.contextLength,
+              weightsBytes: meta.weightsBytes,
+            }
+          : null,
+        {
+          vramMb: hardware?.vramTotalMb ?? 0,
+          cpuThreads: hardware?.cpuThreads ?? 0,
+          systemRamMb: hardware?.systemRamMb ?? 0,
+          nvfp4Supported: nvfp4SupportedOf(hardware ?? {}),
+        },
+        t,
+        { isNinfer, engines: currentConfig.engines },
+      );
+      const initialProfiles = auto?.profiles ?? [{ ...(isNinfer ? DEFAULT_NINFER_PROFILES[0] : DEFAULT_PROFILES[0]), id: uid("profile") }];
+      const defaultProfileId = auto?.defaultProfileId ?? initialProfiles[0].id;
       const model: ModelAsset = {
         id: uid("model"),
         name,
         path,
         sizeBytes: sizeBytes ?? download.sizeBytes,
         architecture: meta.architecture || (isNinfer ? "NINFER" : isGguf ? "GGUF" : ext),
-        quantization: meta.quantization || parseQuantization(path, t("model.unknownQuant")),
+        quantization: nameQuant || meta.quantization || t("model.unknownQuant"),
         parameters,
         metadataSource: meta.architecture || meta.quantization || meta.parameters ? (isNinfer ? "ninfer" : isGguf ? "gguf" : "filename") : "filename",
         profiles: initialProfiles,
+        defaultProfileId,
         accent: ACCENTS[currentConfig.models.length % ACCENTS.length],
       };
-      setSelectedProfiles((previous) => ({ ...previous, [model.id]: defaultProfile.id }));
+      setSelectedProfiles((previous) => ({ ...previous, [model.id]: defaultProfileId }));
       setJustImportedIds((previous) => new Set(previous).add(model.id));
       window.setTimeout(() => { setJustImportedIds((previous) => { const next = new Set(previous); next.delete(model.id); return next; }); }, 6000);
       patchByTaskId(download.taskId, { status: "done" as const, path, finishedAt: Date.now() });
