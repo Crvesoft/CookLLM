@@ -326,6 +326,33 @@ pub(crate) fn build_server_launch(app: &AppHandle, model_id: &str, profile_id: &
             engine_dir
         };
         command.current_dir(working_dir);
+
+        // 自动探测并注入 unified 包自带的 runtime/cuda 动态库目录至 PATH，
+        // 解决 CUDA 13/12 等外部 cuBLAS 依赖 (如 cublas64_13.dll、cublasLt64_13.dll) 缺失导致的弹窗与退出
+        let mut current_ancestor = Some(engine_dir);
+        let mut found_cuda_dir = None;
+        for _ in 0..4 {
+            if let Some(dir) = current_ancestor {
+                let cand = dir.join("runtime").join("cuda");
+                if cand.is_dir() {
+                    found_cuda_dir = Some(cand);
+                    break;
+                }
+                current_ancestor = dir.parent();
+            } else {
+                break;
+            }
+        }
+        if let Some(cuda_dir) = found_cuda_dir {
+            let current_path = std::env::var_os("PATH").unwrap_or_default();
+            let mut new_path = cuda_dir.into_os_string();
+            #[cfg(windows)]
+            new_path.push(";");
+            #[cfg(not(windows))]
+            new_path.push(":");
+            new_path.push(&current_path);
+            command.env("PATH", new_path);
+        }
     }
     // NInfer 结构化请求日志 tail 游标（第 14 节填充；llama.cpp 引擎保持 None）
     let mut ninfer_request_log_tail: Option<RequestLogTail> = None;
