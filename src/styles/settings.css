@@ -898,3 +898,707 @@
   border-color: #38383e;
 }
 
+
+/* ---- 性能监测卡片：两行紧凑布局 ---- */
+.perf-device {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  min-width: 0;
+  color: #8b96a9;
+  font-size: 11.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: default;
+}
+
+.perf-device-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #6b7280;
+}
+
+.perf-device.tone-ok .perf-device-dot {
+  background: #34d399;
+}
+
+.perf-device.tone-warn .perf-device-dot {
+  background: #fbbf24;
+}
+
+.perf-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  padding: 16px 22px 10px;
+}
+
+/* 监测内容：底栏指标与布局入口合并成独立一行 */
+.perf-scope-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 2px 22px 16px;
+}
+
+.perf-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.perf-field-label {
+  flex: none;
+  color: #8b96a9;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* 预设：一组无边框分段按钮，只给选中项上底色 */
+.perf-segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid rgba(255, 255, 255, .08);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, .04);
+}
+
+.perf-segmented button {
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color .15s ease, background .15s ease;
+}
+
+.perf-segmented button:hover:not(:disabled):not(.on) {
+  color: #e4e4e7;
+}
+
+.perf-segmented button.on {
+  background: rgba(249, 115, 22, .16);
+  color: #fb923c;
+}
+
+.perf-segmented button:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+/* 底栏指标：轻量勾选，不再使用成排开关 */
+.perf-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 2px;
+  border: 0;
+  background: transparent;
+  color: #8b96a9;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color .15s ease;
+}
+
+.perf-check:hover:not(:disabled) {
+  color: #e4e4e7;
+}
+
+.perf-check.on {
+  color: #cbd5e1;
+}
+
+.perf-check:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+.perf-check-box {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: 4px;
+  color: #fb923c;
+  transition: background .15s ease, border-color .15s ease;
+}
+
+.perf-check.on .perf-check-box {
+  border-color: rgba(249, 115, 22, .5);
+  background: rgba(249, 115, 22, .16);
+}
+
+/* 自定义入口：右侧普通文字按钮，不铺满整行 */
+.perf-customize {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #8b96a9;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color .15s ease, background .15s ease;
+}
+
+.perf-customize:hover:not(:disabled) {
+  color: #e4e4e7;
+  background: rgba(255, 255, 255, .05);
+}
+
+.perf-customize:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+.perf-customize-chevron {
+  transition: transform .18s ease;
+}
+
+.perf-customize.open .perf-customize-chevron {
+  transform: rotate(180deg);
+}
+
+/* 内置预设与已保存预设同排，细分隔线只做来源区分 */
+.perf-divider {
+  flex: none;
+  width: 1px;
+  height: 18px;
+  background: rgba(255, 255, 255, .09);
+}
+
+.perf-saved-list {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  flex: 0 1 auto;
+}
+
+.perf-saved-chip {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  height: 26px;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .03);
+  transition: border-color .15s ease, background .15s ease;
+}
+
+.perf-saved-chip.on {
+  border-color: rgba(249, 115, 22, .42);
+  background: rgba(249, 115, 22, .13);
+}
+
+.perf-saved-apply {
+  max-width: 150px;
+  height: 100%;
+  padding: 0 8px;
+  border: 0;
+  background: transparent;
+  color: #cbd5e1;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: color .15s ease;
+}
+
+.perf-saved-chip.on .perf-saved-apply {
+  color: #fb923c;
+}
+
+.perf-saved-apply:hover:not(:disabled) {
+  color: #e4e4e7;
+}
+
+.perf-saved-apply:disabled,
+.perf-saved-delete:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+.perf-saved-chip.on .perf-saved-apply:hover:not(:disabled) {
+  color: #fdba74;
+}
+
+.perf-saved-delete {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-left: 1px solid rgba(255, 255, 255, .07);
+  background: transparent;
+  color: #6b7280;
+  cursor: pointer;
+  transition: color .15s ease, background .15s ease;
+}
+
+.perf-saved-delete:hover:not(:disabled) {
+  color: #f87171;
+  background: rgba(248, 113, 113, .1);
+}
+
+.perf-save-preset {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 9px;
+  border: 1px dashed rgba(255, 255, 255, .16);
+  border-radius: 7px;
+  background: transparent;
+  color: #8b96a9;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color .15s ease, border-color .15s ease;
+}
+
+.perf-save-preset:hover:not(:disabled) {
+  border-color: rgba(249, 115, 22, .45);
+  color: #e4e4e7;
+}
+
+.perf-save-preset:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+.perf-preset-editor {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  height: 26px;
+  padding: 0 2px 0 8px;
+  border: 1px solid rgba(249, 115, 22, .42);
+  border-radius: 7px;
+  background: rgba(255, 255, 255, .04);
+}
+
+.perf-preset-editor input {
+  width: 118px;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: #e4e4e7;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.perf-preset-editor input::placeholder {
+  color: #6b7280;
+}
+
+.perf-preset-confirm,
+.perf-preset-cancel {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #8b96a9;
+  cursor: pointer;
+  transition: color .15s ease, background .15s ease;
+}
+
+.perf-preset-confirm:hover:not(:disabled) {
+  color: #fb923c;
+  background: rgba(249, 115, 22, .12);
+}
+
+.perf-preset-confirm:disabled {
+  opacity: .35;
+  cursor: not-allowed;
+}
+
+.perf-preset-cancel:hover {
+  color: #e4e4e7;
+  background: rgba(255, 255, 255, .06);
+}
+
+.perf-presets-empty {
+  color: #6b7280;
+  font-size: 11.5px;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+/* 展开抽屉：指标显隐、展示尺寸与拖动排序 */
+.perf-drawer {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px 0 2px;
+  border-top: 1px solid rgba(255, 255, 255, .06);
+  background: rgba(255, 255, 255, .015);
+}
+
+.perf-metric {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 22px;
+  border-radius: 9px;
+  transition: background .15s ease, opacity .15s ease;
+}
+
+.perf-metric.off {
+  opacity: .45;
+}
+
+.perf-metric.dragging {
+  background: rgba(249, 115, 22, .08);
+  box-shadow: inset 0 0 0 1px rgba(249, 115, 22, .22);
+}
+
+.perf-grip {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 26px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #6b7280;
+  cursor: grab;
+  touch-action: none;
+}
+
+.perf-grip:hover:not(:disabled) {
+  color: #cbd5e1;
+}
+
+.perf-grip:active {
+  cursor: grabbing;
+}
+
+.perf-grip:disabled {
+  opacity: .4;
+  cursor: not-allowed;
+}
+
+.perf-metric-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-self: start;
+  padding: 3px 2px;
+  color: #cbd5e1;
+  font-size: 12.5px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.perf-metric-dot {
+  flex: none;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: #8b96a9;
+}
+
+.perf-metric-dot.tone-gpu,
+.perf-metric-dot.tone-vram {
+  background: #fbbf24;
+}
+
+.perf-metric-dot.tone-cpu,
+.perf-metric-dot.tone-memory {
+  background: #5fbac4;
+}
+
+/* 尺寸：一整组分段按钮，不再给每格单独描边 */
+.perf-size {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, .1);
+  border-radius: 7px;
+}
+
+.perf-size button {
+  height: 22px;
+  padding: 0 9px;
+  border: 0;
+  border-left: 1px solid rgba(255, 255, 255, .07);
+  background: transparent;
+  color: #8b96a9;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color .15s ease, background .15s ease;
+}
+
+.perf-size button:first-child {
+  border-left: 0;
+}
+
+.perf-size button:hover:not(:disabled):not(.on) {
+  color: #e4e4e7;
+}
+
+.perf-size button.on {
+  background: rgba(249, 115, 22, .18);
+  color: #fb923c;
+}
+
+.perf-size button:disabled {
+  opacity: .35;
+  cursor: not-allowed;
+}
+
+.perf-drawer-hint {
+  margin: 2px 0 0;
+  padding: 4px 22px 8px 50px;
+  color: #6b7280;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+[data-theme="light"] .perf-device {
+  color: #64748b;
+}
+
+[data-theme="light"] .perf-device.tone-ok .perf-device-dot {
+  background: #10b981;
+}
+
+[data-theme="light"] .perf-device.tone-warn .perf-device-dot {
+  background: #e0850f;
+}
+
+[data-theme="light"] .perf-field-label {
+  color: #64748b;
+}
+
+[data-theme="light"] .perf-segmented {
+  border-color: #e2e8f0;
+  background: #f1f5f9;
+}
+
+[data-theme="light"] .perf-segmented button {
+  color: #475569;
+}
+
+[data-theme="light"] .perf-segmented button:hover:not(:disabled):not(.on) {
+  color: #1e293b;
+}
+
+[data-theme="light"] .perf-segmented button.on {
+  background: #fdf1dd;
+  color: #bd5c16;
+}
+
+[data-theme="light"] .perf-check {
+  color: #64748b;
+}
+
+[data-theme="light"] .perf-check:hover:not(:disabled) {
+  color: #1e293b;
+}
+
+[data-theme="light"] .perf-check.on {
+  color: #334155;
+}
+
+[data-theme="light"] .perf-check-box {
+  border-color: #cbd5e1;
+}
+
+[data-theme="light"] .perf-check.on .perf-check-box {
+  border-color: #efd3a6;
+  background: #fdf1dd;
+  color: #bd5c16;
+}
+
+[data-theme="light"] .perf-customize {
+  color: #64748b;
+}
+
+[data-theme="light"] .perf-customize:hover:not(:disabled) {
+  color: #1e293b;
+  background: #f1f5f9;
+}
+
+[data-theme="light"] .perf-divider {
+  background: #e8ecf3;
+}
+
+[data-theme="light"] .perf-saved-chip {
+  border-color: #e2e8f0;
+  background: #fff;
+}
+
+[data-theme="light"] .perf-saved-chip.on {
+  border-color: #efd3a6;
+  background: #fdf1dd;
+}
+
+[data-theme="light"] .perf-saved-apply {
+  color: #334155;
+}
+
+[data-theme="light"] .perf-saved-chip.on .perf-saved-apply {
+  color: #bd5c16;
+}
+
+[data-theme="light"] .perf-saved-apply:hover:not(:disabled) {
+  color: #0f172a;
+}
+
+[data-theme="light"] .perf-saved-chip.on .perf-saved-apply:hover:not(:disabled) {
+  color: #9a4a0f;
+}
+
+[data-theme="light"] .perf-saved-delete {
+  border-left-color: #eef1f6;
+  color: #94a3b8;
+}
+
+[data-theme="light"] .perf-saved-delete:hover:not(:disabled) {
+  color: #dc2626;
+  background: #fef2f2;
+}
+
+[data-theme="light"] .perf-save-preset {
+  border-color: #cbd5e1;
+  color: #64748b;
+}
+
+[data-theme="light"] .perf-save-preset:hover:not(:disabled) {
+  border-color: #e0850f;
+  color: #1e293b;
+}
+
+[data-theme="light"] .perf-preset-editor {
+  border-color: #f0cfa0;
+  background: #fffdf8;
+}
+
+[data-theme="light"] .perf-preset-editor input {
+  color: #1e293b;
+}
+
+[data-theme="light"] .perf-preset-editor input::placeholder {
+  color: #94a3b8;
+}
+
+[data-theme="light"] .perf-preset-confirm,
+[data-theme="light"] .perf-preset-cancel {
+  color: #64748b;
+}
+
+[data-theme="light"] .perf-preset-confirm:hover:not(:disabled) {
+  color: #bd5c16;
+  background: #fdf1dd;
+}
+
+[data-theme="light"] .perf-preset-cancel:hover {
+  color: #1e293b;
+  background: #f1f5f9;
+}
+
+[data-theme="light"] .perf-presets-empty {
+  color: #94a3b8;
+}
+
+[data-theme="light"] .perf-drawer {
+  border-top-color: #eef1f6;
+  background: #fbfcfe;
+}
+
+[data-theme="light"] .perf-metric.dragging {
+  background: #fff8ef;
+  box-shadow: inset 0 0 0 1px #f0cfa0;
+}
+
+[data-theme="light"] .perf-grip {
+  color: #94a3b8;
+}
+
+[data-theme="light"] .perf-grip:hover:not(:disabled) {
+  color: #475569;
+}
+
+[data-theme="light"] .perf-metric-title {
+  color: #1e293b;
+}
+
+[data-theme="light"] .perf-metric-dot.tone-gpu,
+[data-theme="light"] .perf-metric-dot.tone-vram {
+  background: #e0850f;
+}
+
+[data-theme="light"] .perf-metric-dot.tone-cpu,
+[data-theme="light"] .perf-metric-dot.tone-memory {
+  background: #2f8f9e;
+}
+
+[data-theme="light"] .perf-size {
+  border-color: #e2e8f0;
+}
+
+[data-theme="light"] .perf-size button {
+  border-left-color: #eef1f6;
+  color: #475569;
+}
+
+[data-theme="light"] .perf-size button:hover:not(:disabled):not(.on) {
+  color: #1e293b;
+}
+
+[data-theme="light"] .perf-size button.on {
+  background: #fdf1dd;
+  color: #bd5c16;
+}
+
+[data-theme="light"] .perf-drawer-hint {
+  color: #94a3b8;
+}

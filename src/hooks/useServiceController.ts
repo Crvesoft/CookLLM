@@ -1,9 +1,25 @@
 import { useEffect, useRef, useState } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import { checkOrphanServer, getGpuStats, getServerStatus, isTauri, killOrphanServer, readNinferRequestLog, startServer, stopServer, type OrphanProcessItem, type ServerLifecyclePayload } from "../tauri";
-import type { AppConfig, GpuStats, InferenceMetrics, ModelAsset, Page, RealtimeTpsSample, ServerStatus, TokSample } from "../types";
+import { checkOrphanServer, getPerformanceStats, getServerStatus, isTauri, killOrphanServer, readNinferRequestLog, startServer, stopServer, type OrphanProcessItem, type ServerLifecyclePayload } from "../tauri";
+import type { AppConfig, GpuStats, InferenceMetrics, ModelAsset, Page, PerformanceStats, RealtimeTpsSample, ServerStatus, TokSample } from "../types";
 import { EMPTY_STATUS, InferenceTracker, RealtimeThroughputSampler, extractLlamaSlotSample, modelTitle, shallowEqualFields } from "../utils";
 import type { AppendLog, Translate } from "./types";
+
+/** 性能快照逐字段比较：未变化时复用旧引用，避免 2s 轮询触发侧栏重渲染 */
+function samePerfStats(a: PerformanceStats | null, b: PerformanceStats | null): boolean {
+  if (a === b) return true;
+  if (!a || !b) return false;
+  if (a.cpuPercent !== b.cpuPercent || a.memoryUsedMb !== b.memoryUsedMb || a.memoryTotalMb !== b.memoryTotalMb) return false;
+  const ga = a.gpu;
+  const gb = b.gpu;
+  if (!ga || !gb) return ga === gb;
+  return ga.memoryUsedMb === gb.memoryUsedMb
+    && ga.memoryTotalMb === gb.memoryTotalMb
+    && ga.utilPercent === gb.utilPercent
+    && ga.powerWatts === gb.powerWatts
+    && ga.powerLimitWatts === gb.powerLimitWatts
+    && ga.temperatureC === gb.temperatureC;
+}
 
 interface UseServiceControllerOptions {
   config: AppConfig;
@@ -19,10 +35,21 @@ interface UseServiceControllerOptions {
   t: Translate;
 }
 
-/** 服务控制器：状态/GPU 轮询、推理指标聚合、启动/停止、异常判定、生命周期同步与孤儿进程处理 */
+/** 服务控制器：状态/性能轮询、推理指标聚合、启动/停止、异常判定、生命周期同步与孤儿进程处理 */
 export function useServiceController({ config, configReady, pageRef, status, setStatus, selectedProfiles, setMenuModelId, setLogDockOpen, setToast, appendLog, t }: UseServiceControllerOptions) {
-  /** GPU 性能监测开关（默认开启，设置页可关闭） */
+  /** 性能监测：总开关 + 六个独立监测项（默认全开，设置页可逐项关闭） */
   const gpuMonitorEnabled = config.gpuMonitorEnabled !== false;
+  const vramMonitorEnabled = config.vramMonitorEnabled ?? gpuMonitorEnabled;
+  const powerMonitorEnabled = config.powerMonitorEnabled ?? gpuMonitorEnabled;
+  const gpuTempEnabled = config.gpuTempEnabled !== false;
+  const cpuMonitorEnabled = config.monitorCpuEnabled !== false;
+  const memoryMonitorEnabled = config.monitorMemoryEnabled !== false;
+  const perfMonitorEnabled = config.perfMonitorEnabled !== false;
+  const perfEnabled = perfMonitorEnabled && (gpuMonitorEnabled || vramMonitorEnabled || powerMonitorEnabled || gpuTempEnabled || cpuMonitorEnabled || memoryMonitorEnabled);
+  // 负载 / 显存 / 温度 / 功耗都来自 nvidia-smi：开启任一 GPU 相关项就需要查询
+  const includeGpu = perfEnabled && (gpuMonitorEnabled || vramMonitorEnabled || powerMonitorEnabled || gpuTempEnabled);
+  const includeCpu = perfEnabled && cpuMonitorEnabled;
+  const includeMemory = perfEnabled && memoryMonitorEnabled;
   /** 服务异常：启动失败 / 进程意外退出；成功启动后清除 */
   const [serviceAbnormal, setServiceAbnormal] = useState(false);
   /** 最近一次从日志解析到的生成吞吐（带时间戳，微型状态卡据此判定"实时 / Idle"） */
@@ -34,11 +61,15 @@ export function useServiceController({ config, configReady, pageRef, status, set
   /** 每秒实时吞吐采样：分析页 Decode / Prefill 两张实时曲线共用（120 秒环形缓冲） */
   const realtimeSamplerRef = useRef(new RealtimeThroughputSampler());
   const [realtimeSamples, setRealtimeSamples] = useState<RealtimeTpsSample[]>([]);
-  /** GPU 实时指标（nvidia-smi，2s 轮询；浏览器模式恒为 null；初始从本地缓存读取实现首帧秒显） */
-  const [gpuStats, setGpuStats] = useState<GpuStats | null>(() => {
+  /** 性能监测快照（2s 轮询；浏览器模式恒为 null；初始从本地缓存读取实现首帧秒显） */
+  const [perfStats, setPerfStats] = useState<PerformanceStats | null>(() => {
     try {
-      const raw = localStorage.getItem("cookllm.last_gpu_stats");
-      return raw ? (JSON.parse(raw) as GpuStats) : null;
+      const raw = localStorage.getItem("cookllm.last_perf_stats");
+      if (raw) return JSON.parse(raw) as PerformanceStats;
+      // 旧版仅缓存 GPU 指标：迁移为快照中的 gpu 字段
+      const legacy = localStorage.getItem("cookllm.last_gpu_stats");
+      try { localStorage.removeItem("cookllm.last_gpu_stats"); } catch {}
+      return legacy ? { gpu: JSON.parse(legacy) as GpuStats, cpuPercent: null, memoryUsedMb: null, memoryTotalMb: null } : null;
     } catch {
       return null;
     }
@@ -206,33 +237,33 @@ export function useServiceController({ config, configReady, pageRef, status, set
           }
         }
       }).catch(() => undefined);
-      // GPU 指标独立轮询：查询失败 / 无 NVIDIA 驱动 → null，卡片显示 "--"
-      if (gpuMonitorEnabled) {
-        // 响应到达时若已被关闭或 effect 已重跑（配置加载完成 / 用户切换），丢弃过期数据
-        void getGpuStats().then((stats) => {
-          if (!active || !gpuMonitorEnabled) return;
-          setGpuStats((prev) => (prev === null && stats === null) || (prev !== null && stats !== null && shallowEqualFields(prev, stats)) ? prev : stats);
+      // 性能指标独立轮询：按监测项只采集所需数据，未启用时清空并停止读缓存
+      if (perfEnabled) {
+        // 响应到达时若配置已变更或 effect 已重跑（配置加载完成 / 用户切换），丢弃过期数据
+        void getPerformanceStats(includeGpu, includeCpu, includeMemory).then((stats) => {
+          if (!active || !perfEnabled) return;
+          setPerfStats((prev) => (samePerfStats(prev, stats) ? prev : stats));
           if (stats) {
-            try { localStorage.setItem("cookllm.last_gpu_stats", JSON.stringify(stats)); } catch {}
+            try { localStorage.setItem("cookllm.last_perf_stats", JSON.stringify(stats)); } catch {}
           } else {
-            try { localStorage.removeItem("cookllm.last_gpu_stats"); } catch {}
+            try { localStorage.removeItem("cookllm.last_perf_stats"); } catch {}
           }
         }).catch(() => {
           if (active) {
-            setGpuStats((prev) => (prev === null ? prev : null));
-            try { localStorage.removeItem("cookllm.last_gpu_stats"); } catch {}
+            setPerfStats((prev) => (prev === null ? prev : null));
+            try { localStorage.removeItem("cookllm.last_perf_stats"); } catch {}
           }
         });
       } else {
-        setGpuStats(null);
-        try { localStorage.removeItem("cookllm.last_gpu_stats"); } catch {}
+        setPerfStats(null);
+        try { localStorage.removeItem("cookllm.last_perf_stats"); } catch {}
       }
     };
     // 挂载立即刷新一次（避免第一帧只显示版本号、2 秒后才出卡片）
     refresh();
     const timer = window.setInterval(refresh, 2000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [gpuMonitorEnabled, configReady]);
+  }, [perfEnabled, includeGpu, includeCpu, includeMemory, configReady]);
 
   /**
    * 每秒实时吞吐采样：状态轮询保持 2s，这里单独以 1s 节奏读取引擎计数器差分，
@@ -541,7 +572,7 @@ export function useServiceController({ config, configReady, pageRef, status, set
   return {
     serviceAbnormal, tokSample, setTokSample, inferenceTrackerRef, latestInference, setLatestInference, inferenceHistory, setInferenceHistory,
     realtimeSamples,
-    gpuStats, setGpuStats, busy, serviceStarting, startingModelId,
+    perfStats, busy, serviceStarting, startingModelId,
     markServiceReady, serverLifecycleHandlerRef,
     handleStart, handleStop, handleClearInferenceStats,
     orphanPids, orphanProcesses, orphanPendingModel, setOrphanPids, setOrphanProcesses,

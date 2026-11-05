@@ -4,7 +4,7 @@ import type React from "react";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { isTauri } from "../tauri";
-import type { GpuStats, InferenceMetrics, LlamaLogPayload, ModelAsset, Page, RealtimeTpsSample, ServerStatus } from "../types";
+import type { InferenceMetrics, LlamaLogPayload, ModelAsset, Page, PerfMonitorConfig, PerformanceStats, RealtimeTpsSample, ServerStatus } from "../types";
 import { cn, lineKind, modelTitle, timeLabel, copyTextToClipboard, formatLogsPlainText } from "../utils";
 import { LlamaMark } from "./LlamaMark";
 import MiniStatusBar from "./MiniStatusBar";
@@ -55,7 +55,7 @@ function WindowControls({ zenToggle }: { zenToggle?: React.ReactNode }) {
   );
 }
 
-export function Sidebar({ page, onPage, downloadBadge, badgeProgress, updateAvailable, status, abnormal, gpuStats, collapsed, onToggleCollapsed, theme, onToggleTheme }: { page: Page; onPage: (page: Page) => void; downloadBadge?: string; badgeProgress?: number; updateAvailable?: boolean; status: ServerStatus; abnormal: boolean; gpuStats: GpuStats | null; collapsed: boolean; onToggleCollapsed: () => void; theme: string; onToggleTheme: () => void }) {
+export function Sidebar({ page, onPage, downloadBadge, badgeProgress, updateAvailable, status, abnormal, perfStats, perfConfig, collapsed, onToggleCollapsed, theme, onToggleTheme }: { page: Page; onPage: (page: Page) => void; downloadBadge?: string; badgeProgress?: number; updateAvailable?: boolean; status: ServerStatus; abnormal: boolean; perfStats: PerformanceStats | null; perfConfig: PerfMonitorConfig; collapsed: boolean; onToggleCollapsed: () => void; theme: string; onToggleTheme: () => void }) {
   const { t } = useI18n();
   const nav: Array<{ id: Page; label: string; icon: LucideIcon; badge?: string; badgeProgress?: number; dot?: boolean }> = [
     { id: "models", label: t("nav.models"), icon: Boxes },
@@ -73,7 +73,7 @@ export function Sidebar({ page, onPage, downloadBadge, badgeProgress, updateAvai
     <nav className="side-nav">{nav.map((item) => { const Icon = item.icon; return <button key={item.id} title={collapsed ? item.label : undefined} className={cn("side-link", page === item.id && "active")} onClick={() => onPage(item.id)}><Icon size={18} /><span>{item.label}</span>{item.badge && <em className={cn("download-badge", item.badgeProgress != null && "ring")}><svg viewBox="0 0 18 18" aria-hidden="true"><circle className="badge-track" cx="9" cy="9" r="7" /><circle className="badge-fill" cx="9" cy="9" r="7" style={{ strokeDashoffset: `${43.98 * (1 - Math.max(0, Math.min(100, item.badgeProgress ?? 0)) / 100)}` }} /></svg><span>{item.badge}</span></em>}{item.dot && <i className="update-dot" aria-hidden="true" />}</button>; })}</nav>
     <div className="sidebar-spacer" />
     {/* 收起时仅用 CSS 隐藏（保持挂载）：迷你图的采样历史在收放之间不丢失 */}
-    <MiniStatusBar status={status} abnormal={abnormal} gpuStats={gpuStats} theme={theme} updateAvailable={updateAvailable} onToggleTheme={onToggleTheme} />
+    <MiniStatusBar status={status} abnormal={abnormal} perfStats={perfStats} perfConfig={perfConfig} theme={theme} updateAvailable={updateAvailable} onToggleTheme={onToggleTheme} />
   </aside>;
 }
 

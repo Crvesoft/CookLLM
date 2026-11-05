@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { APP_REPO, APP_VERSION, PROJECT_URL } from "./data";
 import { isNewerVersion } from "./utils";
-import type { AppConfig, DiskUsage, EngineType, GpuStats, HfDownloadResult, HfFile, HfModel, LlamaBackend, LlamaLogPayload, ModelDownloadProgress, ProxyMode, ServerStatus } from "./types";
+import type { AppConfig, DiskUsage, EngineType, HfDownloadResult, HfFile, HfModel, LlamaBackend, LlamaLogPayload, ModelDownloadProgress, PerformanceStats, ProxyMode, ServerStatus } from "./types";
 
 export const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -62,10 +62,10 @@ export async function killOrphanServer(pids?: number[]): Promise<number> {
   return invoke<number>("kill_orphan_server", { pids: pids ?? null });
 }
 
-/** GPU 实时指标（Rust 端 nvidia-smi）：浏览器 / 无 NVIDIA 驱动时返回 null */
-export async function getGpuStats(): Promise<GpuStats | null> {
+/** 性能监测快照（Rust 端按开关采集 GPU / CPU / 内存）：浏览器模式返回 null */
+export async function getPerformanceStats(includeGpu: boolean, includeCpu: boolean, includeMemory: boolean): Promise<PerformanceStats | null> {
   if (!isTauri()) return null;
-  return invoke<GpuStats | null>("get_gpu_stats");
+  return invoke<PerformanceStats>("get_performance_stats", { includeGpu, includeCpu, includeMemory });
 }
 
 export interface PickedFile { path: string; sizeBytes: number; }

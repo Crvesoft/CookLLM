@@ -1,12 +1,95 @@
-import type { AppConfig, LlamaEngine, LlamaLogPayload, ModelAsset, Profile } from "./types";
+import type { AppConfig, LlamaEngine, LlamaLogPayload, ModelAsset, PerfItemId, PerfItemStyle, PerfMonitorConfig, PerfPreset, Profile } from "./types";
 import { formatMessage, getLocale } from "./i18n";
 import { DEFAULT_SHORTCUTS } from "./utils";
 
 /** 当前应用版本（与 tauri.conf.json / package.json 保持一致）：浏览器模式回退值，检测更新的比较基线 */
-export const APP_VERSION = "0.4.5";
+export const APP_VERSION = "0.4.6";
 /** 项目信息：GitHub 仓库（owner/repo）与主页地址 */
 export const APP_REPO = "Crvesoft/CookLLM";
 export const PROJECT_URL = `https://github.com/${APP_REPO}`;
+
+/* ------------------------------------------------------------------ */
+/* 性能卡片 DIY 默认值                                                  */
+/* ------------------------------------------------------------------ */
+
+export const PERF_ITEM_IDS: PerfItemId[] = ["gpu", "cpu", "vram", "memory"];
+
+/** 默认「经典」：GPU / 显存中图各一行，CPU / 内存各一行文字；功耗 / 温度在底栏 */
+export const DEFAULT_PERF_ORDER: PerfItemId[] = ["gpu", "vram", "cpu", "memory"];
+
+export const DEFAULT_PERF_STYLES: Record<PerfItemId, PerfItemStyle> = {
+  gpu: "medium",
+  vram: "medium",
+  cpu: "text",
+  memory: "text",
+};
+
+export const PERF_ITEM_STYLES: Record<PerfItemId, PerfItemStyle[]> = {
+  gpu: ["large", "medium", "small", "text"],
+  vram: ["large", "medium", "small", "text"],
+  cpu: ["large", "medium", "small", "text"],
+  memory: ["large", "medium", "small", "text"],
+};
+
+/** 归一化顺序：过滤未知项与重复项，并补齐缺失项（旧配置只有部分字段） */
+function normalizePerfOrder(order?: PerfItemId[]): PerfItemId[] {
+  const seen = new Set<PerfItemId>();
+  const result: PerfItemId[] = [];
+  for (const id of order ?? []) {
+    if (PERF_ITEM_IDS.includes(id) && !seen.has(id)) {
+      seen.add(id);
+      result.push(id);
+    }
+  }
+  for (const id of DEFAULT_PERF_ORDER) if (!seen.has(id)) result.push(id);
+  return result;
+}
+
+/** 归一化样式：补齐默认值；旧配置里的「进度条 bar」按文本处理，已下线的功耗 / 温度项忽略 */
+function normalizePerfStyles(styles?: Partial<Record<PerfItemId, PerfItemStyle>>): Record<PerfItemId, PerfItemStyle> {
+  const result = { ...DEFAULT_PERF_STYLES };
+  for (const id of PERF_ITEM_IDS) {
+    const raw = (styles as Partial<Record<string, string>> | undefined)?.[id];
+    const style = raw === "bar" ? "text" : raw;
+    if (style && PERF_ITEM_STYLES[id].includes(style as PerfItemStyle)) result[id] = style as PerfItemStyle;
+  }
+  return result;
+}
+
+/** 解析性能卡片配置：开关默认开启；旧配置的显存开关跟随原 GPU 开关，功耗开关跟随 GPU、温度默认展示 */
+export function resolvePerfConfig(config: AppConfig): PerfMonitorConfig {
+  const gpuOn = config.gpuMonitorEnabled !== false;
+  return {
+    enabled: config.perfMonitorEnabled !== false,
+    items: {
+      gpu: gpuOn,
+      vram: config.vramMonitorEnabled ?? gpuOn,
+      cpu: config.monitorCpuEnabled !== false,
+      memory: config.monitorMemoryEnabled !== false,
+    },
+    order: normalizePerfOrder(config.perfItemOrder),
+    styles: normalizePerfStyles(config.perfItemStyles),
+    env: {
+      power: config.powerMonitorEnabled ?? gpuOn,
+      temp: config.gpuTempEnabled !== false,
+    },
+    presets: normalizePerfPresets(config.perfPresets),
+  };
+}
+
+/** 归一化用户预设：修正未知项、补齐缺失样式，并丢弃损坏条目 */
+export function normalizePerfPresets(presets?: PerfPreset[]): PerfPreset[] {
+  if (!Array.isArray(presets)) return [];
+  return presets
+    .filter((preset) => preset && typeof preset.id === "string" && typeof preset.name === "string" && preset.name.trim())
+    .slice(0, 8)
+    .map((preset) => ({
+      id: preset.id,
+      name: preset.name.trim().slice(0, 24),
+      order: normalizePerfOrder(preset.order),
+      styles: normalizePerfStyles(preset.styles),
+    }));
+}
 
 export const uid = (prefix: string) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
@@ -129,7 +212,16 @@ export function mergeImportedConfig(
         customTags: Array.from(new Set([...(current.customTags || []), ...(incoming.customTags || [])])),
         theme: incoming.theme ?? current.theme,
         language: incoming.language ?? current.language,
+        perfMonitorEnabled: incoming.perfMonitorEnabled ?? current.perfMonitorEnabled,
         gpuMonitorEnabled: incoming.gpuMonitorEnabled ?? current.gpuMonitorEnabled,
+        vramMonitorEnabled: incoming.vramMonitorEnabled ?? current.vramMonitorEnabled,
+        powerMonitorEnabled: incoming.powerMonitorEnabled ?? current.powerMonitorEnabled,
+        monitorCpuEnabled: incoming.monitorCpuEnabled ?? current.monitorCpuEnabled,
+        monitorMemoryEnabled: incoming.monitorMemoryEnabled ?? current.monitorMemoryEnabled,
+        gpuTempEnabled: incoming.gpuTempEnabled ?? current.gpuTempEnabled,
+        perfItemOrder: incoming.perfItemOrder ?? current.perfItemOrder,
+        perfItemStyles: incoming.perfItemStyles ?? current.perfItemStyles,
+        perfPresets: incoming.perfPresets ?? current.perfPresets,
         exploreSidebarCollapsed: incoming.exploreSidebarCollapsed ?? current.exploreSidebarCollapsed,
         preferredModelId: incoming.preferredModelId ?? current.preferredModelId,
         preferredProfileId: incoming.preferredProfileId ?? current.preferredProfileId,
@@ -274,11 +366,20 @@ export function mergeImportedConfig(
     if (incoming.preferredProfileId && !current.preferredProfileId) {
       mergedConfig.preferredProfileId = incoming.preferredProfileId;
     }
-    const booleanSettings = ["gpuMonitorEnabled", "exploreSidebarCollapsed", "autoUpdateEnabled", "minimizeToTrayOnClose"] as const;
+    const booleanSettings = ["perfMonitorEnabled", "gpuMonitorEnabled", "vramMonitorEnabled", "powerMonitorEnabled", "monitorCpuEnabled", "monitorMemoryEnabled", "gpuTempEnabled", "exploreSidebarCollapsed", "autoUpdateEnabled", "minimizeToTrayOnClose"] as const;
     for (const key of booleanSettings) {
       if (incoming[key] !== undefined && current[key] === undefined) {
         mergedConfig[key] = incoming[key];
       }
+    }
+    if (incoming.perfItemOrder && !current.perfItemOrder) {
+      mergedConfig.perfItemOrder = incoming.perfItemOrder;
+    }
+    if (incoming.perfItemStyles && !current.perfItemStyles) {
+      mergedConfig.perfItemStyles = incoming.perfItemStyles;
+    }
+    if (incoming.perfPresets && !current.perfPresets) {
+      mergedConfig.perfPresets = incoming.perfPresets;
     }
     if (incoming.shortcuts) {
       mergedConfig.shortcuts = {

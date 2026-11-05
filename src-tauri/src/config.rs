@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
@@ -280,9 +281,36 @@ pub(crate) struct AppConfig {
     /// 界面语言：zh（默认）/ en，设置页可切换并持久化
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) language: Option<String>,
-    /// GPU performance monitor toggle (default on; AMD/unsupported GPUs can disable).
+    /// 性能监测总开关（默认开启；关闭后整块指标与轮询一起停止）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) perf_monitor_enabled: Option<bool>,
+    /// GPU 负载 / 显存监测（默认开启；无 NVIDIA 驱动时自动隐藏）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) gpu_monitor_enabled: Option<bool>,
+    /// CPU 使用率监测（默认开启，仅在总开关开启时生效）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) monitor_cpu_enabled: Option<bool>,
+    /// 系统内存监测（默认开启，仅在总开关开启时生效）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) monitor_memory_enabled: Option<bool>,
+    /// 显卡温度实时读数（默认开启；无 NVIDIA 驱动时自动隐藏）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) gpu_temp_enabled: Option<bool>,
+    /// 显存占用监测（默认开启；旧配置缺省时跟随 GPU 开关）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) vram_monitor_enabled: Option<bool>,
+    /// 显卡功耗监测（默认开启；旧配置缺省时跟随 GPU 开关）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) power_monitor_enabled: Option<bool>,
+    /// 性能卡片指标顺序（gpu / vram / power / temp / cpu / memory）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) perf_item_order: Option<Vec<String>>,
+    /// 性能卡片每项展示样式（large / medium / small / text）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) perf_item_styles: Option<HashMap<String, String>>,
+    /// 性能卡片自定义预设（名称、指标顺序与每项展示样式）。
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) perf_presets: Vec<PerfPreset>,
     /// 社区探索「刻面筛选」侧边栏是否折叠（默认展开）。
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) explore_sidebar_collapsed: Option<bool>,
@@ -318,6 +346,19 @@ pub(crate) struct AppConfig {
     /// 全局快捷键自定义配置
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) shortcuts: Option<ShortcutsConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PerfPreset {
+    #[serde(default)]
+    pub(crate) id: String,
+    #[serde(default)]
+    pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) order: Vec<String>,
+    #[serde(default)]
+    pub(crate) styles: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -452,7 +493,16 @@ impl Default for AppConfig {
             theme: None,
             custom_tags: Vec::new(),
             language: None,
+            perf_monitor_enabled: None,
             gpu_monitor_enabled: None,
+            monitor_cpu_enabled: None,
+            monitor_memory_enabled: None,
+            gpu_temp_enabled: None,
+            vram_monitor_enabled: None,
+            power_monitor_enabled: None,
+            perf_item_order: None,
+            perf_item_styles: None,
+            perf_presets: Vec::new(),
             explore_sidebar_collapsed: None,
             hf_token: None,
             hf_token_user: None,

@@ -353,135 +353,351 @@
   letter-spacing: .08em;
 }
 
-/* 左下角 GPU 性能监测 + 功耗：纯色扁平卡片，仅保留轻边框，无渐变 / 光晕 / 投影 */
+/* 左下角性能监测卡片：DIY 指标块（大图 / 中图 / 小图 / 文本），纯色扁平无阴影 */
 .mini-status {
+  --ms-val: #e8edf5;
+  --ms-muted: #8b96a9;
+  --ms-hair: rgba(255, 255, 255, .07);
   display: flex;
   flex-direction: column;
-  gap: 7px;
   margin: 0 2px;
-  padding: 10px 10px 8px;
+  padding: 10px 10px 9px;
   border: 1px solid #2f2f2f;
   border-radius: 12px;
   background: var(--panel);
 }
 
-.ms-caption {
-  color: #8b96a9;
-  font: 600 10px/1 JetBrains Mono, monospace;
-  letter-spacing: .11em;
-  white-space: nowrap;
+/* 指标色调：GPU / 显存琥珀，CPU / 内存青绿；底栏功耗 / 温度保持中性灰 */
+.ms-tone-amber {
+  --ms-tone: #fbbf24;
+  --ms-tone-fill: rgba(251, 191, 36, .12);
+  --ms-tone-label: #e9be5f;
+}
+
+.ms-tone-teal {
+  --ms-tone: #5fbac4;
+  --ms-tone-fill: rgba(95, 186, 196, .12);
+  --ms-tone-label: #7dcbd3;
+}
+
+.ms-caption-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  margin-bottom: 7px;
   padding-left: 1px;
 }
 
-/* 指标行：数值左、80×36 网格迷你图右 */
-.ms-metric {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 80px;
+.ms-caption {
+  color: var(--ms-muted);
+  font: 600 10px/1 JetBrains Mono, monospace;
+  letter-spacing: .11em;
+  white-space: nowrap;
+}
+
+.ms-cadence {
+  color: #5f6a7d;
+  font: 500 9px/1 JetBrains Mono, monospace;
+  letter-spacing: .06em;
+}
+
+/* 迷你图：网格 / 面积 / 折线共用一套描边，颜色由所在指标色调变量提供 */
+.ms-spark {
+  display: block;
+  overflow: visible;
+  color: var(--ms-val);
+}
+
+.ms-spark .grid line {
+  stroke: currentColor;
+  opacity: .07;
+}
+
+.ms-spark .grid line.edge {
+  opacity: .16;
+}
+
+.ms-spark .area {
+  fill: var(--ms-tone-fill);
+}
+
+.ms-spark .line {
+  fill: none;
+  stroke: var(--ms-tone);
+  stroke-width: 1.4;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.ms-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--ms-tone);
+}
+
+.ms-label {
+  display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 5px;
   min-width: 0;
+  color: var(--ms-val);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
 }
 
-.ms-metric + .ms-metric {
+.ms-val {
+  color: var(--ms-val);
+  font-variant-numeric: tabular-nums;
+}
+
+/* 大图：整行读数 + 44px 网格曲线 */
+.ms-large {
+  padding: 2px 0 7px;
+  border-bottom: 1px solid var(--ms-hair);
+}
+
+/* 大图前面不是大图时补齐上方分隔线，首项由标题行区分 */
+.ms-medium + .ms-large,
+.ms-text-row + .ms-large,
+.ms-compact + .ms-large {
   padding-top: 7px;
-  border-top: 1px solid rgba(255, 255, 255, .07);
+  border-top: 1px solid var(--ms-hair);
 }
 
-.ms-meta {
+.ms-large + .ms-medium,
+.ms-large + .ms-text-row {
+  border-top: 0;
+}
+
+.ms-large .ms-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.ms-large .ms-val {
+  margin-left: auto;
+  font: 600 21px/1 JetBrains Mono, monospace;
+}
+
+.ms-large .ms-spark {
+  width: 100%;
+  height: 44px;
+}
+
+/* 中图：左字右图，一行一项；图表列宽与小图一致，右侧边线对齐成一条竖列 */
+.ms-medium {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) calc(50% - 7px);
+  align-items: center;
+  gap: 8px;
+  padding: 6px 0;
+  border-top: 1px solid var(--ms-hair);
+}
+
+.ms-medium .ms-meta {
   display: flex;
   flex-direction: column;
   gap: 3px;
   min-width: 0;
 }
 
-.ms-view-title {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-  white-space: nowrap;
-  color: #8b96a9;
-  font: 600 9.5px/1 JetBrains Mono, monospace;
-  letter-spacing: .1em;
-  text-transform: uppercase;
+.ms-medium .ms-val {
+  font: 600 18px/1 JetBrains Mono, monospace;
 }
 
-.ms-val {
+.ms-medium .ms-spark {
+  width: 100%;
+  height: 34px;
+}
+
+/* 文本：单行一项，标签左、数值右，不画曲线 */
+.ms-text-row {
   display: flex;
-  align-items: baseline;
-  gap: 2px;
-  min-width: 0;
-  overflow: hidden;
-  white-space: nowrap;
-  color: #e8edf5;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 7px 1px;
+  border-top: 1px solid var(--ms-hair);
+}
+
+.ms-text-val {
+  flex: none;
+  color: var(--ms-val);
+  font: 600 13px/1 JetBrains Mono, monospace;
   font-variant-numeric: tabular-nums;
 }
 
-.ms-val b {
-  font: 600 17px/1 JetBrains Mono, monospace;
-  letter-spacing: -.02em;
+.ms-text-row .ms-unit {
+  font-size: 9px;
 }
 
-.ms-unit {
-  color: #8b96a9;
-  font: 500 9px/1 JetBrains Mono, monospace;
-  letter-spacing: .03em;
+/* 小图：连续两项并排，无框扁平，落单时保持半宽并居中 */
+.ms-compact {
+  display: flex;
+  flex-direction: column;
+  margin-top: 9px;
 }
 
-/* 网格迷你图：尺寸由宿主容器控制；网格背景始终渲染 */
-.ms-spark {
-  width: 80px;
-  height: 36px;
-  display: block;
-  overflow: visible;
+.ms-compact-row {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
 }
 
-/* 曲线下方纯色填充：低透明度，不加渐变 */
-.ms-area {
-  fill: rgba(251, 191, 36, .14);
+/* 单块小图占半宽并整体居中，不再贴左留出半行空白 */
+.ms-compact-row.is-single {
+  grid-template-columns: minmax(0, 1fr);
+  justify-items: center;
 }
 
-.ms-grid line {
-  stroke: rgba(255, 255, 255, .055);
+.ms-compact-row.is-single .ms-tile {
+  width: calc(50% - 7px);
 }
 
-.ms-grid line.edge {
-  stroke: rgba(255, 255, 255, .12);
+/* 小图超过两项换行时，行与行之间同样用分隔线 */
+.ms-compact-row + .ms-compact-row {
+  margin-top: 9px;
+  padding-top: 9px;
+  border-top: 1px solid var(--ms-hair);
 }
 
-.ms-spark polyline {
-  fill: none;
-  stroke: #fbbf24;
-  stroke-width: 1.3;
-  stroke-linejoin: round;
-  stroke-linecap: round;
+/* 中图 / 文本后接小图时补齐分隔线，避免两种样式之间只剩空白 */
+.ms-medium + .ms-compact,
+.ms-text-row + .ms-compact {
+  margin-top: 0;
+  padding-top: 9px;
+  border-top: 1px solid var(--ms-hair);
 }
 
-/* 底栏：功耗 + 健康灯 / 版本号 / 主题切换 */
-.ms-power {
+/* 落单的小图由 .ms-compact-row.is-single 居中，不拉伸成整行 */
+
+.ms-tile {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+/* 小图曲线贴底，和后一块的分隔线之间留出间距 */
+.ms-compact + .ms-medium,
+.ms-compact + .ms-large,
+.ms-compact + .ms-text-row {
+  margin-top: 9px;
+}
+
+/* 贴片：标签一行、数值下一行，曲线贴底并占满剩余高度 */
+.ms-tile-top {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  min-width: 0;
+  margin-bottom: 5px;
+}
+
+.ms-tile-label {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   min-width: 0;
-  padding-top: 7px;
-  border-top: 1px solid rgba(255, 255, 255, .07);
-  color: #8b96a9;
-  font: 500 9.5px/1 JetBrains Mono, monospace;
+  overflow: hidden;
+  color: var(--ms-val);
+  font-size: 10.5px;
+  font-weight: 600;
+  line-height: 1;
   white-space: nowrap;
 }
 
-.ms-power > svg {
-  flex: none;
-  color: #f97316;
-  opacity: .9;
+.ms-tile-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-/* GPU 监测关闭时仅保留此行：不再额外分隔 / 内边距 */
-.ms-power-only {
-  font-size: 12px;
-  gap: 8px;
-  padding-top: 0;
-  border-top: 0;
+.ms-tile-val {
+  flex: none;
+  color: var(--ms-val);
+  font: 600 13.5px/1 JetBrains Mono, monospace;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ms-tile .ms-unit {
+  font-size: 8.5px;
+}
+
+.ms-tile .ms-spark {
+  width: 100%;
+  height: 32px;
+  margin-top: auto;
+}
+
+.ms-unit {
+  margin-left: 1px;
+  color: var(--ms-muted);
+  font: 500 9.5px/1 JetBrains Mono, monospace;
+  font-style: normal;
+  letter-spacing: .02em;
+}
+
+/* 底栏：功耗 / 温度固定文字 + 健康灯 / 版本号 / 主题切换 */
+.ms-bottom {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 9px;
+  padding-top: 8px;
+  border-top: 1px solid var(--ms-hair);
+  color: var(--ms-muted);
+  font: 500 10px/1 JetBrains Mono, monospace;
+  white-space: nowrap;
+}
+
+/* 紧邻底栏时不留额外外边距，最后一项文字到上下分隔线距离相等 */
+.ms-medium + .ms-bottom,
+.ms-text-row + .ms-bottom {
+  margin-top: 0;
+}
+
+.ms-env {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+
+.ms-env-item {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: #a7b0c0;
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+.ms-env-item svg {
+  color: #8b96a9;
+}
+
+.ms-env-item i {
+  color: var(--ms-muted);
+  font-size: 8.5px;
+  font-style: normal;
+}
+
+/* 无可展示指标时：仅健康灯 + 状态文字 + 版本号 */
+.ms-status-only {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ms-muted);
+  font: 500 10.5px/1 JetBrains Mono, monospace;
 }
 
 .ms-state-text {
@@ -489,15 +705,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
   color: #a7b0c0;
+  font-family: inherit;
+  font-size: 12px;
   font-weight: 600;
-}
-
-.ms-power b {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  color: #e8edf5;
-  font: 600 10.5px/1 JetBrains Mono, monospace;
 }
 
 /* 健康灯（底栏右端）：灰 = 未启动，绿 = 运行中，玫红闪烁 = 服务异常 */
@@ -539,7 +749,7 @@
   padding: 0;
   border: 1px solid transparent;
   border-radius: 6px;
-  color: #8b96a9;
+  color: var(--ms-muted);
   background: transparent;
   cursor: pointer;
   transition: .15s ease;
@@ -552,7 +762,7 @@
 }
 
 .ms-version {
-  color: #8b96a9;
+  color: var(--ms-muted);
   font: 500 9.5px/1 JetBrains Mono, monospace;
   white-space: nowrap;
 }

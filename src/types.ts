@@ -182,8 +182,26 @@ export interface AppConfig {
   customTags?: string[];
   /** 界面语言：zh（默认）/ en，设置页可切换并持久化 */
   language?: "zh" | "en";
-  /** GPU performance monitor toggle (default on). */
+  /** 性能监测总开关（默认开启） */
+  perfMonitorEnabled?: boolean;
+  /** GPU 负载监测（默认开启） */
   gpuMonitorEnabled?: boolean;
+  /** 显存占用监测（默认开启；旧配置缺省时跟随 GPU 开关） */
+  vramMonitorEnabled?: boolean;
+  /** 显卡功耗监测（默认开启；旧配置缺省时跟随 GPU 开关） */
+  powerMonitorEnabled?: boolean;
+  /** CPU 使用率监测（默认开启） */
+  monitorCpuEnabled?: boolean;
+  /** 系统内存监测（默认开启） */
+  monitorMemoryEnabled?: boolean;
+  /** 显卡温度实时读数（默认开启） */
+  gpuTempEnabled?: boolean;
+  /** 性能卡片的指标顺序（用户自定义） */
+  perfItemOrder?: PerfItemId[];
+  /** 性能卡片每项的展示样式（用户自定义） */
+  perfItemStyles?: Partial<Record<PerfItemId, PerfItemStyle>>;
+  /** 性能卡片自定义预设（名称、顺序与每项展示样式） */
+  perfPresets?: PerfPreset[];
   /** 社区探索「筛选」侧边栏是否折叠（默认展开） */
   exploreSidebarCollapsed?: boolean;
   /** Hugging Face 授权 Token（门禁模型下载必需；明文保存在本地配置文件中） */
@@ -251,6 +269,47 @@ export interface GpuStats {
   memoryTotalMb?: number;
   utilPercent?: number;
   powerWatts?: number;
+  /** 显卡温度（°C）；驱动不支持时为空 */
+  temperatureC?: number;
+  /** 功耗上限（W），用于功耗进度条 / 曲线归一化 */
+  powerLimitWatts?: number;
+}
+
+/** 性能监测快照：未启用的指标为 null，前端据此不渲染对应磁贴 */
+export interface PerformanceStats {
+  gpu: GpuStats | null;
+  cpuPercent: number | null;
+  memoryUsedMb: number | null;
+  memoryTotalMb: number | null;
+}
+
+/* ------------------------------------------------------------------ */
+/* 性能卡片 DIY：指标、样式与布局                                       */
+/* ------------------------------------------------------------------ */
+
+export type PerfItemId = "gpu" | "cpu" | "vram" | "memory";
+
+/** large=整行大图 · medium=左字右图 · small=并排小图 · text=单行文字 */
+export type PerfItemStyle = "large" | "medium" | "small" | "text";
+
+/** 解析后的性能卡片配置：开关、顺序、每项样式与底栏信息 */
+export interface PerfMonitorConfig {
+  enabled: boolean;
+  items: Record<PerfItemId, boolean>;
+  order: PerfItemId[];
+  styles: Record<PerfItemId, PerfItemStyle>;
+  /** 底栏固定读数：功耗 / 温度是否展示 */
+  env: { power: boolean; temp: boolean };
+  /** 用户保存的自定义布局预设 */
+  presets: PerfPreset[];
+}
+
+/** 用户保存的性能卡片布局预设（顺序 + 每项展示尺寸） */
+export interface PerfPreset {
+  id: string;
+  name: string;
+  order: PerfItemId[];
+  styles: Record<PerfItemId, PerfItemStyle>;
 }
 
 /** Token 速率采样：at 供微型状态卡做"新鲜度"判定，过期即回退 Idle */

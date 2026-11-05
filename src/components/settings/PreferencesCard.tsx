@@ -1,7 +1,7 @@
 import { ChevronDown, Download, FolderOpen, Languages, Moon, SlidersHorizontal, Sun, Upload } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useI18n } from "../../i18n";
-import { getGpuInfo, getModelsDir, openConfigDir, pickModelsDir, type GpuInfo } from "../../tauri";
+import { getModelsDir, openConfigDir, pickModelsDir } from "../../tauri";
 import type { AppConfig, DiskUsage, LlamaLogPayload } from "../../types";
 import { formatBytes } from "../../utils";
 
@@ -15,11 +15,9 @@ interface Props {
 
 export default function PreferencesCard({ config, onPersist, onLog, onExportBackup, onImportBackup }: Props) {
   const { t } = useI18n();
-  const [gpuInfo, setGpuInfo] = useState<GpuInfo | null>(null);
   const [modelsDisk, setModelsDisk] = useState<DiskUsage | null>(null);
   const [backupMenuOpen, setBackupMenuOpen] = useState(false);
 
-  useEffect(() => { void getGpuInfo().then(setGpuInfo).catch(() => undefined); }, []);
   useEffect(() => {
     if (!backupMenuOpen) return;
     const close = () => setBackupMenuOpen(false);
@@ -40,7 +38,6 @@ export default function PreferencesCard({ config, onPersist, onLog, onExportBack
     }
   };
 
-  const gpuOn = config.gpuMonitorEnabled !== false;
   const trayOn = config.minimizeToTrayOnClose !== false;
 
   return (
@@ -89,15 +86,6 @@ export default function PreferencesCard({ config, onPersist, onLog, onExportBack
           <span className="settings-row-desc">{modelsDisk ? t("st.modelsDirDesc", { free: formatBytes(modelsDisk.freeBytes) }) : t("st.modelsDirDesc", { free: "--" })}</span>
           <div className="settings-control">
             <button className="secondary-button compact" onClick={() => void chooseModelsDir()}><FolderOpen size={14} />{t("st.changeDir")}</button>
-          </div>
-        </div>
-        <div className="settings-row">
-          <span className="settings-row-label">{t("st.gpuTitle")}</span>
-          <span className="settings-row-desc">{gpuInfo === null ? t("gpu.detecting") : gpuInfo.vendor === "nvidia" ? t("gpu.nvidia") : gpuInfo.vendor === "amd" ? t("gpu.amd") : t("gpu.none")}</span>
-          <div className="settings-control">
-            <button className={"switch" + (gpuOn ? " on" : "")} onClick={() => void onPersist({ ...config, gpuMonitorEnabled: !gpuOn }, gpuOn ? t("toast.gpuOff") : t("toast.gpuOn"))} role="switch" aria-checked={gpuOn}>
-              <span className="switch-knob" />
-            </button>
           </div>
         </div>
         <div className="settings-row">

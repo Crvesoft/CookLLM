@@ -14,7 +14,7 @@ use tauri::AppHandle;
 use crate::config::{read_config, NetworkConfig};
 use crate::now_ms;
 
-/// GPU 实时指标（nvidia-smi）：显存 MiB / 核心负载 % / 功耗 W；驱动不支持的字段为 None。
+/// GPU 实时指标（nvidia-smi）：显存 MiB / 核心负载 % / 功耗 W / 温度 °C / 功耗上限 W；驱动不支持的字段为 None。
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct GpuStats {
@@ -22,6 +22,18 @@ pub(crate) struct GpuStats {
     memory_total_mb: Option<f64>,
     util_percent: Option<f64>,
     power_watts: Option<f64>,
+    temperature_c: Option<f64>,
+    power_limit_watts: Option<f64>,
+}
+
+/// 性能监测快照：按设置只采集启用的指标，未启用的项保持 None（前端不渲染对应磁贴）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PerformanceStats {
+    gpu: Option<GpuStats>,
+    cpu_percent: Option<f64>,
+    memory_used_mb: Option<f64>,
+    memory_total_mb: Option<f64>,
 }
 
 /// nvidia-smi 路径缓存（None = 本会话未找到，避免每轮重复拉起 cmd 搜索 PATH）。
@@ -70,7 +82,7 @@ fn query_gpu_stats() -> Option<GpuStats> {
     let mut command = std::process::Command::new(&path);
     command
         .args([
-            "--query-gpu=memory.total,memory.used,utilization.gpu,power.draw",
+            "--query-gpu=memory.total,memory.used,utilization.gpu,power.draw,temperature.gpu,power.limit",
             "--format=csv,noheader,nounits",
         ])
         .stdout(Stdio::piped())
@@ -92,8 +104,10 @@ fn query_gpu_stats() -> Option<GpuStats> {
         memory_total_mb: fields.first().and_then(|value| value.parse::<f64>().ok()),
         memory_used_mb: fields.get(1).and_then(|value| value.parse::<f64>().ok()),
         util_percent: fields.get(2).and_then(|value| value.parse::<f64>().ok()),
-        // 个别卡型不支持功耗读数（输出 "N/A"）→ None，前端回退为仅显示 Idle
+        // 个别卡型不支持功耗 / 温度 / 功耗上限读数（输出 "N/A"）→ None，前端隐藏对应片段
         power_watts: fields.get(3).and_then(|value| value.parse::<f64>().ok()),
+        temperature_c: fields.get(4).and_then(|value| value.parse::<f64>().ok()),
+        power_limit_watts: fields.get(5).and_then(|value| value.parse::<f64>().ok()),
     })
 }
 
@@ -151,41 +165,120 @@ pub(crate) fn get_gpu_info() -> GpuInfo {
     }
 }
 
-#[tauri::command]
-pub(crate) async fn get_gpu_stats() -> Result<Option<GpuStats>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        // 上一轮查询仍在运行（驱动卡住）：跳过本轮，避免进程堆积
-        if GPU_QUERY_BUSY
-            .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
-            .is_err()
-        {
-            return None;
-        }
-        let stats = query_gpu_stats();
-        GPU_QUERY_BUSY.store(false, Ordering::Relaxed);
-        stats
-    })
-    .await
-    .map_err(|_| "GPU 查询任务已中断".into())
+/// 上一轮 GPU 查询仍在运行（驱动卡住）时跳过本轮，避免进程堆积。
+fn query_gpu_stats_guarded() -> Option<GpuStats> {
+    if GPU_QUERY_BUSY
+        .compare_exchange(false, true, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        return None;
+    }
+    let stats = query_gpu_stats();
+    GPU_QUERY_BUSY.store(false, Ordering::Relaxed);
+    stats
+}
+
+/// CPU 采样基线：上一次 GetSystemTimes 的 (idle, total) 累计时长（100ns）。
+static CPU_TIMES_CACHE: Mutex<Option<(u64, u64)>> = Mutex::new(None);
+
+#[cfg(windows)]
+fn cpu_time_totals() -> Option<(u64, u64)> {
+    use windows_sys::Win32::Foundation::FILETIME;
+    use windows_sys::Win32::System::Threading::GetSystemTimes;
+
+    let mut idle = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    let mut kernel = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    let mut user = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+    if unsafe { GetSystemTimes(&mut idle, &mut kernel, &mut user) } == 0 {
+        return None;
+    }
+    let ticks = |time: FILETIME| ((time.dwHighDateTime as u64) << 32) | time.dwLowDateTime as u64;
+    // kernel 时间已包含 idle，总时长直接取 kernel + user
+    Some((ticks(idle), ticks(kernel) + ticks(user)))
+}
+
+#[cfg(not(windows))]
+fn cpu_time_totals() -> Option<(u64, u64)> {
+    None
+}
+
+fn cpu_percent_delta(previous_idle: u64, previous_total: u64, idle: u64, total: u64) -> Option<f64> {
+    let total_delta = total.checked_sub(previous_total)?;
+    if total_delta == 0 {
+        return None;
+    }
+    let idle_delta = idle.saturating_sub(previous_idle);
+    let busy_delta = total_delta.saturating_sub(idle_delta);
+    Some((busy_delta as f64 / total_delta as f64 * 100.0).clamp(0.0, 100.0))
+}
+
+/// 两次轮询之间的 CPU 忙碌占比；进程启动后的首次采样短暂等一个基线间隔，避免首帧只能显示 "--"。
+fn sample_cpu_percent() -> Option<f64> {
+    let (mut idle, mut total) = cpu_time_totals()?;
+    let previous = {
+        let mut cache = CPU_TIMES_CACHE.lock().ok()?;
+        cache.replace((idle, total))
+    };
+    if previous.is_none() {
+        std::thread::sleep(std::time::Duration::from_millis(120));
+        (idle, total) = cpu_time_totals()?;
+        let baseline = {
+            let mut cache = CPU_TIMES_CACHE.lock().ok()?;
+            cache.replace((idle, total))
+        }?;
+        return cpu_percent_delta(baseline.0, baseline.1, idle, total);
+    }
+    let (previous_idle, previous_total) = previous?;
+    cpu_percent_delta(previous_idle, previous_total, idle, total)
 }
 
 #[cfg(windows)]
-fn total_system_memory_mb() -> Option<f64> {
+fn system_memory_usage_mb() -> Option<(f64, f64)> {
     use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
 
     let mut status: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
     status.dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
-    let ok = unsafe { GlobalMemoryStatusEx(&mut status) };
-    if ok == 0 {
+    if unsafe { GlobalMemoryStatusEx(&mut status) } == 0 {
         return None;
     }
-    let total_kb = status.ullTotalPhys / 1024;
-    Some(total_kb as f64 / 1024.0)
+    let total_mb = status.ullTotalPhys as f64 / (1024.0 * 1024.0);
+    let available_mb = status.ullAvailPhys as f64 / (1024.0 * 1024.0);
+    Some(((total_mb - available_mb).max(0.0), total_mb))
 }
 
 #[cfg(not(windows))]
-fn total_system_memory_mb() -> Option<f64> {
+fn system_memory_usage_mb() -> Option<(f64, f64)> {
     None
+}
+
+fn total_system_memory_mb() -> Option<f64> {
+    system_memory_usage_mb().map(|(_, total_mb)| total_mb)
+}
+
+/// 性能监测快照：按设置只采集启用的指标，关闭项不再拉起 nvidia-smi。
+#[tauri::command]
+pub(crate) async fn get_performance_stats(
+    include_gpu: bool,
+    include_cpu: bool,
+    include_memory: bool,
+) -> Result<PerformanceStats, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let gpu = if include_gpu { query_gpu_stats_guarded() } else { None };
+        let cpu_percent = if include_cpu { sample_cpu_percent() } else { None };
+        let (memory_used_mb, memory_total_mb) = if include_memory {
+            system_memory_usage_mb().map_or((None, None), |(used, total)| (Some(used), Some(total)))
+        } else {
+            (None, None)
+        };
+        PerformanceStats {
+            gpu,
+            cpu_percent,
+            memory_used_mb,
+            memory_total_mb,
+        }
+    })
+    .await
+    .map_err(|_| "性能查询任务已中断".into())
 }
 
 /// 汇总本机硬件能力：显卡 / 显存 + 总物理内存（供「适配本机」一键边界计算）。

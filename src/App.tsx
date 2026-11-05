@@ -1,10 +1,10 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { DEMO_CONFIG, DEFAULT_PROFILES, DEFAULT_NINFER_PROFILES, migrateConfig, uid } from "./data";
+import { DEMO_CONFIG, DEFAULT_PROFILES, DEFAULT_NINFER_PROFILES, migrateConfig, resolvePerfConfig, uid } from "./data";
 import { setLocale, useI18n } from "./i18n";
-import { checkOrphanServer, exportConfigBackup, getGpuStats, getServerStatus, isTauri, loadConfig, onConfigUpdated, onShortcutOpenEngineHub, onLlamaLog, onServerLifecycle, onTrayViewError, openExternal, pathsExist, pickConfigBackup, pickDirectory, saveConfig, setWindowTheme, type ConfigBackupEnvelope } from "./tauri";
+import { checkOrphanServer, exportConfigBackup, getServerStatus, isTauri, loadConfig, onConfigUpdated, onShortcutOpenEngineHub, onLlamaLog, onServerLifecycle, onTrayViewError, openExternal, pathsExist, pickConfigBackup, pickDirectory, saveConfig, setWindowTheme, type ConfigBackupEnvelope } from "./tauri";
 import { PAGE_LOG_MODE, type AppConfig, type Page, type ServerStatus } from "./types";
-import { EMPTY_STATUS, cn, modelTitle, parseTokPerSec, shallowEqualFields, isKeyboardEventMatchingShortcut, DEFAULT_SHORTCUTS } from "./utils";
+import { EMPTY_STATUS, cn, modelTitle, parseTokPerSec, isKeyboardEventMatchingShortcut, DEFAULT_SHORTCUTS } from "./utils";
 import LogDock from "./components/LogDock";
 import { LogsPage, Sidebar, Toast, Topbar } from "./components/Layout";
 import ImportModelModal from "./components/ImportModelModal";
@@ -90,7 +90,7 @@ export default function App() {
   const {
     serviceAbnormal, tokSample, setTokSample, inferenceTrackerRef, latestInference, setLatestInference, inferenceHistory, setInferenceHistory,
     realtimeSamples,
-    gpuStats, setGpuStats, busy, serviceStarting, startingModelId,
+    perfStats, busy, serviceStarting, startingModelId,
     markServiceReady, serverLifecycleHandlerRef,
     handleStart, handleStop, handleClearInferenceStats,
     orphanPids, orphanProcesses, orphanPendingModel, setOrphanPids, setOrphanProcesses,
@@ -148,14 +148,6 @@ export default function App() {
     void (async () => {
       try {
         if (isTauri()) {
-          // 挂载时立即并行查询一次 GPU 状态，无需排队等待配置与日志监听就绪
-          void getGpuStats().then((stats) => {
-            if (active && stats) {
-              setGpuStats((prev) => (prev !== null && shallowEqualFields(prev, stats) ? prev : stats));
-              try { localStorage.setItem("cookllm.last_gpu_stats", JSON.stringify(stats)); } catch {}
-            }
-          }).catch(() => undefined);
-
           const loaded = await loadConfig();
           if (active && loaded) adopt(loaded);
           const current = await getServerStatus(); if (active) setStatus(current);
@@ -363,6 +355,9 @@ export default function App() {
   /** 当前页是否使用 Dock 日志（除"日志"整页外所有页面）：Dock 参与布局，无悬浮遮挡 */
   const isDockPage = PAGE_LOG_MODE[page] === "dock";
 
+  /** 性能卡片 DIY 配置：主开关关闭时整卡退回状态视图，不残留空磁贴与采样节拍 */
+  const perfConfig = resolvePerfConfig(config);
+
   /** 侧边栏「社区探索」下载角标：后台有进行中任务时显示数量 + 环形总进度 */
   const activeTaskList = downloads.filter((item) => item.status === "active");
   const exploreActive = activeTaskList.length;
@@ -372,7 +367,7 @@ export default function App() {
   const exploreProgress = exploreProgressBytes.total > 0 ? Math.min(100, Math.round((exploreProgressBytes.downloaded / exploreProgressBytes.total) * 100)) : 0;
 
   return <div className={cn("app-shell", sidebarCollapsed && "sidebar-collapsed", zenMode && "zen-mode")}>
-    <Sidebar page={page} onPage={setPage} downloadBadge={exploreBadge} badgeProgress={exploreActive > 0 ? exploreProgress : undefined} updateAvailable={appUpdate?.status === "available"} status={status} abnormal={serviceAbnormal} gpuStats={gpuStats} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed((value) => !value)} theme={theme} onToggleTheme={() => void persist({ ...config, theme: theme === "dark" ? "light" : "dark" })} />
+    <Sidebar page={page} onPage={setPage} downloadBadge={exploreBadge} badgeProgress={exploreActive > 0 ? exploreProgress : undefined} updateAvailable={appUpdate?.status === "available"} status={status} abnormal={serviceAbnormal} perfStats={perfStats} perfConfig={perfConfig} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed((value) => !value)} theme={theme} onToggleTheme={() => void persist({ ...config, theme: theme === "dark" ? "light" : "dark" })} />
     <div className={cn("workspace", isDockPage && "dock-mode")}><Topbar page={page} status={status} abnormal={serviceAbnormal} busy={busy} serviceStarting={serviceStarting} onToggleService={status.running || serviceStarting ? handleStop : startQuick} models={config.models} modelId={quickModelId || config.preferredModelId || config.models[0]?.id || ""} onSelectModel={setQuickModelId} zenMode={zenMode} onToggleZenMode={() => setZenMode((v) => !v)} /><main className="main-content">
       {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} serviceStarting={serviceStarting} startingModelId={startingModelId} query={query} onQuery={setQuery} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onAddProfile={(model) => { const isN = model.path.toLowerCase().endsWith(".ninfer"); const baseP = isN ? DEFAULT_NINFER_PROFILES[0] : DEFAULT_PROFILES[0]; setProfileEditing({ modelId: model.id, profile: { ...baseP, id: uid("profile"), name: t("newProfile") } }); }} onRenameModel={renameModel} onUpdateModelTags={updateModelTags} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} justImportedIds={justImportedIds} onToast={setToast} />}
       <ExplorePage visible={page === "explore"} config={config} onPersist={persist} onToast={setToast} onLog={appendLog} diskUsage={diskUsage} onPickModelsDir={pickModelsDirFlow} onDownload={handleModelDownload} activeDownloads={downloads} progressMap={modelProgress} onPauseTask={handlePauseTask} onResumeTasks={handleResumeTasks} onPauseTasks={handlePauseTasks} onClearDone={handleClearDone} onCancelTask={handleCancelTask} onDeleteTask={handleDeleteTask} onDeleteTasks={deleteTasksImpl} onRetry={handleRetry} onReveal={handleReveal} onGoSettings={() => setPage("settings")} />

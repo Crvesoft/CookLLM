@@ -490,8 +490,11 @@
   color: #5b6474;
 }
 
-/* 紧凑状态卡亮色套：纯白扁平卡片，绿点 / 玫红对齐 service-toggle 语义 */
+/* 紧凑状态卡亮色套：纯白扁平卡片，变量整体切换，曲线 / 文本共用 */
 [data-theme="light"] .mini-status {
+  --ms-val: #1c2430;
+  --ms-muted: #707c8f;
+  --ms-hair: #e8ecf3;
   border-color: #e4e8f0;
 }
 
@@ -505,25 +508,27 @@
   box-shadow: 0 0 6px rgba(211, 79, 120, .4);
 }
 
-/* 亮色套：标签 / 单位淡灰，主数值加深，迷你图暖金 + 网格适配白卡 */
-[data-theme="light"] .ms-caption,
-[data-theme="light"] .ms-view-title,
-[data-theme="light"] .ms-unit,
-[data-theme="light"] .ms-version {
-  color: #707c8f;
+[data-theme="light"] .mini-status .ms-tone-amber {
+  --ms-tone: #e0850f;
+  --ms-tone-fill: rgba(224, 133, 15, .08);
+  --ms-tone-label: #b37507;
 }
 
-[data-theme="light"] .ms-metric + .ms-metric,
-[data-theme="light"] .ms-power {
-  border-color: #e8ecf3;
+[data-theme="light"] .mini-status .ms-tone-teal {
+  --ms-tone: #2f8f9e;
+  --ms-tone-fill: rgba(47, 143, 158, .08);
+  --ms-tone-label: #247985;
 }
 
-[data-theme="light"] .ms-val,
-[data-theme="light"] .ms-power b {
-  color: #1c2430;
+[data-theme="light"] .mini-status .ms-env-item {
+  color: #4b5565;
 }
 
-[data-theme="light"] .ms-power {
+[data-theme="light"] .mini-status .ms-env-item svg {
+  color: #7c8698;
+}
+
+[data-theme="light"] .ms-cadence {
   color: #8a93a3;
 }
 
@@ -541,22 +546,6 @@
 
 [data-theme="light"] .ms-state-text {
   color: #414a58;
-}
-
-[data-theme="light"] .ms-grid line {
-  stroke: rgba(15, 35, 70, .07);
-}
-
-[data-theme="light"] .ms-grid line.edge {
-  stroke: rgba(15, 35, 70, .13);
-}
-
-[data-theme="light"] .ms-area {
-  fill: rgba(224, 133, 15, .12);
-}
-
-[data-theme="light"] .ms-spark polyline {
-  stroke: #e0850f;
 }
 
 [data-theme="light"] .runtime-meta span {
