@@ -47,7 +47,20 @@
   border-right: 1px solid #2c2c2c;
   background: linear-gradient(180deg, #1e1e1e 0%, #181818 100%);
   z-index: 3;
+  overflow-x: clip;
   transition: padding .18s ease;
+}
+
+/* 展开过程中内容保持展开后的宽度，由侧栏裁切逐步露出，避免字体重排或整段空白 */
+.sidebar:not(.collapsed) > .brand,
+.sidebar:not(.collapsed) > .side-section-label,
+.sidebar:not(.collapsed) > .side-nav {
+  width: 221px;
+}
+
+.sidebar:not(.collapsed) > .mini-status {
+  flex: none;
+  width: 217px;
 }
 
 .brand {
@@ -63,10 +76,16 @@
   transform: translateY(-7px);
 }
 
+.brand-name {
+  min-width: 0;
+  overflow: hidden;
+}
+
 .brand strong {
   display: block;
   font-size: 20px;
   letter-spacing: -.02em;
+  white-space: nowrap;
 }
 
 .brand span {
@@ -83,6 +102,9 @@
   font-size: 14px;
   font-weight: 700;
   letter-spacing: .12em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .side-nav {
@@ -105,6 +127,13 @@
   font-size: 15px;
   text-align: left;
   transition: .18s ease;
+}
+
+.side-link > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .side-link:hover {
@@ -356,6 +385,7 @@
 /* 左下角性能监测卡片：DIY 指标块（大图 / 中图 / 小图 / 文本），纯色扁平无阴影 */
 .mini-status {
   --ms-val: #e8edf5;
+  --ms-label: #c3cbd9;
   --ms-muted: #8b96a9;
   --ms-hair: rgba(255, 255, 255, .07);
   display: flex;
@@ -444,9 +474,9 @@
   align-items: center;
   gap: 5px;
   min-width: 0;
-  color: var(--ms-val);
+  color: var(--ms-label);
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 500;
   white-space: nowrap;
 }
 
@@ -607,9 +637,9 @@
   gap: 4px;
   min-width: 0;
   overflow: hidden;
-  color: var(--ms-val);
+  color: var(--ms-label);
   font-size: 10.5px;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1;
   white-space: nowrap;
 }

@@ -493,6 +493,7 @@
 /* 紧凑状态卡亮色套：纯白扁平卡片，变量整体切换，曲线 / 文本共用 */
 [data-theme="light"] .mini-status {
   --ms-val: #1c2430;
+  --ms-label: #3b4655;
   --ms-muted: #707c8f;
   --ms-hair: #e8ecf3;
   border-color: #e4e8f0;
