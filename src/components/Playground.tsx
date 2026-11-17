@@ -1,14 +1,16 @@
-import { Bot, Globe, RefreshCw, Scan } from "lucide-react";
+import { AlertTriangle, Bot, Globe, RefreshCw, Scan } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import type { ServerStatus } from "../types";
-import { openExternal, writeClipboard } from "../tauri";
+import { openExternal, writeClipboard, type WebUiStatePayload } from "../tauri";
 import { cn } from "../utils";
 
 export default function Playground({
   visible,
   status,
   webUiUrl,
+  webUiState,
+  onRetryWebUi,
   modelName,
   onOpenWebUi,
   zenMode,
@@ -17,6 +19,8 @@ export default function Playground({
   visible: boolean;
   status: ServerStatus;
   webUiUrl: string;
+  webUiState?: WebUiStatePayload | null;
+  onRetryWebUi?: () => void;
   modelName?: string;
   onOpenWebUi: () => void;
   zenMode?: boolean;
@@ -85,6 +89,19 @@ export default function Playground({
               </button>
             </div>
           </div>
+          {status.running && webUiState?.phase === "failed" && (
+            <div className="webui-notice" role="status" title={webUiState.error ?? undefined}>
+              <AlertTriangle size={15} />
+              <div className="webui-notice-text">
+                <strong>{t("webUiFailedTitle")}</strong>
+                <span>{t("webUiFailedHint")}</span>
+              </div>
+              <button type="button" className="webui-notice-retry" onClick={onRetryWebUi}>
+                <RefreshCw size={13} />
+                {t("webUiRetry")}
+              </button>
+            </div>
+          )}
           {status.running
             ? (
               <div className="native-frame-wrap">

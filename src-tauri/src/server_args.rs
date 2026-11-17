@@ -23,7 +23,30 @@ pub(crate) struct ServerLaunchPlan {
     pub(crate) profile_id: String,
     pub(crate) profile_name: String,
     pub(crate) port: u16,
+    /// 引擎实际监听的地址与生效的 API Key（extra_args 中显式 --api-key 优先）
+    pub(crate) host: String,
+    pub(crate) api_key: Option<String>,
     pub(crate) request_log: Option<RequestLogTail>,
+}
+
+/// 解析引擎实际生效的 API Key：extra_args 中的 --api-key 优先，其次取预设密钥。
+/// 代理需要与命令行完全一致的密钥，否则补上的鉴权头会被引擎拒绝。
+fn resolve_api_key(extra_args: &str, profile_key: Option<&str>) -> Option<String> {
+    let tokens = shlex::split(extra_args).unwrap_or_default();
+    let mut iter = tokens.iter();
+    while let Some(token) = iter.next() {
+        let value: Option<&str> = if token == "--api-key" {
+            iter.next().map(String::as_str)
+        } else {
+            token.strip_prefix("--api-key=")
+        };
+        if let Some(value) = value {
+            let value = value.trim();
+            // 显式 --api-key 但值为空：命令行不会再注入预设密钥，代理也必须按“无密钥”处理
+            return if value.is_empty() { None } else { Some(value.to_string()) };
+        }
+    }
+    profile_key.map(str::trim).filter(|key| !key.is_empty()).map(str::to_string)
 }
 
 /// 自动发现官方 device-profiles.json 并智能同步/补全硬件优化路由到隔离缓存中。
@@ -276,6 +299,21 @@ pub(crate) fn build_server_launch(app: &AppHandle, model_id: &str, profile_id: &
     if !PathBuf::from(&model.path).exists() {
         return Err(format!("模型文件不存在：{}", model.path));
     }
+    // 分卷 GGUF：统一从第 1 卷启动（llama.cpp 会自动追加后续分卷），并在启动前拦截缺失分卷。
+    // 校验放在构建启动计划阶段，可覆盖界面启动与托盘启动，且在杀掉旧进程之前返回明确错误。
+    let mut model_path = model.path.clone();
+    if model_path.to_ascii_lowercase().ends_with(".gguf") {
+        if let Some(group) = crate::find_split_group_impl(std::path::Path::new(&model_path)) {
+            if !group.missing_parts.is_empty() {
+                let missing = group.missing_parts.iter().map(u32::to_string).collect::<Vec<_>>().join(", ");
+                return Err(format!(
+                    "分卷不完整：共 {} 卷，已找到 {} 卷，缺失第 {} 卷，请补齐后再启动",
+                    group.total, group.found, missing
+                ));
+            }
+            model_path = group.primary_path;
+        }
+    }
     let mmproj_path = profile.mmproj_path.as_deref().filter(|p| !p.trim().is_empty());
     if let Some(mmproj) = mmproj_path {
         if !PathBuf::from(mmproj).exists() {
@@ -283,6 +321,7 @@ pub(crate) fn build_server_launch(app: &AppHandle, model_id: &str, profile_id: &
         }
     }
     let engine_type = detect_engine_type(&chosen_path);
+    let effective_api_key = resolve_api_key(&profile.extra_args, profile.api_key.as_deref());
     let mtp_draft_path = profile.mtp_draft_path.as_deref().filter(|p| !p.trim().is_empty());
     let resolved_spec_mode = profile.spec_type.as_deref().unwrap_or_else(|| {
         if profile.mtp {
@@ -362,18 +401,25 @@ pub(crate) fn build_server_launch(app: &AppHandle, model_id: &str, profile_id: &
         command.env("NINFER_PREFILL_ALIGN", "0");
 
         // 1. 模型路径：必须作为首个位置参数，绝对不能加 -m
-        command.arg(&model.path);
+        command.arg(&model_path);
 
         // 1.5 对外 API 模型名：重命名优先；用户 extra_args 显式传 --model-id 时不覆盖
         if !has_extra_arg("--model-id") {
             command.arg("--model-id").arg(&model_display_name);
         }
 
-        // 2. 基础网络监听
+        // 2. 基础网络监听与鉴权
         command
             .arg("--host").arg(&profile.host)
             .arg("--port").arg(profile.port.to_string())
             .arg("--cors");
+
+        if let Some(ref key) = profile.api_key {
+            let trimmed = key.trim();
+            if !trimmed.is_empty() && !has_extra_arg("--api-key") {
+                command.arg("--api-key").arg(trimmed);
+            }
+        }
 
         // 3. 上下文与槽位
         command
@@ -708,7 +754,7 @@ pub(crate) fn build_server_launch(app: &AppHandle, model_id: &str, profile_id: &
     } else {
         // llama.cpp 分支参数拼接（100% 保持原有逻辑）
         command
-            .arg("-m").arg(&model.path);
+            .arg("-m").arg(&model_path);
         // 对外 API 模型名（--alias）：重命名优先；用户 extra_args 显式传 -a/--alias 时不覆盖
         if !has_extra_arg("--alias") && !has_extra_arg("-a") {
             command.arg("--alias").arg(&model_display_name);
@@ -735,6 +781,13 @@ pub(crate) fn build_server_launch(app: &AppHandle, model_id: &str, profile_id: &
             .arg("--top-p").arg(profile.top_p.to_string())
             .arg("--min-p").arg(profile.min_p.to_string())
             .arg("--repeat-penalty").arg(profile.repeat_penalty.to_string());
+
+        if let Some(ref key) = profile.api_key {
+            let trimmed = key.trim();
+            if !trimmed.is_empty() && !has_extra_arg("--api-key") {
+                command.arg("--api-key").arg(trimmed);
+            }
+        }
 
         if !has_extra_arg("--reasoning") {
             match profile.reasoning.trim().to_lowercase().as_str() {
@@ -820,6 +873,8 @@ pub(crate) fn build_server_launch(app: &AppHandle, model_id: &str, profile_id: &
         profile_id: profile.id,
         profile_name: profile.name,
         port: profile.port,
+        host: profile.host.clone(),
+        api_key: effective_api_key,
         request_log: ninfer_request_log_tail,
     })
 }

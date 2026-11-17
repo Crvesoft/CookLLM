@@ -44,6 +44,19 @@ export interface ModelAsset {
   tags?: string[];
   /** 架构/参数量/量化来自 GGUF / NINFER 文件头，而非文件名猜测 */
   metadataSource?: "gguf" | "ninfer" | "filename";
+  /** 分卷 GGUF 信息（单文件时为 undefined） */
+  splitInfo?: ModelSplitInfo;
+}
+
+export interface ModelSplitInfo {
+  /** 总分卷数，如 5 */
+  total: number;
+  /** 已发现分卷数，如 5 */
+  found: number;
+  /** 所有已识别分卷的文件路径（按分卷序号升序排列） */
+  parts: string[];
+  /** 缺失的分卷编号列表（1-based），如空表示分卷完整 */
+  missingParts?: number[];
 }
 
 export interface Profile {
@@ -78,6 +91,8 @@ export interface Profile {
   minP: number;
   repeatPenalty: number;
   extraArgs: string;
+  /** 访问 API Key（留空则不开启鉴权，传递给 --api-key） */
+  apiKey?: string;
   /** 该预设挂载的图像识别视觉模型（mmproj）路径；非空时以 --mmproj 附加启动 */
   mmprojPath?: string;
   /** 是否禁止将视觉多模态模型卸载到显存，强制纯系统内存运行（--no-mmproj-offload） */
@@ -261,6 +276,8 @@ export interface ServerStatus {
   engineBackend?: string;
   /** 启动当前服务所用的引擎架构类型 */
   engineType?: EngineType;
+  /** 启用 API Key 时的本机 WebUI 代理端口（内置 WebUI / 指标请求经由该端口自动鉴权） */
+  webuiPort?: number;
 }
 
 /** GPU 实时指标（nvidia-smi 轮询，单位 MiB / % / W）；无 NVIDIA 驱动或字段不支持时为 null/缺省 */

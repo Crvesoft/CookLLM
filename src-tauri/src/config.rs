@@ -45,6 +45,19 @@ pub(crate) struct ModelAsset {
     /// 架构/参数量/量化来源（gguf / ninfer / filename）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) metadata_source: Option<String>,
+    /// 分卷 GGUF 信息（单文件时缺省为 None）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) split_info: Option<ModelSplitInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModelSplitInfo {
+    pub(crate) total: u32,
+    pub(crate) found: u32,
+    pub(crate) parts: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) missing_parts: Vec<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -107,6 +120,9 @@ pub(crate) struct Profile {
     pub(crate) repeat_penalty: f64,
     #[serde(default)]
     pub(crate) extra_args: String,
+    /// 访问 API Key（留空则不开启鉴权，传递给 --api-key）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) api_key: Option<String>,
     /// 该预设挂载的图像识别视觉模型（mmproj）；非空时以 --mmproj 附加启动。
     #[serde(default)]
     pub(crate) mmproj_path: Option<String>,
@@ -452,6 +468,7 @@ impl Default for AppConfig {
                 min_p: 0.05,
                 repeat_penalty: 1.1,
                 extra_args: String::new(),
+                api_key: None,
                 mmproj_path: None,
                 no_mmproj_offload: false,
                 engine_id: None,
@@ -619,12 +636,20 @@ pub(crate) struct ConfigBackupEnvelope {
     config: AppConfig,
 }
 
-/// 导出当前配置。去掉 Hugging Face Token 及绑定用户名，避免令牌与隐私信息外泄。
+/// 导出当前配置。去掉 Hugging Face Token 及绑定用户名、预设 API Key，避免令牌与隐私信息外泄。
 #[tauri::command]
 pub(crate) fn export_config_backup(app: AppHandle) -> Result<String, String> {
     let mut config = read_config(&app)?;
     config.hf_token = None;
     config.hf_token_user = None;
+    for model in &mut config.models {
+        for profile in &mut model.profiles {
+            profile.api_key = None;
+        }
+    }
+    for profile in &mut config.profiles {
+        profile.api_key = None;
+    }
     let backup = ConfigBackupEnvelope {
         kind: "cookllm-config".into(),
         version: 2,

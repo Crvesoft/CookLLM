@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_NINFER_PROFILES, DEFAULT_PROFILES, uid } from "../data";
 import { buildAutoProfiles, nvfp4SupportedOf } from "../autoProfiles";
-import { getHardwareInfo, inspectGguf } from "../tauri";
+import { findSplitGroup, getHardwareInfo, inspectGguf, splitInfoFromGroup } from "../tauri";
 import type { PickedFile } from "../tauri";
 import type { AppConfig, ModelAsset, Profile, ServerStatus } from "../types";
 import { ACCENTS, fileName, modelTitle, parseQuantization } from "../utils";
@@ -9,6 +9,7 @@ import type { PersistConfig, Translate } from "./types";
 
 interface UseModelLibraryOptions {
   config: AppConfig;
+  configReady: boolean;
   status: ServerStatus;
   persist: PersistConfig;
   setToast: (message: string) => void;
@@ -16,12 +17,40 @@ interface UseModelLibraryOptions {
 }
 
 /** 模型仓库 + 预设管理：搜索/选择、导入、重命名、排序、删除、默认项与标签维护 */
-export function useModelLibrary({ config, status, persist, setToast, t }: UseModelLibraryOptions) {
+export function useModelLibrary({ config, configReady, status, persist, setToast, t }: UseModelLibraryOptions) {
   const [query, setQuery] = useState("");
   const [menuModelId, setMenuModelId] = useState<string | null>(null);
   const [selectedProfiles, setSelectedProfiles] = useState<Record<string, string>>({});
   const [profileEditing, setProfileEditing] = useState<{ modelId: string; profile: Profile } | null>(null);
   const [importOpen, setImportOpen] = useState(false);
+  /** 配置镜像：启动校准的异步持久化读取最新配置，避免回滚用户期间修改的设置 */
+  const configRef = useRef(config);
+  configRef.current = config;
+
+  // 启动后按磁盘实况校准一次分卷快照：用户可能在应用关闭期间补齐/移动了分卷文件。
+  // 只更新 path / sizeBytes / splitInfo，不动预设与其它配置，保证旧配置平滑兼容。
+  const splitRefreshRef = useRef(false);
+  useEffect(() => {
+    if (!configReady || splitRefreshRef.current) return;
+    splitRefreshRef.current = true;
+    void (async () => {
+      const updates: ModelAsset[] = [];
+      for (const model of config.models) {
+        if (!model.path.toLowerCase().endsWith(".gguf")) continue;
+        const group = await findSplitGroup(model.path).catch(() => null);
+        const splitInfo = group ? splitInfoFromGroup(group) : undefined;
+        if (!group && !model.splitInfo) continue;
+        const nextPath = group?.primaryPath ?? model.path;
+        const nextSize = group && group.totalBytes > 0 ? group.totalBytes : model.sizeBytes;
+        if (nextPath === model.path && nextSize === model.sizeBytes && JSON.stringify(splitInfo) === JSON.stringify(model.splitInfo)) continue;
+        updates.push({ ...model, path: nextPath, sizeBytes: nextSize, splitInfo });
+      }
+      if (!updates.length) return;
+      const latest = configRef.current;
+      const byId = new Map(updates.map((model) => [model.id, model]));
+      await persist({ ...latest, models: latest.models.map((model) => byId.get(model.id) ?? model) });
+    })();
+  }, [configReady, config.models, persist]);
 
   const filteredModels = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -37,18 +66,90 @@ export function useModelLibrary({ config, status, persist, setToast, t }: UseMod
 
   const addModelFromPaths = async (paths: { path: string; sizeBytes: number }[]) => {
     if (!paths.length) return;
-    const existing = new Set(config.models.map((model) => model.path));
-    const fresh = paths.filter((item) => !existing.has(item.path));
+    const existing = new Set(config.models.map((model) => model.path.toLowerCase()));
+    for (const m of config.models) {
+      if (m.splitInfo?.parts) {
+        for (const p of m.splitInfo.parts) {
+          existing.add(p.toLowerCase());
+        }
+      }
+    }
+    const fresh = paths.filter((item) => !existing.has(item.path.toLowerCase()));
     if (!fresh.length) return setToast(t("toast.alreadyInLibrary"));
     const [hardware] = await Promise.all([getHardwareInfo().catch(() => null)]);
     const vramMb = hardware?.vramTotalMb ?? 0;
     const additions: ModelAsset[] = [];
+    const processed = new Set<string>();
+    /** 已入库的分卷模型补齐新分卷：更新现有条目，而不是再建一个重复模型 */
+    const mergedById = new Map<string, ModelAsset>();
+
     for (const [index, item] of fresh.entries()) {
       const path = item.path;
+      if (processed.has(path.toLowerCase())) continue;
+
       const isNinfer = path.toLowerCase().endsWith(".ninfer");
-      const meta = await inspectGguf(path).catch(() => ({ architecture: "", parameters: "", quantization: "", blockCount: 0, attentionLayerCount: 0, headCount: 0, headCountKv: 0, headDim: 0, contextLength: 0, weightsBytes: 0 }));
+      const splitGroup = !isNinfer ? await findSplitGroup(path).catch(() => null) : null;
+      let targetPath = path;
+      let targetSize = item.sizeBytes;
+      let targetName = fileName(path).replace(/\.(gguf|ninfer)$/i, "").replace(/[-_]/g, " ");
+
+      if (splitGroup) {
+        const partSet = new Set(splitGroup.parts.map((part) => part.toLowerCase()));
+        const existingSplit = config.models.find((model) =>
+          model.path.toLowerCase() === splitGroup.primaryPath.toLowerCase() ||
+          (model.splitInfo?.parts || []).some((part) => partSet.has(part.toLowerCase()))
+        );
+        if (existingSplit && !mergedById.has(existingSplit.id)) {
+          let merged: ModelAsset = {
+            ...existingSplit,
+            path: splitGroup.primaryPath,
+            sizeBytes: splitGroup.totalBytes > 0 ? splitGroup.totalBytes : existingSplit.sizeBytes,
+            splitInfo: splitInfoFromGroup(splitGroup),
+          };
+          // 之前可能先导入了非首卷（读不到 GGUF 头），分卷补齐后按首卷重新识别元数据
+          if (!merged.splitInfo?.missingParts && existingSplit.metadataSource === "filename") {
+            const meta = await inspectGguf(splitGroup.primaryPath).catch(() => null);
+            if (meta && (meta.architecture || meta.quantization || meta.parameters)) {
+              merged = {
+                ...merged,
+                architecture: meta.architecture || merged.architecture,
+                quantization: parseQuantization(splitGroup.primaryPath, "") || meta.quantization || merged.quantization,
+                parameters: meta.parameters || merged.parameters,
+                metadataSource: "gguf",
+              };
+            }
+          }
+          mergedById.set(existingSplit.id, merged);
+          for (const part of splitGroup.parts) {
+            processed.add(part.toLowerCase());
+          }
+          continue;
+        }
+        targetPath = splitGroup.primaryPath;
+        targetSize = splitGroup.totalBytes > 0 ? splitGroup.totalBytes : item.sizeBytes;
+        targetName = splitGroup.prefix.replace(/[-_]/g, " ");
+        for (const part of splitGroup.parts) {
+          processed.add(part.toLowerCase());
+        }
+      } else {
+        processed.add(path.toLowerCase());
+      }
+
+      const meta = await inspectGguf(targetPath).catch(() => ({
+        architecture: "",
+        parameters: "",
+        quantization: "",
+        blockCount: 0,
+        attentionLayerCount: 0,
+        headCount: 0,
+        headCountKv: 0,
+        headDim: 0,
+        contextLength: 0,
+        weightsBytes: 0,
+      }));
+
       // 文件头首个张量常是 Q6_K 输出层，K-quant 文件会被标错，文件名更能代表整体量化
-      const nameQuant = parseQuantization(path, "");
+      const nameQuant = parseQuantization(targetPath, "");
       // 新模型入库即用智能推荐生成三档预设；估算不出来（读不到头信息 / 无显存 / 缺引擎）退回默认的均衡配置
       const auto = buildAutoProfiles(
         meta.blockCount > 0 && meta.weightsBytes > 0
@@ -73,20 +174,33 @@ export function useModelLibrary({ config, status, persist, setToast, t }: UseMod
       const initialProfiles = auto?.profiles ?? [{ ...(isNinfer ? DEFAULT_NINFER_PROFILES[0] : DEFAULT_PROFILES[0]), id: uid("profile") }];
       additions.push({
         id: uid("model"),
-        name: fileName(path).replace(/\.(gguf|ninfer)$/i, "").replace(/[-_]/g, " "),
-        path,
-        sizeBytes: item.sizeBytes,
+        name: targetName,
+        path: targetPath,
+        sizeBytes: targetSize,
         architecture: meta.architecture || (isNinfer ? "NINFER" : "GGUF"),
         quantization: nameQuant || meta.quantization || t("model.unknownQuant"),
-        parameters: meta.parameters || path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase() || "—",
+        parameters: meta.parameters || targetPath.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase() || "—",
         metadataSource: meta.architecture || meta.quantization || meta.parameters ? (isNinfer ? "ninfer" : "gguf") : "filename",
         profiles: initialProfiles,
         defaultProfileId: auto?.defaultProfileId ?? initialProfiles[0].id,
-        accent: ACCENTS[(config.models.length + index) % ACCENTS.length]
+        accent: ACCENTS[(config.models.length + index) % ACCENTS.length],
+        splitInfo: splitGroup
+          ? {
+              total: splitGroup.total,
+              found: splitGroup.found,
+              parts: splitGroup.parts,
+              missingParts: splitGroup.missingParts && splitGroup.missingParts.length > 0 ? splitGroup.missingParts : undefined,
+            }
+          : undefined,
       });
     }
     setSelectedProfiles((previous) => { const next = { ...previous }; for (const model of additions) next[model.id] = model.profiles[0].id; return next; });
-    await persist({ ...config, models: [...config.models, ...additions] }, t(additions.length === 1 ? "toast.modelAdded" : "toast.modelsAdded", { count: additions.length }));
+    const mergedModels = config.models.map((model) => mergedById.get(model.id) ?? model);
+    const mergedName = Array.from(mergedById.values())[0];
+    const message = additions.length
+      ? t(additions.length === 1 ? "toast.modelAdded" : "toast.modelsAdded", { count: additions.length })
+      : t("toast.splitMerged", { name: mergedName ? modelTitle(mergedName) : "" });
+    await persist({ ...config, models: [...mergedModels, ...additions] }, message);
   };
 
   /** 统一入口：打开导入弹窗（拖拽 / 选文件 / 选文件夹都在弹窗内完成） */

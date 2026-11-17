@@ -11,6 +11,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::config::{read_config, AppConfig};
 use crate::server_args::{build_server_launch, RequestLogTail};
+use crate::webui_proxy::WebuiProxy;
 use crate::{
     get_tray_state, now_ms, set_tray_state, update_tray_status, TrayServerState,
     TRAY_PULSE_GENERATION,
@@ -33,6 +34,9 @@ pub(crate) struct ServerStatus {
     engine_backend: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     engine_type: Option<String>,
+    /// 本机 WebUI 代理端口（API Key 补鉴权 / NInfer 运行时 WebUI 托管）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) webui_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -47,6 +51,11 @@ pub(crate) struct ManagedProcess {
     pub(crate) status: ServerStatus,
     /// NInfer --request-log-jsonl 增量 tail 读取游标（None = 未开启结构化请求日志）
     request_log: Option<RequestLogTail>,
+    /// API Key 鉴权代理：随服务停止 / 异常退出自动释放
+    #[allow(dead_code)] // 仅依赖 Drop 关闭代理，无需读取该字段
+    webui_proxy: Option<WebuiProxy>,
+    /// 运行时 WebUI 资源状态：保留 Arc 供「重新准备」按钮再次触发后台下载
+    webui_ui: Option<std::sync::Arc<crate::webui_proxy::UiState>>,
 }
 
 /// 本进程托管的 llama-server；None 表示未运行。
@@ -473,6 +482,25 @@ fn start_server_core(app: &AppHandle, state: &ProcessState, model_id: &str, prof
     if let Some(stderr) = child.stderr.take() {
         stream_reader(app.clone(), "stderr", stderr);
     }
+    // NInfer 自身不内嵌 WebUI：回环代理托管运行时获取的官方 llama.cpp WebUI；
+    // 启用 API Key 时同一代理顺带补鉴权头。下载/解压在后台线程完成，代理先展示等待页。
+    let is_ninfer = plan.engine_type == "ninfer" || plan.engine_type == "ninfer_kvmem";
+    let webui_ui = if is_ninfer {
+        let state = std::sync::Arc::new(crate::webui_proxy::UiState::new());
+        crate::webui_assets::prepare_webui(app.clone(), state.clone());
+        Some(state)
+    } else {
+        None
+    };
+    let webui_proxy = if is_ninfer || plan.api_key.is_some() {
+        WebuiProxy::start(&plan.host, plan.port, plan.api_key.clone(), webui_ui.clone())
+    } else {
+        None
+    };
+    if (is_ninfer || plan.api_key.is_some()) && webui_proxy.is_none() {
+        emit_log(app, "stderr", "本机 WebUI 代理启动失败；会话页不可用或需要手动输入密钥");
+    }
+    let webui_port = webui_proxy.as_ref().map(|proxy| proxy.port);
     let status = ServerStatus {
         running: true,
         pid: Some(pid),
@@ -485,11 +513,12 @@ fn start_server_core(app: &AppHandle, state: &ProcessState, model_id: &str, prof
         engine_name: Some(plan.engine_name),
         engine_backend: plan.engine_backend,
         engine_type: Some(plan.engine_type),
+        webui_port,
     };
     let port = plan.port;
     {
         let mut guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
-        *guard = Some(ManagedProcess { child, status: status.clone(), request_log: plan.request_log });
+        *guard = Some(ManagedProcess { child, status: status.clone(), request_log: plan.request_log, webui_proxy, webui_ui });
     }
     drop(lifecycle);
 
@@ -637,6 +666,21 @@ pub(crate) fn stop_server_internal(app: &AppHandle, state: &ProcessState) -> Res
     set_tray_state(TrayServerState::Stopped);
     update_tray_status(app, None);
     Ok(ServerStatus::default())
+}
+
+/// 会话页「重新准备」：再次触发 WebUI 资源解析 / 下载。
+/// 后台线程仍在运行时 `prepare_webui` 会直接返回，避免并发重复下载。
+#[tauri::command]
+pub(crate) fn retry_webui(app: AppHandle, state: State<ProcessState>) -> Result<(), String> {
+    let ui = {
+        let guard = state.0.lock().map_err(|_| "进程状态锁已损坏")?;
+        guard.as_ref().and_then(|managed| managed.webui_ui.clone())
+    };
+    let Some(ui) = ui else {
+        return Err("当前服务不需要准备会话界面".into());
+    };
+    crate::webui_assets::prepare_webui(app, ui);
+    Ok(())
 }
 
 #[tauri::command]

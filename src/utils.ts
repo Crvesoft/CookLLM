@@ -32,6 +32,7 @@ export function fileName(path: string) {
   return path.split(/[\\/]/).pop() || path;
 }
 
+
 /** 智能推断可执行程序的引擎类型 */
 export function detectEngineType(path?: string): EngineType {
   if (!path) return "llamacpp";

@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { DEMO_CONFIG, DEFAULT_PROFILES, DEFAULT_NINFER_PROFILES, migrateConfig, resolvePerfConfig, uid } from "./data";
 import { setLocale, useI18n } from "./i18n";
-import { checkOrphanServer, exportConfigBackup, getServerStatus, isTauri, loadConfig, onConfigUpdated, onShortcutOpenEngineHub, onLlamaLog, onServerLifecycle, onTrayViewError, openExternal, pathsExist, pickConfigBackup, pickDirectory, saveConfig, setWindowTheme, type ConfigBackupEnvelope } from "./tauri";
+import { checkOrphanServer, exportConfigBackup, getServerStatus, isTauri, loadConfig, onConfigUpdated, onShortcutOpenEngineHub, onLlamaLog, onServerLifecycle, onTrayViewError, onWebUiState, openExternal, pathsExist, pickConfigBackup, pickDirectory, retryWebUi as requestWebUiRetry, saveConfig, setWindowTheme, type ConfigBackupEnvelope, type WebUiStatePayload } from "./tauri";
 import { PAGE_LOG_MODE, type AppConfig, type Page, type ServerStatus } from "./types";
 import { EMPTY_STATUS, cn, modelTitle, parseTokPerSec, isKeyboardEventMatchingShortcut, DEFAULT_SHORTCUTS } from "./utils";
 import LogDock from "./components/LogDock";
@@ -49,6 +49,10 @@ export default function App() {
   const pageRef = useRef(page);
   pageRef.current = page;
   const [status, setStatus] = useState<ServerStatus>(EMPTY_STATUS);
+  /** 会话页 WebUI 资源状态：失败时在会话页顶部常驻横幅，API 使用不受影响 */
+  const [webUiState, setWebUiState] = useState<WebUiStatePayload | null>(null);
+  /** 配置加载完成前不启用 GPU/状态轮询，避免「关闭监测」用户首次挂载闪现图表 */
+  const [configReady, setConfigReady] = useState(false);
 
   /** 配置写盘唯一入口：先更新界面，再持久化；失败仅记日志，不打断当前交互 */
   const persist = async (next: AppConfig, message?: string) => {
@@ -66,7 +70,7 @@ export default function App() {
     filteredModels, removeModel, reorderModels, removeMultipleModels,
     saveProfile, createProfiles, deleteProfile, reorderProfiles, deleteMultipleProfiles, duplicateProfile,
     setDefaultProfile, renameModel, updateModelTags, setDefaultModel,
-  } = useModelLibrary({ config, status, persist, setToast, t });
+  } = useModelLibrary({ config, configReady, status, persist, setToast, t });
   // ---- Dock 日志状态（除"日志"整页外的所有页面共用同一份展开/高度状态）----
   /** Dock 默认收起：只显示底部状态栏，主区空间最大 */
   const [logDockOpen, setLogDockOpen] = useState(false);
@@ -77,9 +81,6 @@ export default function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem("cookllm.sidebar.collapsed") === "1");
   /** 会话沉浸模式（仅在会话页生效，隐藏侧边栏与会话顶栏，保留窗口标题栏） */
   const [zenMode, setZenMode] = useState(false);
-  /** 配置加载完成前不启用 GPU/状态轮询，避免「关闭监测」用户首次挂载闪现图表 */
-  const [configReady, setConfigReady] = useState(false);
-
   const { appUpdate, appUpdateDialogOpen, setAppUpdateDialogOpen, appUpdateChecking, checkAppUpdate } = useAppUpdate(config, configReady);
   const {
     downloads, modelProgress, diskUsage, justImportedIds,
@@ -95,7 +96,7 @@ export default function App() {
     handleStart, handleStop, handleClearInferenceStats,
     orphanPids, orphanProcesses, orphanPendingModel, setOrphanPids, setOrphanProcesses,
     handleKillOrphan, handleCloseOrphanModal,
-  } = useServiceController({ config, configReady, pageRef, status, setStatus, selectedProfiles, setMenuModelId, setLogDockOpen, setToast, appendLog, t });
+  } = useServiceController({ config, configReady, pageRef, status, setStatus, selectedProfiles, setMenuModelId, setLogDockOpen, setToast, appendLog, t, persist });
 
   /** llama.cpp 运行时管理中心（Alt+Shift+E） */
   const [engineHubOpen, setEngineHubOpen] = useState(false);
@@ -144,7 +145,7 @@ export default function App() {
   };
 
   useEffect(() => {
-    let active = true; let unlisten: (() => void) | undefined; let unlistenLifecycle: (() => void) | undefined; let unlistenConfig: (() => void) | undefined; let unlistenEngineHub: (() => void) | undefined;
+    let active = true; let unlisten: (() => void) | undefined; let unlistenLifecycle: (() => void) | undefined; let unlistenConfig: (() => void) | undefined; let unlistenEngineHub: (() => void) | undefined; let unlistenWebUi: (() => void) | undefined;
     void (async () => {
       try {
         if (isTauri()) {
@@ -162,6 +163,10 @@ export default function App() {
           // 服务生命周期事件：托盘启动/停止时同步主界面过渡动画与异常标记（ref 转发读取最新闭包）
           unlistenLifecycle = await onServerLifecycle((payload) => {
             if (active) serverLifecycleHandlerRef.current(payload);
+          });
+          // WebUI 资源准备状态：只有最终失败才常驻会话页横幅；重试/就绪时自动收起
+          unlistenWebUi = await onWebUiState((payload) => {
+            if (active) setWebUiState(payload.phase === "failed" ? payload : null);
           });
           // 快捷键等后台操作触发的配置变更事件
           unlistenConfig = await onConfigUpdated((updated) => {
@@ -205,7 +210,7 @@ export default function App() {
       // 无论成功失败，配置读取阶段结束 → 解锁轮询
       if (active) setConfigReady(true);
     })();
-    return () => { active = false; unlisten?.(); unlistenLifecycle?.(); unlistenConfig?.(); unlistenEngineHub?.(); };
+    return () => { active = false; unlisten?.(); unlistenLifecycle?.(); unlistenConfig?.(); unlistenEngineHub?.(); unlistenWebUi?.(); };
   }, []);
 
 
@@ -213,6 +218,8 @@ export default function App() {
   /** Dock 高度持久化：下次进入会话页时恢复 */
   useEffect(() => { localStorage.setItem("cookllm.logDock.height", String(logDockHeight)); }, [logDockHeight]);
   useEffect(() => { localStorage.setItem("cookllm.sidebar.collapsed", sidebarCollapsed ? "1" : "0"); }, [sidebarCollapsed]);
+  /** 服务停止后 WebUI 状态失效，避免下次启动前残留上一次的失败横幅 */
+  useEffect(() => { if (!status.running) setWebUiState(null); }, [status.running]);
 
   /** 默认亮色主题；同时把标题栏同步给系统（Windows：暗色=黑，亮色=默认） */
   const theme = config.theme || "light";
@@ -317,11 +324,22 @@ export default function App() {
   /** 浏览器/iframe 无法导航到 0.0.0.0，统一替换为 127.0.0.1（用户显式配置的局域网 IP 保留原样） */
   const browserHost = (() => { const host = activeProfile?.host || "0.0.0.0"; return host === "0.0.0.0" ? "127.0.0.1" : host; })();
   const port = status.port || activeProfile?.port || 9931;
-  const webUiUrl = `http://${browserHost}:${port}`;
+  // 启用 API Key 时后端会启动本机回环代理，WebUI 与指标请求经代理自动补鉴权头
+  const webUiPort = status.webuiPort || port;
+  const webUiUrl = `http://${status.webuiPort ? "127.0.0.1" : browserHost}:${webUiPort}`;
   const openWebUi = async () => {
     if (!status.running) return;
     await openExternal(webUiUrl);
     setToast(t("toast.webUiOpened"));
+  };
+  /** 网络恢复后重新准备会话界面资源；后台线程仍在跑时后端会忽略本次请求 */
+  const retryWebUi = async () => {
+    try {
+      await requestWebUiRetry();
+      setWebUiState(null);
+    } catch (error) {
+      setToast(String(error));
+    }
   };
 
   const exportBackup = async () => {
@@ -373,7 +391,7 @@ export default function App() {
       <ExplorePage visible={page === "explore"} config={config} onPersist={persist} onToast={setToast} onLog={appendLog} diskUsage={diskUsage} onPickModelsDir={pickModelsDirFlow} onDownload={handleModelDownload} activeDownloads={downloads} progressMap={modelProgress} onPauseTask={handlePauseTask} onResumeTasks={handleResumeTasks} onPauseTasks={handlePauseTasks} onClearDone={handleClearDone} onCancelTask={handleCancelTask} onDeleteTask={handleDeleteTask} onDeleteTasks={deleteTasksImpl} onRetry={handleRetry} onReveal={handleReveal} onGoSettings={() => setPage("settings")} />
       {page === "profiles" && <ProfilesPage models={config.models} engines={config.engines} activeEngineId={config.activeEngineId} onEdit={(modelId, profile) => setProfileEditing({ modelId, profile })} onDelete={deleteProfile} onDuplicate={duplicateProfile} onSetDefault={setDefaultProfile} onReorderProfile={reorderProfiles} onDeleteProfiles={deleteMultipleProfiles} onCreateProfiles={createProfiles} />}
       {/* 会话页保持常驻（隐藏而非卸载）：切换菜单不销毁内嵌 WebUI，回来时无需从聊天记录重新进入；WebUI 始终填满 Dock 下全部剩余高度 */}
-      <Playground visible={page === "playground"} status={status} webUiUrl={webUiUrl} modelName={activeModel ? modelTitle(activeModel) : undefined} onOpenWebUi={openWebUi} zenMode={zenMode} onToggleZenMode={() => setZenMode((v) => !v)} />
+      <Playground visible={page === "playground"} status={status} webUiUrl={webUiUrl} webUiState={webUiState} onRetryWebUi={() => void retryWebUi()} modelName={activeModel ? modelTitle(activeModel) : undefined} onOpenWebUi={openWebUi} zenMode={zenMode} onToggleZenMode={() => setZenMode((v) => !v)} />
       {page === "logs" && (
         <LogsPage
           logs={logs}

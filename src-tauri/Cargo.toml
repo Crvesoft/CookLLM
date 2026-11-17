@@ -21,6 +21,8 @@ shlex = "1"
 windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_DataExchange", "Win32_System_Memory", "Win32_System_Ole", "Win32_System_LibraryLoader", "Win32_System_Registry", "Win32_System_SystemInformation", "Win32_System_Threading", "Win32_Storage_FileSystem"] }
 reqwest = { version = "0.13", default-features = false, features = ["blocking", "json", "stream", "system-proxy", "http2", "native-tls"] }
 sha2 = "0.10"
+flate2 = "1"
+tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tauri-plugin-single-instance = "2.4.4"
 tauri-plugin-global-shortcut = "2"

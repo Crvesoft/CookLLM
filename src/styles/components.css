@@ -105,6 +105,85 @@
   border: 0;
 }
 
+/* 会话界面资源失败横幅：离线等场景下提醒 API 仍可用，并提供手动重试 */
+.webui-notice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: none;
+  padding: 8px 14px;
+  border-bottom: 1px solid rgba(244, 180, 84, .22);
+  background: rgba(244, 180, 84, .08);
+  color: #f4b454;
+}
+
+.webui-notice > svg {
+  flex: none;
+}
+
+.webui-notice-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.webui-notice-text strong {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+.webui-notice-text span {
+  color: #a58b67;
+  font-size: 11.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.webui-notice-retry {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: none;
+  margin-left: auto;
+  padding: 4px 10px;
+  border: 1px solid rgba(244, 180, 84, .35);
+  border-radius: 6px;
+  background: rgba(244, 180, 84, .12);
+  color: #f4b454;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background .15s ease, border-color .15s ease;
+}
+
+.webui-notice-retry:hover {
+  background: rgba(244, 180, 84, .2);
+  border-color: rgba(244, 180, 84, .55);
+}
+
+[data-theme="light"] .webui-notice {
+  background: #fff8ec;
+  border-bottom-color: #efd3a6;
+  color: #b96a10;
+}
+
+[data-theme="light"] .webui-notice-text span {
+  color: #8a6a3a;
+}
+
+[data-theme="light"] .webui-notice-retry {
+  border-color: #efd3a6;
+  background: #fdf2e1;
+  color: #b96a10;
+}
+
+[data-theme="light"] .webui-notice-retry:hover {
+  background: #fbe7c9;
+  border-color: #e0b87c;
+}
+
 .theme-toggle {
   display: inline-flex;
   gap: 4px;
@@ -479,6 +558,10 @@
 [data-theme="light"] .brand span,
 [data-theme="light"] .breadcrumbs {
   color: #8a93a3;
+}
+
+[data-theme="light"] .breadcrumbs strong {
+  color: #334155;
 }
 
 [data-theme="light"] .runtime-card {

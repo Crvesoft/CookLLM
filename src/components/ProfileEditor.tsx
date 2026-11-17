@@ -1,9 +1,9 @@
-import { Cpu, FolderOpen, HelpCircle, Save, SlidersHorizontal, Star, X, Zap } from "lucide-react";
+import { Check, Copy, Cpu, Eye, EyeOff, FolderOpen, HelpCircle, KeyRound, Save, SlidersHorizontal, Star, X, Zap } from "lucide-react";
 import { useI18n } from "../i18n";
 import { useRef, useState, type ChangeEvent, type MouseEvent as ReactMouseEvent, type ReactNode } from "react";
 import { pickFiles } from "../tauri";
 import type { LlamaEngine, ModelAsset, Profile } from "../types";
-import { fileName, cn, detectEngineType } from "../utils";
+import { fileName, cn, copyTextToClipboard, detectEngineType } from "../utils";
 
 const CACHE_TYPES = ["f32", "f16", "q8_0", "q4_0"];
 const LOAD_MODES = ["mmap", "mlock", "ragged", "row", "direct"];
@@ -123,6 +123,28 @@ export default function ProfileEditor({
   const [isDefault, setIsDefault] = useState(profile.id === defaultProfileId);
   const [visionError, setVisionError] = useState<string | null>(null);
   const [mtpDraftError, setMtpDraftError] = useState<string | null>(null);
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [copiedApiKey, setCopiedApiKey] = useState(false);
+  const [apiKeyEnabled, setApiKeyEnabled] = useState(() => Boolean(profile.apiKey?.trim()));
+
+  const generateRandomApiKey = () => {
+    // 使用 CSPRNG 生成 96-bit 密钥，避免 Math.random 的可预测性
+    const bytes = new Uint8Array(12);
+    crypto.getRandomValues(bytes);
+    const randomHex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+    update("apiKey", `sk-cookllm-${randomHex}`);
+    setShowApiKey(true);
+  };
+
+  const toggleApiKey = (next: boolean) => {
+    setApiKeyEnabled(next);
+    if (!next) {
+      update("apiKey", undefined);
+      setShowApiKey(false);
+      return;
+    }
+    if (!draft.apiKey?.trim()) generateRandomApiKey();
+  };
 
   const selectedEngine = draft.engineId ? engines.find((e) => e.id === draft.engineId) : undefined;
   const activeEngine = engines.find((e) => e.id === activeEngineId) || engines[0];
@@ -302,14 +324,14 @@ export default function ProfileEditor({
                 <input type="number" value={draft.port} onChange={number("port")} />
               </Field>
 
-              {/* 第二行：说明与 推理引擎版本并排（各占 3 列，共 6 列，各 50%） */}
-              <Field label={t("f.description")} hint={t("f.descriptionHint")} colSpan={3}>
+              {/* 第二行：说明、推理引擎、API Key 开关（各占 2 列） */}
+              <Field label={t("f.description")} hint={t("f.descriptionHint")} colSpan={2}>
                 <input value={draft.description} onChange={(e) => update("description", e.target.value)} />
               </Field>
               <Field
                 label={isNinfer ? (t("ed.runtimeEngineLabel") || "推理引擎") : t("llama.presetEngineLabel")}
                 hint={t("f.engineHint")}
-                colSpan={3}
+                colSpan={2}
               >
                 <select
                   value={draft.engineId || ""}
@@ -334,6 +356,59 @@ export default function ProfileEditor({
                   )}
                 </select>
               </Field>
+
+              {/* API Key 开关：与上一行同排；开启后密钥内容独占下方整行 */}
+              <Field label={t("f.apiKey")} hint="--api-key" colSpan={2}>
+                <ToggleBox
+                  icon={<KeyRound size={14} />}
+                  checked={apiKeyEnabled}
+                  onChange={toggleApiKey}
+                  activeLabel={t("f.toggleEnabled")}
+                  inactiveLabel={t("f.toggleDisabled")}
+                />
+              </Field>
+              {apiKeyEnabled && (
+                <Field label={t("f.apiKeyContent")} hint="--api-key" colSpan={6}>
+                  <div className="api-key-input-wrap">
+                    <input
+                      type={showApiKey ? "text" : "password"}
+                      value={draft.apiKey || ""}
+                      onChange={(e) => update("apiKey", e.target.value ? e.target.value.trim() : undefined)}
+                      placeholder={t("f.apiKeyPlaceholder")}
+                    />
+                    <button
+                      type="button"
+                      className="ghost-icon compact"
+                      onClick={() => setShowApiKey(!showApiKey)}
+                      title={showApiKey ? t("hide") : t("show")}
+                    >
+                      {showApiKey ? <EyeOff size={15} /> : <Eye size={15} />}
+                    </button>
+                    <button
+                      type="button"
+                      className="ghost-icon compact"
+                      onClick={generateRandomApiKey}
+                      title={t("f.generateApiKey")}
+                    >
+                      <KeyRound size={15} />
+                    </button>
+                    {draft.apiKey && (
+                      <button
+                        type="button"
+                        className="ghost-icon compact"
+                        onClick={async () => {
+                          await copyTextToClipboard(draft.apiKey || "");
+                          setCopiedApiKey(true);
+                          setTimeout(() => setCopiedApiKey(false), 2000);
+                        }}
+                        title={t("copy")}
+                      >
+                        {copiedApiKey ? <Check size={14} className="copied" /> : <Copy size={14} />}
+                      </button>
+                    )}
+                  </div>
+                </Field>
+              )}
             </div>
           </div>
           <div className="form-section">

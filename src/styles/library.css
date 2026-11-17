@@ -640,3 +640,38 @@
   border-color: #bae6fd;
 }
 
+/* 分卷模型 Badge */
+.model-tags .split-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: 600;
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+}
+
+.model-tags .split-badge.complete {
+  background: rgba(139, 92, 246, 0.14);
+  color: #a78bfa;
+  border: 1px solid rgba(139, 92, 246, 0.35);
+}
+
+.model-tags .split-badge.incomplete {
+  background: rgba(245, 158, 11, 0.14);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+}
+
+[data-theme="light"] .model-tags .split-badge.complete {
+  background: #f5f3ff;
+  color: #7c3aed;
+  border-color: #ddd6fe;
+}
+
+[data-theme="light"] .model-tags .split-badge.incomplete {
+  background: #fffbeb;
+  color: #d97706;
+  border-color: #fde68a;
+}
+

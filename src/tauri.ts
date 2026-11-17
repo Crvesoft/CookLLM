@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { APP_REPO, APP_VERSION, PROJECT_URL } from "./data";
 import { isNewerVersion } from "./utils";
-import type { AppConfig, DiskUsage, EngineType, HfDownloadResult, HfFile, HfModel, LlamaBackend, LlamaLogPayload, ModelDownloadProgress, PerformanceStats, ProxyMode, ServerStatus } from "./types";
+import type { AppConfig, DiskUsage, EngineType, HfDownloadResult, HfFile, HfModel, LlamaBackend, LlamaLogPayload, ModelDownloadProgress, ModelSplitInfo, PerformanceStats, ProxyMode, ServerStatus } from "./types";
 
 export const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -137,6 +137,23 @@ export async function onServerLifecycle(handler: (payload: ServerLifecyclePayloa
   return listen<ServerLifecyclePayload>("server-lifecycle", (event) => handler(event.payload));
 }
 
+/** 会话页 WebUI 资源准备状态：pending / retrying 时不打扰，failed 时展示可重试横幅 */
+export interface WebUiStatePayload {
+  phase: "pending" | "retrying" | "ready" | "failed";
+  error?: string | null;
+}
+
+export async function onWebUiState(handler: (payload: WebUiStatePayload) => void): Promise<UnlistenFn | undefined> {
+  if (!isTauri()) return undefined;
+  return listen<WebUiStatePayload>("webui-state", (event) => handler(event.payload));
+}
+
+/** 重新触发 WebUI 资源准备（离线恢复网络或手动重试时使用） */
+export async function retryWebUi(): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("retry_webui");
+}
+
 /** 订阅后台配置更新事件 */
 export async function onConfigUpdated(handler: (config: AppConfig) => void): Promise<UnlistenFn | undefined> {
   if (!isTauri()) return undefined;
@@ -205,6 +222,42 @@ const EMPTY_GGUF_META: GgufMeta = {
 export async function inspectGguf(path: string): Promise<GgufMeta> {
   if (!isTauri()) return { ...EMPTY_GGUF_META };
   return invoke<GgufMeta>("inspect_gguf", { path });
+}
+
+export interface DetectedSplitGroup {
+  prefix: string;
+  total: number;
+  found: number;
+  primaryPath: string;
+  parts: string[];
+  missingParts: number[];
+  totalBytes: number;
+}
+
+/** 后端探测结果 → 模型资产上的分卷快照（缺失列表为空时不落库） */
+export function splitInfoFromGroup(group: DetectedSplitGroup): ModelSplitInfo {
+  return {
+    total: group.total,
+    found: group.found,
+    parts: group.parts,
+    missingParts: group.missingParts.length > 0 ? group.missingParts : undefined,
+  };
+}
+
+/** 探测指定路径是否为分卷 GGUF 模型，并自动收集同目录下所有分卷文件与缺失情况 */
+export async function findSplitGroup(path: string): Promise<DetectedSplitGroup | null> {
+  if (!isTauri()) return null;
+  return invoke<DetectedSplitGroup | null>("find_split_group", { path });
+}
+
+export interface LocalIpInfo {
+  primaryIp?: string | null;
+}
+
+/** 获取本机局域网 IPv4 地址信息，用于局域网共享模式展示与快速复制 */
+export async function getLocalIp(): Promise<LocalIpInfo> {
+  if (!isTauri()) return { primaryIp: "127.0.0.1" };
+  return invoke<LocalIpInfo>("get_local_ip");
 }
 
 export interface HardwareInfo {

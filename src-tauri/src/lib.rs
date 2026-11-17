@@ -21,6 +21,8 @@ mod engines;
 mod process;
 mod server_args;
 mod system;
+mod webui_assets;
+mod webui_proxy;
 
 use config::{read_config, AppConfig};
 use downloads::{reveal_in_folder, DownloadRegistry};
@@ -512,6 +514,122 @@ fn gguf_type_name(value: u32) -> Option<&'static str> {
 
 /// 读取 GGUF 头部元数据：general.architecture、*.block_count、*.expert_count 与首个张量量化。
 /// 只顺序扫描键值，不把整个模型读进内存；遇到不认识的版本或损坏头即返回空结果。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DetectedSplitGroup {
+    pub(crate) prefix: String,
+    pub(crate) total: u32,
+    pub(crate) found: u32,
+    pub(crate) primary_path: String,
+    pub(crate) parts: Vec<String>,
+    pub(crate) missing_parts: Vec<u32>,
+    pub(crate) total_bytes: u64,
+}
+
+/// 解析分卷 GGUF 文件名规范，如 <prefix>-00001-of-00005.gguf 或 <prefix>_00001_of_00005.gguf。
+/// 按字节做 ASCII 大小写不敏感匹配，避免 to_lowercase 改变非 ASCII 字符字节长度后切错边界。
+pub(crate) fn parse_split_filename(filename: &str) -> Option<(String, u32, u32)> {
+    let stem_end = filename.len().checked_sub(5)?;
+    let stem = filename.get(..stem_end)?;
+    if !filename.get(stem_end..)?.eq_ignore_ascii_case(".gguf") {
+        return None;
+    }
+
+    let bytes = stem.as_bytes();
+    let mut of_pos = None;
+    for i in 0..bytes.len().saturating_sub(3) {
+        if (bytes[i] == b'-' || bytes[i] == b'_')
+            && bytes[i + 1].eq_ignore_ascii_case(&b'o')
+            && bytes[i + 2].eq_ignore_ascii_case(&b'f')
+            && (bytes[i + 3] == b'-' || bytes[i + 3] == b'_')
+        {
+            of_pos = Some(i);
+        }
+    }
+    let of_pos = of_pos?;
+    let left = &stem[..of_pos];
+    let right = &stem[of_pos + 4..];
+
+    let total_parts: u32 = right.parse().ok()?;
+    if total_parts <= 1 || total_parts > 9999 {
+        return None;
+    }
+
+    let last_sep = left.rfind(|c| c == '-' || c == '_' || c == '.')?;
+    let part_str = &left[last_sep + 1..];
+    let part_index: u32 = part_str.parse().ok()?;
+    if part_index < 1 || part_index > total_parts {
+        return None;
+    }
+
+    let prefix = left[..last_sep].to_string();
+    if prefix.is_empty() {
+        return None;
+    }
+
+    Some((prefix, part_index, total_parts))
+}
+
+/// 扫描指定路径同目录下同属该分卷模型的所有 companion 分卷，计算聚合分卷信息
+pub(crate) fn find_split_group_impl(path: &Path) -> Option<DetectedSplitGroup> {
+    let filename = path.file_name()?.to_string_lossy();
+    let (prefix, _current_part, total) = parse_split_filename(&filename)?;
+    let parent = path.parent()?;
+
+    let entries = fs::read_dir(parent).ok()?;
+    let prefix_lower = prefix.to_lowercase();
+    let mut found_parts: std::collections::BTreeMap<u32, (String, u64)> = std::collections::BTreeMap::new();
+
+    for entry in entries.flatten() {
+        let p = entry.path();
+        if !p.is_file() {
+            continue;
+        }
+        let fname = match p.file_name() {
+            Some(n) => n.to_string_lossy(),
+            None => continue,
+        };
+        if let Some((f_prefix, f_part, f_total)) = parse_split_filename(&fname) {
+            if f_total == total && f_prefix.to_lowercase() == prefix_lower {
+                let bytes = fs::metadata(&p).map(|m| m.len()).unwrap_or(0);
+                found_parts.insert(f_part, (p.to_string_lossy().to_string(), bytes));
+            }
+        }
+    }
+
+    if found_parts.is_empty() {
+        return None;
+    }
+
+    let mut parts = Vec::new();
+    let mut total_bytes = 0u64;
+    let mut missing_parts = Vec::new();
+
+    for i in 1..=total {
+        if let Some((fpath, fbytes)) = found_parts.get(&i) {
+            parts.push(fpath.clone());
+            total_bytes += *fbytes;
+        } else {
+            missing_parts.push(i);
+        }
+    }
+
+    let primary_path = found_parts.get(&1)
+        .map(|(p, _)| p.clone())
+        .or_else(|| found_parts.values().next().map(|(p, _)| p.clone()))
+        .unwrap_or_else(|| path.to_string_lossy().to_string());
+
+    Some(DetectedSplitGroup {
+        prefix,
+        total,
+        found: found_parts.len() as u32,
+        primary_path,
+        parts,
+        missing_parts,
+        total_bytes,
+    })
+}
+
 fn read_gguf_meta(path: &str) -> GgufMeta {
     let empty = GgufMeta {
         architecture: String::new(),
@@ -717,7 +835,15 @@ fn read_gguf_meta(path: &str) -> GgufMeta {
     } else {
         0
     };
-    let weights_bytes = fs::metadata(path).map(|meta| meta.len()).unwrap_or(0);
+    let weights_bytes = if let Some(split) = find_split_group_impl(Path::new(path)) {
+        if split.total_bytes > 0 {
+            split.total_bytes
+        } else {
+            fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
+        }
+    } else {
+        fs::metadata(path).map(|meta| meta.len()).unwrap_or(0)
+    };
 
     if !ok && architecture.is_empty() && parameters.is_empty() && quantization.is_empty() {
         return empty;
@@ -966,6 +1092,11 @@ fn ninfer_text_weights(value: &serde_json::Value) -> u64 {
 }
 
 #[tauri::command]
+fn find_split_group(path: String) -> Option<DetectedSplitGroup> {
+    find_split_group_impl(Path::new(&path))
+}
+
+#[tauri::command]
 fn inspect_gguf(path: String) -> GgufMeta {
     let lower = path.to_lowercase();
     if lower.ends_with(".ninfer") {
@@ -985,7 +1116,59 @@ fn inspect_gguf(path: String) -> GgufMeta {
 #[cfg(test)]
 mod gguf_meta_tests {
     use crate::engines::detect_engine_type;
-    use super::{read_gguf_meta, read_ninfer_meta};
+    use super::{read_gguf_meta, read_ninfer_meta, parse_split_filename};
+
+    #[test]
+    fn parse_split_filename_identifies_splits() {
+        assert_eq!(
+            parse_split_filename("Qwen2.5-72B-Instruct-Q4_K_M-00001-of-00005.gguf"),
+            Some(("Qwen2.5-72B-Instruct-Q4_K_M".into(), 1, 5))
+        );
+        assert_eq!(
+            parse_split_filename("DeepSeek-R1-UD-IQ1_S_00003_of_00004.GGUF"),
+            Some(("DeepSeek-R1-UD-IQ1_S".into(), 3, 4))
+        );
+        assert_eq!(
+            parse_split_filename("model-00002-of-00002.gguf"),
+            Some(("model".into(), 2, 2))
+        );
+        assert_eq!(parse_split_filename("normal-model.gguf"), None);
+        assert_eq!(parse_split_filename("model.ninfer"), None);
+        assert_eq!(parse_split_filename("model-00006-of-00005.gguf"), None);
+    }
+
+    #[test]
+    fn parse_split_filename_handles_unicode_prefix() {
+        // 前缀含非 ASCII 字符时不得因大小写转换改变字节长度而切错边界
+        assert_eq!(
+            parse_split_filename("模型-İQ3-00001-of-00002.gguf"),
+            Some(("模型-İQ3".into(), 1, 2))
+        );
+        assert_eq!(
+            parse_split_filename("模型_00002_OF_00002.GGUF"),
+            Some(("模型".into(), 2, 2))
+        );
+    }
+
+    #[test]
+    fn find_split_group_reports_missing_parts_and_total_bytes() {
+        let dir = std::env::temp_dir().join(format!("cookllm-split-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let part1 = dir.join("m-00001-of-00003.gguf");
+        let part3 = dir.join("m-00003-of-00003.gguf");
+        std::fs::write(&part1, vec![0u8; 10]).unwrap();
+        std::fs::write(&part3, vec![0u8; 5]).unwrap();
+
+        let group = super::find_split_group_impl(&part3).expect("应识别出分卷组");
+        assert_eq!(group.total, 3);
+        assert_eq!(group.found, 2);
+        assert_eq!(group.missing_parts, vec![2]);
+        assert_eq!(group.total_bytes, 15);
+        assert_eq!(group.primary_path, part1.to_string_lossy());
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn detect_engine_type_identifies_engines() {
@@ -1527,6 +1710,8 @@ const IFRAME_BRIDGE_SCRIPT: &str = r##"
 
   // 2) 注入桌面布局样式补丁，保证即使在窄视口下侧边栏折叠也能固定为 3rem (48px)，
   // 并在非展开状态下隐藏会话历史及多余文本，防止任何溢出。
+  // 新版 llama.cpp WebUI 的折叠侧边栏自带 -mr-[calc(--sidebar-width-3rem)] 负外边距
+  // （用于滑出动画），若只强制宽度为 3rem 而不清零该外边距，整页会被左移约 240px。
   function injectDesktopStyles() {
     try {
       if (document.getElementById("cookllm-desktop-layout-override")) return;
@@ -1543,6 +1728,7 @@ const IFRAME_BRIDGE_SCRIPT: &str = r##"
         "  display: none !important;",
         "}",
         "aside:not(.is-expanded) {",
+        "  margin-right: 0 !important;",
         "  width: 3rem !important;",
         "  min-width: 3rem !important;",
         "  max-width: 3rem !important;",
@@ -1920,7 +2106,7 @@ fn handle_tray_menu_event(app: &AppHandle, event: tauri::menu::MenuEvent) {
             let state = app.state::<ProcessState>();
             let port = {
                 let guard = state.0.lock().ok();
-                guard.and_then(|g| g.as_ref().and_then(|m| m.status.port)).unwrap_or(8080)
+                guard.and_then(|g| g.as_ref().and_then(|m| m.status.webui_port.or(m.status.port))).unwrap_or(8080)
             };
             let _ = open_url(app.clone(), format!("http://127.0.0.1:{}", port));
         }
@@ -2355,7 +2541,7 @@ pub fn run() {
             react_mounted_ms: None,
             reported: false,
         })))
-        .invoke_handler(tauri::generate_handler![downloads::hf_trending, downloads::hf_search, downloads::hf_list_files, downloads::hf_whoami, downloads::hf_avatar, downloads::hf_download, downloads::hf_download_url, downloads::hf_cancel_download, downloads::hf_pause_download, downloads::hf_clear_download, downloads::ms_trending, downloads::ms_search, downloads::ms_list_files, downloads::ms_avatar, downloads::ms_download, downloads::remove_local_file, downloads::reveal_in_folder, downloads::get_models_dir, downloads::pick_models_dir, config::load_config, config::save_config, process::start_server, process::stop_server, process::get_server_status, process::check_orphan_server, process::kill_orphan_server, system::get_performance_stats, system::get_gpu_info, system::hardware_info, system::detect_hardware, system::test_proxy_connection, system::get_system_proxy, engines::get_llamacpp_status, engines::check_llamacpp_update, engines::download_llamacpp, engines::cancel_llamacpp_update, app_update::check_app_update, app_update::download_app_update, app_update::cancel_app_update, app_update::install_app_update, process::read_ninfer_request_log, pick_files, pick_folder, engines::pick_server_dir, engines::pick_server_file, expand_paths, inspect_gguf, paths_exist, config::export_config_backup, config::pick_config_backup, pick_directory, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing, set_shortcuts_recording_mode])
+        .invoke_handler(tauri::generate_handler![downloads::hf_trending, downloads::hf_search, downloads::hf_list_files, downloads::hf_whoami, downloads::hf_avatar, downloads::hf_download, downloads::hf_download_url, downloads::hf_cancel_download, downloads::hf_pause_download, downloads::hf_clear_download, downloads::ms_trending, downloads::ms_search, downloads::ms_list_files, downloads::ms_avatar, downloads::ms_download, downloads::remove_local_file, downloads::reveal_in_folder, downloads::get_models_dir, downloads::pick_models_dir, config::load_config, config::save_config, process::start_server, process::stop_server, process::retry_webui, process::get_server_status, process::check_orphan_server, process::kill_orphan_server, system::get_performance_stats, system::get_gpu_info, system::hardware_info, system::detect_hardware, system::test_proxy_connection, system::get_system_proxy, system::get_local_ip, engines::get_llamacpp_status, engines::check_llamacpp_update, engines::download_llamacpp, engines::cancel_llamacpp_update, app_update::check_app_update, app_update::download_app_update, app_update::cancel_app_update, app_update::install_app_update, process::read_ninfer_request_log, pick_files, pick_folder, engines::pick_server_dir, engines::pick_server_file, expand_paths, inspect_gguf, find_split_group, paths_exist, config::export_config_backup, config::pick_config_backup, pick_directory, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing, set_shortcuts_recording_mode])
         .setup(|app| {
             app.handle().plugin(
                 tauri_plugin_global_shortcut::Builder::new()

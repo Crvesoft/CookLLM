@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
-import { checkOrphanServer, getPerformanceStats, getServerStatus, isTauri, killOrphanServer, readNinferRequestLog, startServer, stopServer, type OrphanProcessItem, type ServerLifecyclePayload } from "../tauri";
+import { checkOrphanServer, findSplitGroup, getPerformanceStats, getServerStatus, isTauri, killOrphanServer, readNinferRequestLog, splitInfoFromGroup, startServer, stopServer, type OrphanProcessItem, type ServerLifecyclePayload } from "../tauri";
 import type { AppConfig, GpuStats, InferenceMetrics, ModelAsset, Page, PerformanceStats, RealtimeTpsSample, ServerStatus, TokSample } from "../types";
 import { EMPTY_STATUS, InferenceTracker, RealtimeThroughputSampler, extractLlamaSlotSample, modelTitle, shallowEqualFields } from "../utils";
 import type { AppendLog, Translate } from "./types";
@@ -33,10 +33,11 @@ interface UseServiceControllerOptions {
   setToast: (message: string) => void;
   appendLog: AppendLog;
   t: Translate;
+  persist: (next: AppConfig, message?: string) => Promise<void>;
 }
 
 /** 服务控制器：状态/性能轮询、推理指标聚合、启动/停止、异常判定、生命周期同步与孤儿进程处理 */
-export function useServiceController({ config, configReady, pageRef, status, setStatus, selectedProfiles, setMenuModelId, setLogDockOpen, setToast, appendLog, t }: UseServiceControllerOptions) {
+export function useServiceController({ config, configReady, pageRef, status, setStatus, selectedProfiles, setMenuModelId, setLogDockOpen, setToast, appendLog, t, persist }: UseServiceControllerOptions) {
   /** 性能监测：总开关 + 六个独立监测项（默认全开，设置页可逐项关闭） */
   const gpuMonitorEnabled = config.gpuMonitorEnabled !== false;
   const vramMonitorEnabled = config.vramMonitorEnabled ?? gpuMonitorEnabled;
@@ -147,13 +148,15 @@ export function useServiceController({ config, configReady, pageRef, status, set
         }
         // 当服务处于运行状态时，同步底层实时指标（针对不同引擎自动自适应）
         if (st.running && st.port) {
+          // 启用 API Key 时经由本机代理访问（代理自动补鉴权头），否则直连引擎端口
+          const apiBase = `http://127.0.0.1:${st.webuiPort || st.port}`;
           const isNinfer = st.engineType === "ninfer" || st.engineType === "ninfer_kvmem";
           if (isNinfer) {
             void Promise.all([
-              fetch(`http://127.0.0.1:${st.port}/stats`, { signal: AbortSignal.timeout(1000) })
+              fetch(`${apiBase}/stats`, { signal: AbortSignal.timeout(1000) })
                 .then((r) => (r.ok ? r.json() : null))
                 .catch(() => null),
-              fetch(`http://127.0.0.1:${st.port}/slots`, { signal: AbortSignal.timeout(1000) })
+              fetch(`${apiBase}/slots`, { signal: AbortSignal.timeout(1000) })
                 .then((r) => (r.ok ? r.json() : null))
                 .catch(() => null),
               readNinferRequestLog().catch(() => [] as unknown[]),
@@ -187,7 +190,7 @@ export function useServiceController({ config, configReady, pageRef, status, set
             }).catch(() => undefined);
           } else {
             // llama.cpp 专属直连 /slots 端点
-            void fetch(`http://127.0.0.1:${st.port}/slots`, { signal: AbortSignal.timeout(1000) })
+            void fetch(`${apiBase}/slots`, { signal: AbortSignal.timeout(1000) })
               .then((r) => (r.ok ? r.json() : null))
               .catch(() => null)
               .then((data) => {
@@ -270,7 +273,7 @@ export function useServiceController({ config, configReady, pageRef, status, set
    * 为分析页提供真正的逐秒 Decode / Prefill 曲线（NInfer 与 llama.cpp 家族共用同一采样器）。
    */
   useEffect(() => {
-    const port = status.port;
+    const port = status.webuiPort || status.port;
     const enabled = isTauri() && status.running && Boolean(port) && !serviceStarting;
     if (!enabled) {
       realtimeSamplerRef.current.reset();
@@ -330,7 +333,7 @@ export function useServiceController({ config, configReady, pageRef, status, set
     tick();
     const timer = window.setInterval(tick, 1000);
     return () => { alive = false; window.clearInterval(timer); };
-  }, [serviceStarting, status.engineType, status.port, status.running]);
+  }, [serviceStarting, status.engineType, status.port, status.webuiPort, status.running]);
 
   /** 检测进程意外退出（运行中 → 停止，且不是主动停止）：标记服务异常并自动展开 Dock 显示 ERROR */
   const prevRunningRef = useRef(false);
@@ -423,6 +426,39 @@ export function useServiceController({ config, configReady, pageRef, status, set
       return handleStop();
     }
 
+    // 2. 分卷完整性以磁盘实时状态为准：用户可能在应用运行期间补齐/移走了分卷文件。
+    // 必须在停止旧服务之前判定，避免「点击不完整模型 → 先把健康运行中的服务停掉 → 再报错」
+    let effectiveModel = model;
+    let splitInfo = model.splitInfo;
+    if (isTauri() && model.path.toLowerCase().endsWith(".gguf")) {
+      const group = await findSplitGroup(model.path).catch(() => null);
+      if (group) {
+        splitInfo = splitInfoFromGroup(group);
+        const nextPath = group.primaryPath;
+        const nextSize = group.totalBytes > 0 ? group.totalBytes : model.sizeBytes;
+        if (model.path !== nextPath || model.sizeBytes !== nextSize || JSON.stringify(model.splitInfo) !== JSON.stringify(splitInfo)) {
+          effectiveModel = { ...model, path: nextPath, sizeBytes: nextSize, splitInfo };
+          // 回写配置，让卡片徽标与后续启动保持一致
+          await persist({ ...config, models: config.models.map((item) => item.id === model.id ? effectiveModel : item) });
+        }
+      } else if (model.splitInfo) {
+        // 分卷文件已不存在：清掉过期分卷快照，避免永久卡在「缺失」状态
+        splitInfo = undefined;
+        effectiveModel = { ...model, splitInfo: undefined };
+        await persist({ ...config, models: config.models.map((item) => item.id === model.id ? effectiveModel : item) });
+      }
+    }
+    if (splitInfo?.missingParts && splitInfo.missingParts.length > 0) {
+      const warnMsg = t("model.splitMissingWarning", {
+        missing: splitInfo.missingParts.join(", "),
+        total: splitInfo.total,
+      });
+      setToast(warnMsg);
+      appendLog(warnMsg, "stderr");
+      if (pageRef.current !== "logs") setLogDockOpen(true);
+      return;
+    }
+
     const switching = Boolean(status.running || serviceStarting || startingModelId);
     const engineName = profile.engineId
       ? config.engines?.find((e) => e.id === profile.engineId)?.name || profile.engineId
@@ -471,7 +507,7 @@ export function useServiceController({ config, configReady, pageRef, status, set
           setBusy(false);
           pendingStartedToastRef.current = null;
           dockAutoCollapseRef.current = false;
-          setOrphanPendingModel(model);
+          setOrphanPendingModel(effectiveModel);
           setOrphanPids(orphanInfo.pids);
           setOrphanProcesses(orphanInfo.processes ?? null);
           return;

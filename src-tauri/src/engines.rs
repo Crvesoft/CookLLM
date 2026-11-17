@@ -976,6 +976,8 @@ fn download_llamacpp_impl(app: AppHandle, backend: String, cuda_version: Option<
     let _ = fs::remove_file(&zip_path);
     let _ = fs::remove_dir_all(&temp_root);
     emit_download_progress(&app, "done", 100, 0, 0, 0, "更新完成");
+    // 9) 若存在 NInfer/KVMem 引擎，后台预热与新构建匹配的会话界面资源；失败不影响本次更新
+    crate::webui_assets::prefetch_webui(app.clone(), Some(version.clone()), new_server_path.clone());
     Ok(new_server_path.to_string_lossy().to_string())
 }
 

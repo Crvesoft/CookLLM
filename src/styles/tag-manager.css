@@ -716,13 +716,17 @@
 .profile-card-head p {
   height: 44px;
   margin: 0;
-  color: #6f7a8d;
-  font-size: 12.5px;
+  color: #8b95a6;
+  font-size: 13px;
   line-height: 1.55;
   overflow: hidden;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
+}
+
+[data-theme="light"] .profile-card-head p {
+  color: #5f6b7d;
 }
 
 .profile-stat-grid {
@@ -745,11 +749,15 @@
 }
 
 .profile-stat-grid span {
-  color: #697487;
+  color: #7c8799;
   font-size: 11.5px;
   line-height: 1.25;
   flex: none;
   white-space: nowrap
+}
+
+[data-theme="light"] .profile-card .profile-stat-grid span {
+  color: #5f6b7d;
 }
 
 .profile-stat-grid strong {

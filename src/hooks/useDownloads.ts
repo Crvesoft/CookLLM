@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Dispatch, MutableRefObject, SetStateAction } from "react";
 import { DEFAULT_NINFER_PROFILES, DEFAULT_PROFILES, uid } from "../data";
 import { buildAutoProfiles, nvfp4SupportedOf } from "../autoProfiles";
-import { getHardwareInfo, getModelsDir, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, inspectGguf, isTauri, msDownload, onModelDownloadProgress, pickModelsDir, removeLocalFile, revealInFolder } from "../tauri";
+import { findSplitGroup, getHardwareInfo, getModelsDir, hfCancelDownload, hfClearDownload, hfDownload, hfDownloadUrl, hfPauseDownload, inspectGguf, isTauri, msDownload, onModelDownloadProgress, pickModelsDir, removeLocalFile, revealInFolder } from "../tauri";
 import type { ActiveDownload, AppConfig, CommunitySource, DiskUsage, DownloadErrorCode, DownloadErrorPayload, ModelAsset, ModelDownloadProgress } from "../types";
 import { ACCENTS, fileName, parseQuantization } from "../utils";
 import type { AppendLog, PersistConfig, Translate } from "./types";
@@ -131,15 +131,61 @@ export function useDownloads({ config, configRef, configReady, persist, setToast
         patchByTaskId(download.taskId, { status: "done" as const, path, finishedAt: Date.now() });
         return;
       }
-      const name = fileBaseName.replace(/\.(gguf|ninfer)$/i, "").replace(/[-_]/g, " ");
       const isNinfer = path.toLowerCase().endsWith(".ninfer");
       const isGguf = path.toLowerCase().endsWith(".gguf");
+      const splitGroup = isGguf ? await findSplitGroup(path).catch(() => null) : null;
+      if (splitGroup) {
+        const existingSplitModel = currentConfig.models.find((m) =>
+          m.path.toLowerCase() === splitGroup.primaryPath.toLowerCase() ||
+          (m.splitInfo?.parts && m.splitInfo.parts.some((p) => splitGroup.parts.map((s) => s.toLowerCase()).includes(p.toLowerCase())))
+        );
+        if (existingSplitModel) {
+          let merged: ModelAsset = {
+            ...existingSplitModel,
+            path: splitGroup.primaryPath,
+            sizeBytes: splitGroup.totalBytes > 0 ? splitGroup.totalBytes : existingSplitModel.sizeBytes,
+            splitInfo: {
+              total: splitGroup.total,
+              found: splitGroup.found,
+              parts: splitGroup.parts,
+              missingParts: splitGroup.missingParts && splitGroup.missingParts.length > 0 ? splitGroup.missingParts : undefined,
+            },
+          };
+          // 先前若先下载到非首卷（读不到 GGUF 头），补齐后按首卷重新识别元数据
+          if (!merged.splitInfo?.missingParts && existingSplitModel.metadataSource === "filename") {
+            const meta = await inspectGguf(splitGroup.primaryPath).catch(() => null);
+            if (meta && (meta.architecture || meta.quantization || meta.parameters)) {
+              merged = {
+                ...merged,
+                architecture: meta.architecture || merged.architecture,
+                quantization: parseQuantization(splitGroup.primaryPath, "") || meta.quantization || merged.quantization,
+                parameters: meta.parameters || merged.parameters,
+                metadataSource: "gguf",
+              };
+            }
+          }
+          const updatedModels = currentConfig.models.map((m) => (m.id === existingSplitModel.id ? merged : m));
+          patchByTaskId(download.taskId, { status: "done" as const, path, finishedAt: Date.now() });
+          await persist({ ...currentConfig, models: updatedModels });
+          return;
+        }
+      }
+
+      let targetPath = path;
+      let targetSize = sizeBytes ?? download.sizeBytes;
+      let targetName = fileBaseName.replace(/\.(gguf|ninfer)$/i, "").replace(/[-_]/g, " ");
+      if (splitGroup) {
+        targetPath = splitGroup.primaryPath;
+        targetSize = splitGroup.totalBytes > 0 ? splitGroup.totalBytes : targetSize;
+        targetName = splitGroup.prefix.replace(/[-_]/g, " ");
+      }
+
       const ext = (path.split(".").pop() || "FILE").toUpperCase();
-      const meta = await inspectGguf(path).catch(() => ({ architecture: "", parameters: "", quantization: "", blockCount: 0, attentionLayerCount: 0, headCount: 0, headCountKv: 0, headDim: 0, contextLength: 0, weightsBytes: 0 }));
-      const paramMatch = path.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase();
+      const meta = await inspectGguf(targetPath).catch(() => ({ architecture: "", parameters: "", quantization: "", blockCount: 0, attentionLayerCount: 0, headCount: 0, headCountKv: 0, headDim: 0, contextLength: 0, weightsBytes: 0 }));
+      const paramMatch = targetPath.match(/\d+(?:\.\d+)?B/i)?.[0]?.toUpperCase();
       const parameters = meta.parameters || paramMatch || "—";
       // 文件头首个张量常是 Q6_K 输出层，K-quant 文件会被标错，文件名更能代表整体量化
-      const nameQuant = parseQuantization(path, "");
+      const nameQuant = parseQuantization(targetPath, "");
       // 入库即用智能推荐生成三档预设；估算不出来（读不到头信息 / 无显存 / 缺引擎）退回默认的均衡配置
       const hardware = await getHardwareInfo().catch(() => null);
       const auto = buildAutoProfiles(
@@ -166,9 +212,9 @@ export function useDownloads({ config, configRef, configReady, persist, setToast
       const defaultProfileId = auto?.defaultProfileId ?? initialProfiles[0].id;
       const model: ModelAsset = {
         id: uid("model"),
-        name,
-        path,
-        sizeBytes: sizeBytes ?? download.sizeBytes,
+        name: targetName,
+        path: targetPath,
+        sizeBytes: targetSize,
         architecture: meta.architecture || (isNinfer ? "NINFER" : isGguf ? "GGUF" : ext),
         quantization: nameQuant || meta.quantization || t("model.unknownQuant"),
         parameters,
@@ -176,12 +222,20 @@ export function useDownloads({ config, configRef, configReady, persist, setToast
         profiles: initialProfiles,
         defaultProfileId,
         accent: ACCENTS[currentConfig.models.length % ACCENTS.length],
+        splitInfo: splitGroup
+          ? {
+              total: splitGroup.total,
+              found: splitGroup.found,
+              parts: splitGroup.parts,
+              missingParts: splitGroup.missingParts && splitGroup.missingParts.length > 0 ? splitGroup.missingParts : undefined,
+            }
+          : undefined,
       };
       setSelectedProfiles((previous) => ({ ...previous, [model.id]: defaultProfileId }));
       setJustImportedIds((previous) => new Set(previous).add(model.id));
       window.setTimeout(() => { setJustImportedIds((previous) => { const next = new Set(previous); next.delete(model.id); return next; }); }, 6000);
       patchByTaskId(download.taskId, { status: "done" as const, path, finishedAt: Date.now() });
-      await persist({ ...currentConfig, models: [...currentConfig.models, model] }, t("toast.downloadImported", { name }));
+      await persist({ ...currentConfig, models: [...currentConfig.models, model] }, t("toast.downloadImported", { name: targetName }));
     } catch (error) {
       appendLog(t("log.saveConfigFailed", { error: String(error) }), "stderr");
     }

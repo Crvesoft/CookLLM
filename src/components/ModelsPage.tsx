@@ -1,4 +1,4 @@
-import { Box, Check, ChevronDown, Cpu, Database, Gauge, HardDrive, Layers3, LayoutGrid, List, ListChecks, Loader2, MemoryStick, MoreHorizontal, PenLine, Pencil, Play, Plus, Power, Search, SlidersHorizontal, Star, Tag, Trash2 } from "lucide-react";
+import { AlertTriangle, Box, Check, ChevronDown, Cpu, Database, Gauge, Globe, HardDrive, Layers3, LayoutGrid, List, ListChecks, Loader2, MemoryStick, MoreHorizontal, PenLine, Pencil, Play, Plus, Power, Search, SlidersHorizontal, Star, Tag, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { useI18n } from "../i18n";
 import { usePointerReorder, type CardHandlers } from "../hooks/usePointerReorder";
@@ -6,6 +6,7 @@ import type { AppConfig, ModelAsset, Profile, ServerStatus } from "../types";
 import { cn, copyTextToClipboard, fileName, formatBytes, modelTitle } from "../utils";
 import ConfirmModal from "./ConfirmModal";
 import ModelTagModal from "./ModelTagModal";
+import LanAccessModal from "./LanAccessModal";
 import { ModelFormatBadge } from "./ModelFormatBadge";
 
 interface Props {
@@ -29,6 +30,7 @@ export default function ModelsPage(props: Props) {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [tagModalModel, setTagModalModel] = useState<ModelAsset | null>(null);
+  const [lanModalTarget, setLanModalTarget] = useState<{ model: ModelAsset; profile?: Profile } | null>(null);
   /** 视图模式：卡片网格 / 紧凑列表（本地持久化） */
   const [viewMode, setViewMode] = useState<"grid" | "list">(() => {
     try {
@@ -85,12 +87,13 @@ export default function ModelsPage(props: Props) {
     setSelectMode(false);
   };
 
-  const handleCopyEndpoint = async (model: ModelAsset, selectedProfile?: Profile) => {
+  /** 打开局域网接入弹窗：运行中优先展示实际生效的运行预设，而非卡片上选中的预设 */
+  const handleOpenLanAccess = (model: ModelAsset, selectedProfile?: Profile) => {
     const isCurrentRunning = props.status.running && props.status.modelId === model.id;
-    const port = isCurrentRunning ? (props.status.port || selectedProfile?.port || 8080) : (selectedProfile?.port || 8080);
-    const endpoint = `http://127.0.0.1:${port}/v1`;
-    await copyTextToClipboard(endpoint);
-    props.onToast?.(t("toast.copiedEndpoint", { endpoint }));
+    const runningProfile = isCurrentRunning && props.status.profileId
+      ? model.profiles.find((profile) => profile.id === props.status.profileId)
+      : undefined;
+    setLanModalTarget({ model, profile: runningProfile || selectedProfile });
   };
 
   return <>
@@ -169,7 +172,7 @@ export default function ModelsPage(props: Props) {
         isDragging: reorder.dragId?.itemId === model.id,
         cardHandlers: reorder.cardProps("models", id),
         onToggleSelect: () => toggleSelected(model.id),
-        onCopyApiEndpoint: () => void handleCopyEndpoint(model, selectedProf)
+        onOpenApiAccess: () => handleOpenLanAccess(model, selectedProf)
       };
       return viewMode === "list" ? <ModelRow key={id} {...itemProps} /> : <ModelCard key={id} {...itemProps} />;
     })}</section> : <div className="empty-state">{searching ? <><div><Search size={28} /></div><h3>{t("noMatchTitle")}</h3><p>{t("noMatchDesc", { query: props.query.trim() })}</p><div className="empty-actions"><button className="secondary-button" onClick={() => props.onQuery("")}>{t("clearSearch")}</button></div></> : <><div><Box size={28} /></div><h3>{t("emptyModelsTitle")}</h3><p>{t("emptyModelsDesc")}</p><div className="empty-actions"><button className="secondary-button" onClick={props.onAddModel}><Plus size={16} />{t("addModel")}</button></div></>}</div>}
@@ -185,6 +188,17 @@ export default function ModelsPage(props: Props) {
         }}
       />
     )}
+    {lanModalTarget && (
+      <LanAccessModal
+        isOpen={Boolean(lanModalTarget)}
+        onClose={() => setLanModalTarget(null)}
+        model={lanModalTarget.model}
+        profile={lanModalTarget.profile}
+        port={props.status.running && props.status.modelId === lanModalTarget.model.id ? (props.status.port || lanModalTarget.profile?.port || 8080) : (lanModalTarget.profile?.port || 8080)}
+        isRunning={props.status.running && props.status.modelId === lanModalTarget.model.id}
+        onToast={props.onToast}
+      />
+    )}
   </>;
 }
 
@@ -194,10 +208,10 @@ interface ModelItemProps {
   onRenameModel: (modelId: string, displayName: string) => void; onOpenTagModal: () => void; onSetDefaultModel: (modelId: string) => void; onRemove: () => void;
   selectMode: boolean; isSelected: boolean; isJustImported: boolean; isDragging: boolean; cardHandlers: CardHandlers;
   onToggleSelect: () => void;
-  onCopyApiEndpoint: () => void;
+  onOpenApiAccess: () => void;
 }
 
-function ModelCard({ model, profiles, selectedProfileId, isDefaultModel, isRunning, isStarting, busy, menuOpen, onMenu, onSelectProfile, onStart, onStop, onEditProfile, onAddProfile, onRenameModel, onOpenTagModal, onSetDefaultModel, onRemove, selectMode, isSelected, isJustImported, isDragging, cardHandlers, onToggleSelect, onCopyApiEndpoint }: ModelItemProps) {
+function ModelCard({ model, profiles, selectedProfileId, isDefaultModel, isRunning, isStarting, busy, menuOpen, onMenu, onSelectProfile, onStart, onStop, onEditProfile, onAddProfile, onRenameModel, onOpenTagModal, onSetDefaultModel, onRemove, selectMode, isSelected, isJustImported, isDragging, cardHandlers, onToggleSelect, onOpenApiAccess }: ModelItemProps) {
   const { t } = useI18n();
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState("");
@@ -215,8 +229,23 @@ function ModelCard({ model, profiles, selectedProfileId, isDefaultModel, isRunni
     onClick={selectMode ? onToggleSelect : undefined}>
     {isDefaultModel && <span className="corner-flag"><Star size={10} fill="currentColor" /></span>}
     <span className={cn("card-select-check", isSelected && "checked")} aria-hidden="true"><Check size={13} strokeWidth={2.5} /></span>
-    <div className="model-card-top"><ModelFormatBadge isNinfer={isNinfer} /><div className="model-title"><div>{renaming ? <input className="model-rename-input" autoFocus value={draftName} placeholder={modelTitle(model)} onChange={(e) => setDraftName(e.target.value)} onBlur={commitRename} onKeyDown={(e) => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") { setRenaming(false); } }} /> : <h3>{modelTitle(model)}</h3>}{isRunning && !isStarting && <span className="live-badge" title={t("card.copyApiEndpoint")} style={{ cursor: "pointer" }} onClick={(e) => { e.stopPropagation(); onCopyApiEndpoint(); }}><i />LIVE</span>}</div><p title={model.path}>{fileName(model.path)}</p></div><div className="model-menu-wrap" onClick={(event) => event.stopPropagation()}>{isJustImported && <span className="just-imported-badge"><Check size={10} />{t("models.justImported")}</span>}<button className="ghost-icon" onClick={onMenu}><MoreHorizontal size={18} /></button>{menuOpen && <div className="context-menu"><button onClick={() => { onSetDefaultModel(model.id); onMenu(); }}><Star size={14} />{isDefaultModel ? t("card.unsetDefault") : t("card.setDefault")}</button><button onClick={() => { setDraftName(modelTitle(model)); setRenaming(true); onMenu(); }}><PenLine size={14} />{t("card.renameModel")}</button><button onClick={() => { onMenu(); onOpenTagModal(); }}><Tag size={14} />{t("card.customTags")}</button><button onClick={() => { onMenu(); if (selected) onEditProfile(model, selected); else onAddProfile(model); }}><Pencil size={14} />{selected ? t("card.editProfile") : t("newProfile")}</button><button className="danger" onClick={() => { onMenu(); onRemove(); }}><Trash2 size={14} />{t("card.removeModel")}</button></div>}</div></div>
+    <div className="model-card-top"><ModelFormatBadge isNinfer={isNinfer} /><div className="model-title"><div>{renaming ? <input className="model-rename-input" autoFocus value={draftName} placeholder={modelTitle(model)} onChange={(e) => setDraftName(e.target.value)} onBlur={commitRename} onKeyDown={(e) => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") { setRenaming(false); } }} /> : <h3>{modelTitle(model)}</h3>}{isRunning && !isStarting && <span className="live-badge" title={t("card.viewApiEndpoint")} style={{ cursor: "pointer" }} onClick={(e) => { e.stopPropagation(); onOpenApiAccess(); }}><i />LIVE</span>}</div><p title={model.path}>{fileName(model.path)}</p></div><div className="model-menu-wrap" onClick={(event) => event.stopPropagation()}>{isJustImported && <span className="just-imported-badge"><Check size={10} />{t("models.justImported")}</span>}<button className="ghost-icon" onClick={onMenu}><MoreHorizontal size={18} /></button>{menuOpen && <div className="context-menu"><button onClick={() => { onSetDefaultModel(model.id); onMenu(); }}><Star size={14} />{isDefaultModel ? t("card.unsetDefault") : t("card.setDefault")}</button><button onClick={() => { setDraftName(modelTitle(model)); setRenaming(true); onMenu(); }}><PenLine size={14} />{t("card.renameModel")}</button><button onClick={() => { onMenu(); onOpenTagModal(); }}><Tag size={14} />{t("card.customTags")}</button><button onClick={() => { onMenu(); if (selected) onEditProfile(model, selected); else onAddProfile(model); }}><Pencil size={14} />{selected ? t("card.editProfile") : t("newProfile")}</button><button onClick={() => { onOpenApiAccess(); onMenu(); }}><Globe size={14} />{t("card.viewApiEndpoint")}</button><button className="danger" onClick={() => { onMenu(); onRemove(); }}><Trash2 size={14} />{t("card.removeModel")}</button></div>}</div></div>
     <div className="model-tags">
+      {model.splitInfo && (
+        <span
+          className={cn("split-badge", model.splitInfo.missingParts?.length ? "incomplete" : "complete")}
+          title={
+            model.splitInfo.missingParts?.length
+              ? t("model.splitMissingTooltip", { missing: model.splitInfo.missingParts.join(", "), total: model.splitInfo.total })
+              : t("model.splitCompleteTooltip", { count: model.splitInfo.total })
+          }
+        >
+          {model.splitInfo.missingParts?.length ? <AlertTriangle size={11} /> : <Layers3 size={11} />}
+          {model.splitInfo.missingParts?.length
+            ? t("model.splitBadgeMissing", { found: model.splitInfo.found, total: model.splitInfo.total, missingCount: model.splitInfo.total - model.splitInfo.found })
+            : t("model.splitBadge", { found: model.splitInfo.found, total: model.splitInfo.total })}
+        </span>
+      )}
       <span>{model.parameters}</span>
       <span
         className={cn("quant-tag", isUnknownQuant && "unknown-quant")}
@@ -265,7 +294,7 @@ function ModelCard({ model, profiles, selectedProfileId, isDefaultModel, isRunni
   </article>;
 }
 
-function ModelRow({ model, profiles, selectedProfileId, isDefaultModel, isRunning, isStarting, busy, menuOpen, onMenu, onSelectProfile, onStart, onStop, onEditProfile, onAddProfile, onRenameModel, onOpenTagModal, onSetDefaultModel, onRemove, selectMode, isSelected, isJustImported, isDragging, cardHandlers, onToggleSelect, onCopyApiEndpoint }: ModelItemProps) {
+function ModelRow({ model, profiles, selectedProfileId, isDefaultModel, isRunning, isStarting, busy, menuOpen, onMenu, onSelectProfile, onStart, onStop, onEditProfile, onAddProfile, onRenameModel, onOpenTagModal, onSetDefaultModel, onRemove, selectMode, isSelected, isJustImported, isDragging, cardHandlers, onToggleSelect, onOpenApiAccess }: ModelItemProps) {
   const { t } = useI18n();
   const [renaming, setRenaming] = useState(false);
   const [draftName, setDraftName] = useState("");
@@ -289,7 +318,7 @@ function ModelRow({ model, profiles, selectedProfileId, isDefaultModel, isRunnin
       <div className="model-row-info">
         <div className="model-row-title">
           {renaming ? <input className="model-rename-input" autoFocus value={draftName} placeholder={modelTitle(model)} onChange={(e) => setDraftName(e.target.value)} onBlur={commitRename} onKeyDown={(e) => { if (e.key === "Enter") commitRename(); if (e.key === "Escape") { setRenaming(false); } }} /> : <h3>{modelTitle(model)}</h3>}
-          {isRunning && !isStarting && <span className="live-badge" title={t("card.copyApiEndpoint")} style={{ cursor: "pointer" }} onClick={(e) => { e.stopPropagation(); onCopyApiEndpoint(); }}><i />LIVE</span>}
+          {isRunning && !isStarting && <span className="live-badge" title={t("card.viewApiEndpoint")} style={{ cursor: "pointer" }} onClick={(e) => { e.stopPropagation(); onOpenApiAccess(); }}><i />LIVE</span>}
           {isJustImported && <span className="just-imported-badge"><Check size={10} />{t("models.justImported")}</span>}
         </div>
         <p title={model.path}>{fileName(model.path)}</p>
@@ -297,6 +326,21 @@ function ModelRow({ model, profiles, selectedProfileId, isDefaultModel, isRunnin
     </div>
     <div className="model-row-specs">
       <div className="model-tags">
+      {model.splitInfo && (
+        <span
+          className={cn("split-badge", model.splitInfo.missingParts?.length ? "incomplete" : "complete")}
+          title={
+            model.splitInfo.missingParts?.length
+              ? t("model.splitMissingTooltip", { missing: model.splitInfo.missingParts.join(", "), total: model.splitInfo.total })
+              : t("model.splitCompleteTooltip", { count: model.splitInfo.total })
+          }
+        >
+          {model.splitInfo.missingParts?.length ? <AlertTriangle size={11} /> : <Layers3 size={11} />}
+          {model.splitInfo.missingParts?.length
+            ? t("model.splitBadgeMissing", { found: model.splitInfo.found, total: model.splitInfo.total, missingCount: model.splitInfo.total - model.splitInfo.found })
+            : t("model.splitBadge", { found: model.splitInfo.found, total: model.splitInfo.total })}
+        </span>
+      )}
         <span>{model.parameters}</span>
         <span
           className={cn("quant-tag", isUnknownQuant && "unknown-quant")}
@@ -349,7 +393,7 @@ function ModelRow({ model, profiles, selectedProfileId, isDefaultModel, isRunnin
       </div>
       <div className="model-menu-wrap">
         <button className="ghost-icon" onClick={onMenu}><MoreHorizontal size={18} /></button>
-        {menuOpen && <div className="context-menu"><button onClick={() => { onSetDefaultModel(model.id); onMenu(); }}><Star size={14} />{isDefaultModel ? t("card.unsetDefault") : t("card.setDefault")}</button><button onClick={() => { setDraftName(modelTitle(model)); setRenaming(true); onMenu(); }}><PenLine size={14} />{t("card.renameModel")}</button><button onClick={() => { onMenu(); onOpenTagModal(); }}><Tag size={14} />{t("card.customTags")} </button><button onClick={() => { onMenu(); if (selected) onEditProfile(model, selected); else onAddProfile(model); }}><Pencil size={14} />{selected ? t("card.editProfile") : t("newProfile")}</button><button className="danger" onClick={() => { onMenu(); onRemove(); }}><Trash2 size={14} />{t("card.removeModel")}</button></div>}
+        {menuOpen && <div className="context-menu"><button onClick={() => { onSetDefaultModel(model.id); onMenu(); }}><Star size={14} />{isDefaultModel ? t("card.unsetDefault") : t("card.setDefault")}</button><button onClick={() => { setDraftName(modelTitle(model)); setRenaming(true); onMenu(); }}><PenLine size={14} />{t("card.renameModel")}</button><button onClick={() => { onMenu(); onOpenTagModal(); }}><Tag size={14} />{t("card.customTags")} </button><button onClick={() => { onMenu(); if (selected) onEditProfile(model, selected); else onAddProfile(model); }}><Pencil size={14} />{selected ? t("card.editProfile") : t("newProfile")}</button><button onClick={() => { onOpenApiAccess(); onMenu(); }}><Globe size={14} />{t("card.viewApiEndpoint")}</button><button className="danger" onClick={() => { onMenu(); onRemove(); }}><Trash2 size={14} />{t("card.removeModel")}</button></div>}
       </div>
     </div>
   </article>;

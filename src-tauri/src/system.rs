@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -788,4 +788,52 @@ pub(crate) async fn test_proxy_connection(
     tauri::async_runtime::spawn_blocking(move || test_proxy_connection_impl(network))
         .await
         .map_err(|error| format!("连接测试任务中断：{}", error))?
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct LocalIpInfo {
+    pub(crate) primary_ip: Option<String>,
+}
+
+/// 获取本机在局域网中的主力 IPv4 地址，供局域网共享模式展示与快速复制
+#[tauri::command]
+pub(crate) fn get_local_ip() -> LocalIpInfo {
+    use std::net::UdpSocket;
+
+    // 1) 优先通过路由探测主力出口 IP（零流量，向公共 DNS 寻路获取本机网卡 IP）
+    let primary_ip = UdpSocket::bind("0.0.0.0:0").ok().and_then(|socket| {
+        socket.connect("8.8.8.8:80").ok()?;
+        let ip = socket.local_addr().ok()?.ip();
+        if ip.is_loopback() {
+            None
+        } else {
+            Some(ip.to_string())
+        }
+    }).or_else(|| {
+        // 2) 离线局域网兜底：尝试解析 Windows ipconfig 命令输出
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let mut cmd = std::process::Command::new("ipconfig");
+            cmd.creation_flags(0x08000000);
+            if let Ok(output) = cmd.output() {
+                let text = String::from_utf8_lossy(&output.stdout);
+                for line in text.lines() {
+                    let trimmed = line.trim();
+                    if (trimmed.contains("IPv4") || trimmed.contains("IP Address") || trimmed.contains("IP 地址")) && trimmed.contains(':') {
+                        if let Some(ip_part) = trimmed.split(':').nth(1) {
+                            let ip = ip_part.trim().trim_matches('(').split(')').next().unwrap_or("").trim();
+                            if !ip.is_empty() && !ip.starts_with("127.") && !ip.starts_with("169.254.") {
+                                return Some(ip.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        None
+    });
+
+    LocalIpInfo { primary_ip }
 }
