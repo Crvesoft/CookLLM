@@ -2,6 +2,18 @@
 
 本文档是发布流程提取 Release Notes 的唯一数据源（`.github/workflows/release.yml` 会自动读取，请在每次发版前更新本文件）。
 
+## v0.4.8
+
+#### 🚀 功能新增
+
+- **API Key 鉴权**：自定义输入或一键随机生成高强度秘钥（sk-cookllm），支持一键复制与显隐切换。
+- **分卷智能成组**：识别GGUF模型 `-00001-of-00005` 分卷并聚合大小；缺卷拦截启动，下载后续分卷自动合并。
+
+#### ⚡ 引擎与 WebUI 适配
+
+- **llama.cpp 1.0 WebUI**：NInfer/KVMem 会话页托管官方界面，适配新版侧栏与桌面布局。
+- **更新联动预热**：升级 llama.cpp 后，如存在 NInfer/KVMem 引擎，后台预热同 build 的 WebUI。
+
 ## v0.4.7
 
 #### ✨ 界面细节优化
