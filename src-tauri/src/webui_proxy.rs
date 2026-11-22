@@ -572,16 +572,33 @@ fn serve_ui(client: &mut TcpStream, root: &Path, target: &str, head_only: bool) 
     client.flush()
 }
 
-/// 官方 WebUI 要等脚本启动后才给 <html> 加 dark 类，首帧会先按浅色绘制。
-/// 这里在样式表之前按前端同一规则（本地存储 → 系统偏好）提前落类并铺底色，
-/// 让深色主题下内嵌页面从第一帧起就是深色。
+/// 官方 WebUI 的深色类是脚本启动后才加上的，首帧会先按浅色绘制。
+/// 这里在样式表之前按前端同一规则（CookLLM 显式主题 → LlamaUI 设置 → 系统偏好）落类并铺底色，
+/// 让内嵌页面从第一帧起就与当前主题一致；显式传入 CookLLM 主题时同步写回 WebUI 设置，
+/// 避免其初始化后按“跟随系统”把页面切回浅色。
 fn inject_theme_bootstrap(html: Vec<u8>) -> Vec<u8> {
     const BOOTSTRAP: &str = concat!(
         "<script>(function(){try{",
-        "var m=localStorage.getItem(\"mode-watcher-mode\")||\"system\";",
+        "var m=\"system\",forced=new URLSearchParams(location.search).get(\"cookllm-theme\");",
+        "if(forced!==\"dark\"&&forced!==\"light\")forced=null;",
+        "try{",
+        "var raw=localStorage.getItem(\"LlamaUi.config\"),c=raw?JSON.parse(raw):null;",
+        "if(forced){",
+        "m=forced;",
+        "try{localStorage.setItem(\"LlamaUi.config\",JSON.stringify(Object.assign({},c||{},{theme:forced})));}catch(e){}",
+        "try{localStorage.setItem(\"mode-watcher-mode\",forced);}catch(e){}",
+        "}else{",
+        "var t=c&&c.theme;",
+        "if(t===\"dark\"||t===\"light\"||t===\"system\"){m=t;}else{",
+        "var w=localStorage.getItem(\"mode-watcher-mode\");",
+        "if(w===\"dark\"||w===\"light\"||w===\"system\"){m=w;}}",
+        "}",
+        "}catch(e){}",
         "var d=m===\"dark\"||(m!==\"light\"&&window.matchMedia(\"(prefers-color-scheme: dark)\").matches);",
         "document.documentElement.classList.toggle(\"dark\",d);",
         "document.documentElement.style.colorScheme=d?\"dark\":\"light\";",
+        "try{if(location.pathname!==\"/\")history.replaceState(null,\"\",\"/\"+location.search+location.hash);}catch(e){}",
+        "try{if(window.caches)caches.keys().then(function(ks){ks.forEach(function(k){caches.delete(k);});});}catch(e){}",
         "}catch(e){}})();</script>",
         "<style>html.dark,html.dark body{background-color:#0d0d0d;color-scheme:dark}",
         "html:not(.dark),html:not(.dark) body{background-color:#fbfbfb;color-scheme:light}</style>"
@@ -614,7 +631,8 @@ fn serve_ui_pending(
 ) -> io::Result<()> {
     let path = target.split(|c| c == '?' || c == '#').next().unwrap_or("");
     let rel = path.trim_start_matches('/');
-    if !rel.is_empty() && has_extension(rel) {
+    let page_like = rel.is_empty() || rel.eq_ignore_ascii_case("index.html") || !has_extension(rel);
+    if !page_like {
         let body = "WebUI 尚未就绪，请稍候";
         let head = format!(
             "HTTP/1.1 503 Service Unavailable\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nRetry-After: 3\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
@@ -627,14 +645,14 @@ fn serve_ui_pending(
         return client.flush();
     }
 
-    let body = waiting_page(error, retrying);
+    let body = inject_theme_bootstrap(waiting_page(error, retrying).into_bytes());
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n",
         body.len()
     );
     client.write_all(head.as_bytes())?;
     if !head_only {
-        client.write_all(body.as_bytes())?;
+        client.write_all(&body)?;
     }
     client.flush()
 }
@@ -652,7 +670,7 @@ fn waiting_page(error: Option<&str>, retrying: bool) -> String {
         None => "<p class=\"hint\">首次启动需要准备 llama.cpp 官方 WebUI，完成后页面会自动刷新。</p>".to_string(),
     };
     format!(
-        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta http-equiv=\"refresh\" content=\"3\"><title>CookLLM · 正在准备会话界面</title><style>html,body{{height:100%;margin:0}}body{{display:grid;place-items:center;background:#f2f4f9;color:#1f2937;font:14px/1.6 system-ui,-apple-system,\"Segoe UI\",sans-serif}}main{{max-width:520px;padding:32px;text-align:center}}h1{{font-size:18px;margin:0 0 12px}}p{{margin:8px 0}}.hint{{color:#64748b}}.error{{color:#b91c1c;word-break:break-word}}</style></head><body><main><h1>正在准备会话界面</h1>{detail}</main></body></html>"
+        "<!doctype html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\"><meta http-equiv=\"refresh\" content=\"3\"><title>CookLLM · 正在准备会话界面</title><style>html,body{{height:100%;margin:0}}body{{display:grid;place-items:center;background:#f2f4f9;color:#1f2937;font:14px/1.6 system-ui,-apple-system,\"Segoe UI\",sans-serif}}main{{max-width:520px;padding:32px;text-align:center}}h1{{font-size:18px;margin:0 0 12px}}p{{margin:8px 0}}.hint{{color:#64748b}}.error{{color:#b91c1c;word-break:break-word}}html.dark body{{background:#0d0d0d;color:#e5e7eb}}html.dark .hint{{color:#9ca3af}}html.dark .error{{color:#f87171}}</style></head><body><main><h1>正在准备会话界面</h1>{detail}</main></body></html>"
     )
 }
 
@@ -830,8 +848,12 @@ mod tests {
         let html = b"<!doctype html><html><head><link rel=stylesheet href=a.css></head><body></body></html>".to_vec();
         let text = String::from_utf8(inject_theme_bootstrap(html)).unwrap();
         let head_end = text.find("</head>").unwrap();
-        let boot = text.find("mode-watcher-mode").unwrap();
+        let boot = text.find("LlamaUi.config").unwrap();
         let link = text.find("a.css").unwrap();
+        assert!(text.contains("mode-watcher-mode"), "旧版本回退键应保留");
+        assert!(text.contains("cookllm-theme"), "应支持 CookLLM 显式主题参数");
+        assert!(text.contains("history.replaceState"), "应从 /index.html 入口还原为根路径");
+        assert!(text.contains("caches.keys"), "应清理 Service Worker 旧缓存");
         assert!(boot < link && boot < head_end, "预置脚本应位于样式表之前");
     }
 
@@ -890,6 +912,12 @@ mod tests {
         assert!(body.contains("mode-watcher-mode"), "缺少主题预置脚本");
         assert!(body.contains("<style>html.dark,html.dark body{background-color:#0d0d0d"), "缺少深色首帧底色");
 
+        // iframe 入口绕开 Service Worker 预缓存的 "/"，同样注入主题脚本
+        let (head, body) = request("/index.html?cookllm-theme=dark");
+        assert!(head.starts_with("HTTP/1.1 200"), "index.html: {head}");
+        assert!(body.contains("cookllm-ui-test"));
+        assert!(body.contains("mode-watcher-mode"), "index.html 缺少主题预置脚本");
+
         let (head, body) = request("/_app/immutable/app.js");
         assert!(head.starts_with("HTTP/1.1 200"), "asset: {head}");
         assert!(head.contains("text/javascript"), "asset: {head}");
@@ -930,6 +958,12 @@ mod tests {
         let (head, body) = request("/");
         assert!(head.starts_with("HTTP/1.1 200"), "waiting: {head}");
         assert!(body.contains("正在准备会话界面"), "waiting body: {body}");
+        assert!(body.contains("mode-watcher-mode"), "waiting theme bootstrap: {body}");
+        assert!(body.contains("html.dark body{background:#0d0d0d;color:#e5e7eb}"), "waiting dark style: {body}");
+
+        let (head, body) = request("/index.html?cookllm-theme=dark");
+        assert!(head.starts_with("HTTP/1.1 200"), "waiting index.html: {head}");
+        assert!(body.contains("正在准备会话界面"), "waiting index.html body: {body}");
 
         let (head, _) = request("/_app/immutable/app.js");
         assert!(head.starts_with("HTTP/1.1 503"), "pending asset: {head}");

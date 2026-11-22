@@ -15,6 +15,7 @@ export default function Playground({
   onOpenWebUi,
   zenMode,
   onToggleZenMode,
+  theme,
 }: {
   visible: boolean;
   status: ServerStatus;
@@ -25,13 +26,16 @@ export default function Playground({
   onOpenWebUi: () => void;
   zenMode?: boolean;
   onToggleZenMode?: () => void;
+  theme: "dark" | "light";
 }) {
   const { t } = useI18n();
   /** 刷新内嵌 WebUI：key 变化时重建 iframe（服务重启后旧页面状态失效时用） */
   const [frameKey, setFrameKey] = useState(0);
   /** 已加载完成的 WebUI 标识：新文档加载前保留遮罩，避免官方界面首帧浅色一闪 */
   const [loadedFrame, setLoadedFrame] = useState("");
-  const frameId = `${webUiUrl}:${frameKey}:${status.startedAt ?? ""}`;
+  const frameId = `${webUiUrl}:${frameKey}:${status.startedAt ?? ""}:${theme}`;
+  /** 让内嵌 WebUI 跟随 CookLLM 主题，而不是它自己的“跟随系统”设置；绕开 Service Worker 预缓存的 "/" */
+  const frameUrl = `${webUiUrl}/index.html?cookllm-theme=${theme}`;
 
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   useEffect(() => {
@@ -108,7 +112,7 @@ export default function Playground({
           {status.running
             ? (
               <div className="native-frame-wrap">
-                <iframe ref={frameRef} key={frameId} src={webUiUrl} title="llama.cpp Web UI" allow="clipboard-read; clipboard-write" onLoad={() => setLoadedFrame(frameId)} />
+                <iframe ref={frameRef} key={frameId} src={frameUrl} title="llama.cpp Web UI" allow="clipboard-read; clipboard-write" onLoad={() => setLoadedFrame(frameId)} />
                 <div className={cn("native-frame-veil", loadedFrame === frameId && "ready")} aria-hidden="true" />
               </div>
             )
