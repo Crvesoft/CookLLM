@@ -2,6 +2,19 @@
 
 本文档是发布流程提取 Release Notes 的唯一数据源（`.github/workflows/release.yml` 会自动读取，请在每次发版前更新本文件）。
 
+## v0.4.9
+
+#### ⚡ 引擎与预设
+
+- **GGUF 预设**：采样参数新增 Top-K，Seed。
+- **参数修正**：适配新版参数格式 `--load-mode`，FA/Jinja，`draft-simple`。
+
+#### 🛠️ 体验修复
+
+- **功能栏与按钮**：中栏、功能栏配色对齐 llama.cpp 1.0 WebUI。
+- **启动闪烁**：深色首帧应用缓存主题，消除浅色闪烁。
+- **会话页白屏**：内嵌 WebUI 跟随应用主题，并绕开其 Service Worker 旧缓存。
+
 ## v0.4.8
 
 #### 🚀 功能新增
