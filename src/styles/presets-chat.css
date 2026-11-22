@@ -219,13 +219,15 @@
   height: 100%
 }
 
+/* 底色跟随 llama.cpp 1.0 WebUI（Llama Chat）的 --surface-page：
+   深色 neutral-925 #0d0d0d，浅色 neutral-25 #fbfbfb（见 components.css） */
 .chat-panel {
   flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: #090d12;
+  background: #0d0d0d;
 }
 
 /* 标题栏与内嵌 WebUI 之间不再加分隔线（原深色 border-bottom 在亮色下呈黑线） */
@@ -234,7 +236,7 @@
   align-items: center;
   justify-content: space-between;
   padding: 8px 14px;
-  background: #090d12;
+  background: #0d0d0d;
 }
 
 .playground-actions {

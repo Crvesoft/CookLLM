@@ -49,6 +49,19 @@ fn resolve_api_key(extra_args: &str, profile_key: Option<&str>) -> Option<String
     profile_key.map(str::trim).filter(|key| !key.is_empty()).map(str::to_string)
 }
 
+/// 把历史预设里的加载模式收敛到当前 llama.cpp 仅接受的枚举值：
+/// direct 是旧版 UI 对 dio 的叫法，ragged/row 从未被支持，统一退回 auto。
+fn normalized_load_mode(mode: &str) -> &'static str {
+    match mode.trim().to_lowercase().as_str() {
+        "none" => "none",
+        "mmap" => "mmap",
+        "mlock" => "mlock",
+        "mmap+mlock" => "mmap+mlock",
+        "dio" | "direct" => "dio",
+        _ => "auto",
+    }
+}
+
 /// 自动发现官方 device-profiles.json 并智能同步/补全硬件优化路由到隔离缓存中。
 /// 既保持了不同引擎路径之间的隔离防踩踏，又确保官方精心校准的 67 条 SM120/CUDA 优化内核路线（如 GDN 与 Attention 路由）100% 生效。
 fn sync_official_device_profile_routes(engine_path: &str, isolated_path: &std::path::Path, target_schema: i64) {
@@ -776,11 +789,22 @@ pub(crate) fn build_server_launch(app: &AppHandle, model_id: &str, profile_id: &
             .arg("-ub").arg(profile.ubatch_size.to_string())
             .arg("--cache-type-k").arg(&profile.cache_type_k)
             .arg("--cache-type-v").arg(&profile.cache_type_v)
-            .arg("--load-mode").arg(&profile.load_mode)
+            .arg("--load-mode").arg(normalized_load_mode(&profile.load_mode))
             .arg("--temp").arg(profile.temperature.to_string())
             .arg("--top-p").arg(profile.top_p.to_string())
-            .arg("--min-p").arg(profile.min_p.to_string())
-            .arg("--repeat-penalty").arg(profile.repeat_penalty.to_string());
+            .arg("--min-p").arg(profile.min_p.to_string());
+
+        // top-k 的 0 表示关闭采样截断；种子 -1 交给引擎随机，避免无意义地写死
+        if let Some(topk) = profile.top_k {
+            if !has_extra_arg("--top-k") {
+                command.arg("--top-k").arg(topk.to_string());
+            }
+        }
+        if let Some(seed) = profile.seed {
+            if seed >= 0 && !has_extra_arg("--seed") {
+                command.arg("--seed").arg(seed.to_string());
+            }
+        }
 
         if let Some(ref key) = profile.api_key {
             let trimmed = key.trim();
@@ -816,8 +840,9 @@ pub(crate) fn build_server_launch(app: &AppHandle, model_id: &str, profile_id: &
                 }
             }
         }
-        if profile.flash_attention {
-            command.arg("--flash-attn").arg("on");
+        // 新版默认 auto 已启用 FA，关闭时必须显式传 off 才真正生效
+        if !has_extra_arg("--flash-attn") && !has_extra_arg("-fa") {
+            command.arg("--flash-attn").arg(if profile.flash_attention { "on" } else { "off" });
         }
         if profile.ncmoe_layers > 0 {
             command.arg("-ncmoe").arg(profile.ncmoe_layers.to_string());
@@ -842,6 +867,10 @@ pub(crate) fn build_server_launch(app: &AppHandle, model_id: &str, profile_id: &
                         command.arg("-md").arg(draft);
                     }
                 }
+                // 新版 spec 类型默认为 none，只给 -md 不会启用草稿模型
+                if !has_extra_arg("--spec-type") {
+                    command.arg("--spec-type").arg("draft-simple");
+                }
                 if !has_extra_arg("--spec-draft-n-max") {
                     command.arg("--spec-draft-n-max").arg(profile.spec_draft_n_max.to_string());
                 }
@@ -856,8 +885,9 @@ pub(crate) fn build_server_launch(app: &AppHandle, model_id: &str, profile_id: &
             }
             _ => {}
         }
-        if profile.jinja {
-            command.arg("--jinja");
+        // 新版默认启用 jinja，关闭时必须显式传 --no-jinja 才真正生效
+        if !has_extra_arg("--jinja") && !has_extra_arg("--no-jinja") {
+            command.arg(if profile.jinja { "--jinja" } else { "--no-jinja" });
         }
         if !extra_tokens.is_empty() {
             command.args(&extra_tokens);

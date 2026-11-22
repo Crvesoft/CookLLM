@@ -845,19 +845,21 @@
   background: #ffffff;
 }
 
-[data-theme="light"] .icon-button,
-[data-theme="light"] .ghost-icon,
 [data-theme="light"] .model-card,
 [data-theme="light"] .profile-card,
 [data-theme="light"] .settings-card,
-[data-theme="light"] .chat-panel,
-[data-theme="light"] .chat-header,
 [data-theme="light"] .request-panel,
 [data-theme="light"] .profile-editor,
 [data-theme="light"] .model-specs>div,
 [data-theme="light"] .profile-preview,
 [data-theme="light"] .profile-stat-grid div {
   background: #ffffff;
+}
+
+/* 会话中栏跟随 WebUI 的浅色页面底色（neutral-25），与 iframe 内无缝衔接 */
+[data-theme="light"] .chat-panel,
+[data-theme="light"] .chat-header {
+  background: #fbfbfb;
 }
 
 [data-theme="light"] .profile-select select,
@@ -878,27 +880,29 @@
   border-color: #d3dbe6;
 }
 
-[data-theme="light"] .icon-button,
-[data-theme="light"] .ghost-icon,
 [data-theme="light"] .model-card,
 [data-theme="light"] .profile-card,
 [data-theme="light"] .settings-card,
-[data-theme="light"] .chat-panel,
-[data-theme="light"] .request-panel,
-[data-theme="light"] .profile-editor,
-[data-theme="light"] .model-specs>div,
-[data-theme="light"] .profile-preview,
-[data-theme="light"] .profile-stat-grid div [data-theme="light"] .icon-button,
-[data-theme="light"] .ghost-icon,
-[data-theme="light"] .model-card,
-[data-theme="light"] .profile-card,
-[data-theme="light"] .settings-card,
-[data-theme="light"] .chat-panel,
 [data-theme="light"] .profile-editor,
 [data-theme="light"] .model-specs>div,
 [data-theme="light"] .profile-preview,
 [data-theme="light"] .profile-stat-grid div {
   background: #ffffff;
+}
+
+/* 纯图标按钮：无边框幽灵态，悬停铺一层浅灰底（与引擎中心图标按钮一致） */
+[data-theme="light"] .icon-button,
+[data-theme="light"] .ghost-icon {
+  background: transparent;
+  color: #94a3b8;
+  border-color: transparent;
+}
+
+[data-theme="light"] .icon-button:hover,
+[data-theme="light"] .ghost-icon:hover {
+  color: #475569;
+  background: #f1f5f9;
+  border-color: transparent;
 }
 
 /* 搜索框（模型仓库页）：Fluent 亮色——微灰底 + 浅边框，聚焦白底 + 紫色发光；kbd 低对比不抢眼 */

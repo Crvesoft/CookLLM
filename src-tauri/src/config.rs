@@ -116,8 +116,6 @@ pub(crate) struct Profile {
     pub(crate) top_p: f64,
     #[serde(default = "default_min_p")]
     pub(crate) min_p: f64,
-    #[serde(default = "default_repeat_penalty")]
-    pub(crate) repeat_penalty: f64,
     #[serde(default)]
     pub(crate) extra_args: String,
     /// 访问 API Key（留空则不开启鉴权，传递给 --api-key）
@@ -193,10 +191,10 @@ pub(crate) struct Profile {
     /// 思考 token 计入输出上限，服务端默认 8192 会截断 xhigh 长思考；NInfer 官方模板即为 0）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) default_max_tokens: Option<u32>,
-    /// ninfer 专属：top-k 采样（--top-k N，0..20；NInfer 官方模板为 20）
+    /// top-k 采样（--top-k N；NInfer 官方模板为 20，llama.cpp 为 40，0 = 关闭）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) top_k: Option<u32>,
-    /// ninfer 专属：采样随机种子（--seed N；NInfer 官方模板为 42，保证测试可复现）
+    /// 采样随机种子（--seed N；-1 表示每次随机）
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) seed: Option<i64>,
     /// ninfer 专属：CUDA Graph 驱动状态预留显存（--cuda-graph-allowance-mib MiB；NInfer 官方模板为 72）
@@ -265,7 +263,6 @@ fn default_flash_attention() -> bool { true }
 fn default_temperature() -> f64 { 0.7 }
 fn default_top_p() -> f64 { 0.9 }
 fn default_min_p() -> f64 { 0.05 }
-fn default_repeat_penalty() -> f64 { 1.1 }
 fn default_accent() -> String { "violet".into() }
 fn default_parallel() -> u32 { 1 }
 fn default_ubatch_size() -> u32 { 256 }
@@ -466,7 +463,6 @@ impl Default for AppConfig {
                 temperature: 0.7,
                 top_p: 0.9,
                 min_p: 0.05,
-                repeat_penalty: 1.1,
                 extra_args: String::new(),
                 api_key: None,
                 mmproj_path: None,

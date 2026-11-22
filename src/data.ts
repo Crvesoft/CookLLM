@@ -399,9 +399,9 @@ export function mergeImportedConfig(
   };
 }
 export const DEFAULT_PROFILES: Profile[] = [
-  { id: "balanced", name: "均衡模式", description: "日常对话与编码的推荐配置", host: "0.0.0.0", port: 9931, gpuLayers: 35, contextSize: 8192, threads: 8, parallel: 1, batchSize: 512, ubatchSize: 256, flashAttention: true, ncmoeLayers: 0, mtp: false, mtpDraftPath: undefined, specDraftNMax: 3, specType: "none", cacheTypeK: "f32", cacheTypeV: "f32", jinja: true, reasoning: "auto", reasoningEffort: "auto", reasoningBudget: -1, noMmprojOffload: false, loadMode: "mmap", temperature: 0.7, topP: 0.9, minP: 0.05, repeatPenalty: 1.1, extraArgs: "", kvmemBudget: 36864, kvmemGenReserve: 16384 },
-  { id: "deep-thought", name: "深度思考", description: "长上下文与稳定输出，适合复杂推理", host: "0.0.0.0", port: 9931, gpuLayers: 48, contextSize: 32768, threads: 10, parallel: 1, batchSize: 512, ubatchSize: 256, flashAttention: true, ncmoeLayers: 0, mtp: false, mtpDraftPath: undefined, specDraftNMax: 3, specType: "none", cacheTypeK: "q8_0", cacheTypeV: "q8_0", jinja: true, reasoning: "on", reasoningEffort: "high", reasoningBudget: -1, noMmprojOffload: false, loadMode: "mmap", temperature: 0.55, topP: 0.92, minP: 0.03, repeatPenalty: 1.08, extraArgs: "", kvmemBudget: 36864, kvmemGenReserve: 16384 },
-  { id: "low-memory", name: "低显存", description: "保守卸载与小批次，降低资源占用", host: "0.0.0.0", port: 9931, gpuLayers: 12, contextSize: 4096, threads: 6, parallel: 1, batchSize: 128, ubatchSize: 128, flashAttention: true, ncmoeLayers: 0, mtp: false, mtpDraftPath: undefined, specDraftNMax: 3, specType: "none", cacheTypeK: "f16", cacheTypeV: "f16", jinja: false, reasoning: "auto", reasoningEffort: "auto", reasoningBudget: -1, noMmprojOffload: false, loadMode: "mmap", temperature: 0.75, topP: 0.9, minP: 0.05, repeatPenalty: 1.12, extraArgs: "", kvmemBudget: 36864, kvmemGenReserve: 16384 },
+  { id: "balanced", name: "均衡模式", description: "日常对话与编码的推荐配置", host: "0.0.0.0", port: 9931, gpuLayers: 35, contextSize: 8192, threads: 8, parallel: 1, batchSize: 512, ubatchSize: 256, flashAttention: true, ncmoeLayers: 0, mtp: false, mtpDraftPath: undefined, specDraftNMax: 3, specType: "none", cacheTypeK: "f32", cacheTypeV: "f32", jinja: true, reasoning: "auto", reasoningEffort: "auto", reasoningBudget: -1, noMmprojOffload: false, loadMode: "mmap", temperature: 0.7, topP: 0.9, minP: 0.05, topK: 40, seed: -1, extraArgs: "", kvmemBudget: 36864, kvmemGenReserve: 16384 },
+  { id: "deep-thought", name: "深度思考", description: "长上下文与稳定输出，适合复杂推理", host: "0.0.0.0", port: 9931, gpuLayers: 48, contextSize: 32768, threads: 10, parallel: 1, batchSize: 512, ubatchSize: 256, flashAttention: true, ncmoeLayers: 0, mtp: false, mtpDraftPath: undefined, specDraftNMax: 3, specType: "none", cacheTypeK: "q8_0", cacheTypeV: "q8_0", jinja: true, reasoning: "on", reasoningEffort: "high", reasoningBudget: -1, noMmprojOffload: false, loadMode: "mmap", temperature: 0.55, topP: 0.92, minP: 0.03, topK: 40, seed: -1, extraArgs: "", kvmemBudget: 36864, kvmemGenReserve: 16384 },
+  { id: "low-memory", name: "低显存", description: "保守卸载与小批次，降低资源占用", host: "0.0.0.0", port: 9931, gpuLayers: 12, contextSize: 4096, threads: 6, parallel: 1, batchSize: 128, ubatchSize: 128, flashAttention: true, ncmoeLayers: 0, mtp: false, mtpDraftPath: undefined, specDraftNMax: 3, specType: "none", cacheTypeK: "f16", cacheTypeV: "f16", jinja: false, reasoning: "auto", reasoningEffort: "auto", reasoningBudget: -1, noMmprojOffload: false, loadMode: "mmap", temperature: 0.75, topP: 0.9, minP: 0.05, topK: 40, seed: -1, extraArgs: "", kvmemBudget: 36864, kvmemGenReserve: 16384 },
 ];
 
 /** ninfer 模型导入时的默认预设：对齐 NInfer 官方 64K 纯文本推荐配置，仅此一个 */
@@ -434,7 +434,6 @@ export const DEFAULT_NINFER_PROFILES: Profile[] = [
     temperature: 1.0,
     topP: 0.95,
     minP: 0.0,
-    repeatPenalty: 1.0,
     extraArgs: "",
     kvDtype: "k8v4",
     prefillChunk: 256,

@@ -89,7 +89,6 @@ export interface Profile {
   temperature: number;
   topP: number;
   minP: number;
-  repeatPenalty: number;
   extraArgs: string;
   /** 访问 API Key（留空则不开启鉴权，传递给 --api-key） */
   apiKey?: string;
@@ -140,9 +139,9 @@ export interface Profile {
   kvmemSessions?: number;
   /** ninfer 专属：默认输出 Token 上限（--default-max-tokens；0 = 不限制生成到上下文耗尽，未设置按引擎默认 8192） */
   defaultMaxTokens?: number;
-  /** ninfer 专属：top-k 采样（--top-k，0..20） */
+  /** top-k 采样（--top-k；NInfer 0..20，llama.cpp 0 = 关闭） */
   topK?: number;
-  /** ninfer 专属：采样随机种子（--seed） */
+  /** 采样随机种子（--seed；-1 表示每次随机） */
   seed?: number;
   /** ninfer 专属：CUDA Graph 驱动状态预留显存（--cuda-graph-allowance-mib MiB） */
   cudaGraphAllowanceMib?: number;

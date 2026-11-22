@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { DEMO_CONFIG, DEFAULT_PROFILES, DEFAULT_NINFER_PROFILES, migrateConfig, resolvePerfConfig, uid } from "./data";
 import { setLocale, useI18n } from "./i18n";
 import { checkOrphanServer, exportConfigBackup, getServerStatus, isTauri, loadConfig, onConfigUpdated, onShortcutOpenEngineHub, onLlamaLog, onServerLifecycle, onTrayViewError, onWebUiState, openExternal, pathsExist, pickConfigBackup, pickDirectory, retryWebUi as requestWebUiRetry, saveConfig, setWindowTheme, type ConfigBackupEnvelope, type WebUiStatePayload } from "./tauri";
-import { PAGE_LOG_MODE, type AppConfig, type Page, type ServerStatus } from "./types";
+import { PAGE_LOG_MODE, type AppConfig, type Page, type ServerStatus, type Theme } from "./types";
 import { EMPTY_STATUS, cn, modelTitle, parseTokPerSec, isKeyboardEventMatchingShortcut, DEFAULT_SHORTCUTS } from "./utils";
 import LogDock from "./components/LogDock";
 import { LogsPage, Sidebar, Toast, Topbar } from "./components/Layout";
@@ -34,6 +34,20 @@ import { useToast } from "./hooks/useToast";
  * 兜底日志文案随引擎版本变化的场景（如 Ninfer 未输出可匹配的监听行）。
  */
 const READY_LOG_RE = /is listening|listening on/i;
+
+/** 首帧主题：复用 index.html 启动脚本写入的本地缓存，避免深色配置异步读盘完成前先闪成浅色 */
+function readCachedTheme(): Theme {
+  try {
+    const direct = localStorage.getItem("cookllm.theme");
+    if (direct === "dark" || direct === "light") return direct;
+    const raw = localStorage.getItem("cookllm-config");
+    if (raw) {
+      const cached = (JSON.parse(raw) as { theme?: string } | null)?.theme;
+      if (cached === "dark" || cached === "light") return cached;
+    }
+  } catch {}
+  return "light";
+}
 
 export default function App() {
   /** 界面语言：文案经 t() 查当前 locale；locale 由 AppConfig.language 驱动（adopt/persist 时同步） */
@@ -221,15 +235,16 @@ export default function App() {
   /** 服务停止后 WebUI 状态失效，避免下次启动前残留上一次的失败横幅 */
   useEffect(() => { if (!status.running) setWebUiState(null); }, [status.running]);
 
-  /** 默认亮色主题；同时把标题栏同步给系统（Windows：暗色=黑，亮色=默认） */
-  const theme = config.theme || "light";
+  /** 配置未就绪时沿用缓存的启动主题，读盘完成后再以配置文件为准 */
+  const theme = config.theme || readCachedTheme();
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
-    try {
-      localStorage.setItem("cookllm.theme", theme);
-    } catch {}
+    /** configReady 之前不写缓存：此时的 theme 只是回退值，避免浅色默认覆盖已缓存的深色 */
+    if (configReady) {
+      try { localStorage.setItem("cookllm.theme", theme); } catch {}
+    }
     void setWindowTheme(theme === "dark");
-  }, [theme]);
+  }, [theme, configReady]);
 
   /** 首帧完成渲染后显示窗口：使用双 requestAnimationFrame 确保 React DOM 真正绘制到 WebView2 缓冲区后再显示窗口，彻底消除黑屏与闪烁 */
   useLayoutEffect(() => {

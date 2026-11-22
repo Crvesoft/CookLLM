@@ -425,10 +425,11 @@ select option:checked {
 .danger-icon {
   display: grid;
   place-items: center;
-  border: 1px solid #333333;
+  border: 1px solid transparent;
   border-radius: 8px;
-  background: #1e1e1e;
-  color: #838da0;
+  background: transparent;
+  color: #7d8798;
+  transition: background .15s ease, color .15s ease, border-color .15s ease;
 }
 
 .icon-button {
@@ -438,31 +439,9 @@ select option:checked {
 
 .icon-button:hover,
 .ghost-icon:hover {
-  color: #ffd9ad;
-  border-color: #584129;
-}
-
-.icon-button,
-.ghost-icon,
-.danger-icon .icon-button,
-.ghost-icon {
-  display: grid;
-  place-items: center;
-  border: 1px solid #333333;
-  border-radius: 8px;
-  background: #1e1e1e;
-  color: #838da0;
-}
-
-.icon-button {
-  width: 34px;
-  height: 34px;
-}
-
-.icon-button:hover,
-.ghost-icon:hover {
-  color: #ffd9ad;
-  border-color: #584129;
+  color: #e7e9ee;
+  background: rgba(255, 255, 255, .06);
+  border-color: transparent;
 }
 
 .avatar {

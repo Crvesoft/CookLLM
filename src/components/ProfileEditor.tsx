@@ -6,7 +6,14 @@ import type { LlamaEngine, ModelAsset, Profile } from "../types";
 import { fileName, cn, copyTextToClipboard, detectEngineType } from "../utils";
 
 const CACHE_TYPES = ["f32", "f16", "q8_0", "q4_0"];
-const LOAD_MODES = ["mmap", "mlock", "ragged", "row", "direct"];
+const LOAD_MODES = ["auto", "none", "mmap", "mlock", "mmap+mlock", "dio"];
+/** 旧版下拉曾提供的值：direct 对应新版 dio，ragged/row 从未被 llama.cpp 支持 */
+const LEGACY_LOAD_MODES: Record<string, string> = { direct: "dio", ragged: "auto", row: "auto" };
+const normalizeLoadMode = (mode?: string) => {
+  const value = (mode ?? "").trim().toLowerCase();
+  const mapped = LEGACY_LOAD_MODES[value] ?? value;
+  return LOAD_MODES.includes(mapped) ? mapped : "auto";
+};
 const REASONING_MODES = ["off", "auto", "on"];
 const REASONING_EFFORTS = ["auto", "low", "medium", "high", "xhigh"];
 
@@ -118,6 +125,7 @@ export default function ProfileEditor({
   const { t } = useI18n();
   const [draft, setDraft] = useState(() => ({
     ...profile,
+    loadMode: normalizeLoadMode(profile.loadMode),
     visionResidency: profile.visionCpu ? "cpu" : profile.visionResidency,
   }));
   const [isDefault, setIsDefault] = useState(profile.id === defaultProfileId);
@@ -324,7 +332,16 @@ export default function ProfileEditor({
                 <input type="number" value={draft.port} onChange={number("port")} />
               </Field>
 
-              {/* 第二行：说明、推理引擎、API Key 开关（各占 2 列） */}
+              {/* 第二行：API Key 开关、说明、推理引擎（各占 2 列） */}
+              <Field label={t("f.apiKey")} hint="--api-key" colSpan={2}>
+                <ToggleBox
+                  icon={<KeyRound size={14} />}
+                  checked={apiKeyEnabled}
+                  onChange={toggleApiKey}
+                  activeLabel={t("f.toggleEnabled")}
+                  inactiveLabel={t("f.toggleDisabled")}
+                />
+              </Field>
               <Field label={t("f.description")} hint={t("f.descriptionHint")} colSpan={2}>
                 <input value={draft.description} onChange={(e) => update("description", e.target.value)} />
               </Field>
@@ -357,16 +374,7 @@ export default function ProfileEditor({
                 </select>
               </Field>
 
-              {/* API Key 开关：与上一行同排；开启后密钥内容独占下方整行 */}
-              <Field label={t("f.apiKey")} hint="--api-key" colSpan={2}>
-                <ToggleBox
-                  icon={<KeyRound size={14} />}
-                  checked={apiKeyEnabled}
-                  onChange={toggleApiKey}
-                  activeLabel={t("f.toggleEnabled")}
-                  inactiveLabel={t("f.toggleDisabled")}
-                />
-              </Field>
+              {/* API Key 开启后密钥内容独占下方整行 */}
               {apiKeyEnabled && (
                 <Field label={t("f.apiKeyContent")} hint="--api-key" colSpan={6}>
                   <div className="api-key-input-wrap">
@@ -376,36 +384,38 @@ export default function ProfileEditor({
                       onChange={(e) => update("apiKey", e.target.value ? e.target.value.trim() : undefined)}
                       placeholder={t("f.apiKeyPlaceholder")}
                     />
-                    <button
-                      type="button"
-                      className="ghost-icon compact"
-                      onClick={() => setShowApiKey(!showApiKey)}
-                      title={showApiKey ? t("hide") : t("show")}
-                    >
-                      {showApiKey ? <EyeOff size={15} /> : <Eye size={15} />}
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost-icon compact"
-                      onClick={generateRandomApiKey}
-                      title={t("f.generateApiKey")}
-                    >
-                      <KeyRound size={15} />
-                    </button>
-                    {draft.apiKey && (
+                    <div className="api-key-actions">
                       <button
                         type="button"
                         className="ghost-icon compact"
-                        onClick={async () => {
-                          await copyTextToClipboard(draft.apiKey || "");
-                          setCopiedApiKey(true);
-                          setTimeout(() => setCopiedApiKey(false), 2000);
-                        }}
-                        title={t("copy")}
+                        onClick={() => setShowApiKey(!showApiKey)}
+                        title={showApiKey ? t("hide") : t("show")}
                       >
-                        {copiedApiKey ? <Check size={14} className="copied" /> : <Copy size={14} />}
+                        {showApiKey ? <EyeOff size={15} /> : <Eye size={15} />}
                       </button>
-                    )}
+                      <button
+                        type="button"
+                        className="ghost-icon compact"
+                        onClick={generateRandomApiKey}
+                        title={t("f.generateApiKey")}
+                      >
+                        <KeyRound size={15} />
+                      </button>
+                      {draft.apiKey && (
+                        <button
+                          type="button"
+                          className="ghost-icon compact"
+                          onClick={async () => {
+                            await copyTextToClipboard(draft.apiKey || "");
+                            setCopiedApiKey(true);
+                            setTimeout(() => setCopiedApiKey(false), 2000);
+                          }}
+                          title={t("copy")}
+                        >
+                          {copiedApiKey ? <Check size={14} className="copied" /> : <Copy size={14} />}
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </Field>
               )}
@@ -683,7 +693,7 @@ export default function ProfileEditor({
           </div>
           <div className="form-section">
             <div className="form-section-title"><span>05</span><div><h3>{t("ed.s5Title")}</h3><p>{t("ed.s5Desc")}</p></div></div>
-            <div className={cn("form-grid", isNinfer ? "profile-sampling-grid-ninfer" : "four")}>
+            <div className="form-grid profile-sampling-grid">
               <Field label="Temperature" hint={isNinfer ? "--temperature" : "--temp"}>
                 <input type="number" min="0" max="2" step="0.05" value={draft.temperature} onChange={number("temperature")} />
               </Field>
@@ -728,9 +738,38 @@ export default function ProfileEditor({
                   </Field>
                 </>
               ) : (
-                <Field label="Repeat Penalty" hint="--repeat-penalty">
-                  <input type="number" min="0" step="0.01" value={draft.repeatPenalty} onChange={number("repeatPenalty")} />
-                </Field>
+                <>
+                  <Field label="Top-K" hint="--top-k">
+                    <input
+                      type="number"
+                      min="0"
+                      step="1"
+                      value={draft.topK ?? ""}
+                      placeholder="40"
+                      onChange={(e) => {
+                        const val = e.target.value.trim();
+                        if (val === "" || val === "-") { update("topK", undefined); return; }
+                        const num = Number(val);
+                        if (Number.isFinite(num)) update("topK", Math.max(0, Math.trunc(num)));
+                      }}
+                    />
+                  </Field>
+                  <Field label="Seed" hint="--seed">
+                    <input
+                      type="number"
+                      min="-1"
+                      step="1"
+                      value={draft.seed ?? ""}
+                      placeholder="-1"
+                      onChange={(e) => {
+                        const val = e.target.value.trim();
+                        if (val === "" || val === "-") { update("seed", undefined); return; }
+                        const num = Number(val);
+                        if (Number.isFinite(num)) update("seed", Math.max(-1, Math.trunc(num)));
+                      }}
+                    />
+                  </Field>
+                </>
               )}
             </div>
           </div>

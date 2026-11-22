@@ -127,10 +127,6 @@
   color: #6b7384;
 }
 
-[data-theme="light"] .import-modal .ghost-icon {
-  border-color: #e5e9f1;
-}
-
 [data-theme="light"] .form-section-title h3 {
   color: #1f2937;
 }
@@ -1208,7 +1204,6 @@ body.reordering .profile-card:hover {
 
 [data-theme="light"] .confirm-modal .ghost-icon {
   color: #6b7384;
-  border-color: #e5e9f1;
 }
 
 [data-theme="light"] .confirm-modal>header {
@@ -1319,20 +1314,25 @@ body.reordering .profile-card:hover {
 
 .api-key-input-wrap input {
   width: 100%;
-  padding-right: 96px;
+  padding-right: 102px;
   font-family: var(--font-mono, monospace);
   font-size: 12px;
 }
 
-.api-key-input-wrap .ghost-icon {
-  position: relative;
-  margin-left: -28px;
-  z-index: 2;
-  cursor: pointer;
+.api-key-actions {
+  position: absolute;
+  top: 50%;
+  right: 5px;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
 }
 
-.api-key-input-wrap .ghost-icon + .ghost-icon {
-  margin-left: 2px;
+.api-key-actions .ghost-icon {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
 }
 
 /* API 接口弹窗 (LanAccessModal) */

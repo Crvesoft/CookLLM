@@ -980,6 +980,12 @@
   margin-left: auto;
 }
 
+/* 关闭按钮与收藏按钮同尺寸，避免一大一小 */
+.profile-header-actions>.ghost-icon:not(.header-favorite-btn) {
+  width: 32px;
+  height: 32px;
+}
+
 .editor-body {
   flex: 1 1 auto;
   min-height: 0;
@@ -1091,12 +1097,12 @@
   grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
-.form-grid.profile-sampling-grid-ninfer {
+.form-grid.profile-sampling-grid {
   grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 @media (max-width: 640px) {
-  .form-grid.profile-sampling-grid-ninfer {
+  .form-grid.profile-sampling-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

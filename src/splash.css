@@ -27,14 +27,14 @@ html, body {
 
 @keyframes splash-spin { to { transform: rotate(360deg); } }
 
-/* 暗色主题启动屏 */
-[data-theme="dark"] html,
-[data-theme="dark"] body {
+/* 暗色主题启动屏（data-theme 挂在 <html> 上） */
+html[data-theme="dark"],
+html[data-theme="dark"] body {
   background: #181818;
   color-scheme: dark;
 }
 
-[data-theme="dark"] #splash {
+html[data-theme="dark"] #splash {
   background: radial-gradient(ellipse 60% 190px at 78% 270px, rgba(255, 107, 40, 0.045) 0%, rgba(255, 107, 40, 0.02) 50%, rgba(255, 107, 40, 0) 100%), #181818;
 }
 
