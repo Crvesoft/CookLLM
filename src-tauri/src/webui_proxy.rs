@@ -545,9 +545,11 @@ fn serve_ui(client: &mut TcpStream, root: &Path, target: &str, head_only: bool) 
         && !rel.contains(':')
         && rel.split('/').all(|segment| !segment.is_empty() && segment != "." && segment != "..");
     let file = safe.then(|| root.join(rel)).filter(|candidate| candidate.is_file());
+    let fallback_index = file.is_none() && safe && !has_extension(rel);
+    let is_index = fallback_index || rel.eq_ignore_ascii_case("index.html");
     let (body, content_type, cache) = match file {
         Some(file) => (fs::read(file)?, content_type_for(rel), cache_control_for(rel)),
-        None if safe && !has_extension(rel) => {
+        None if fallback_index => {
             let index = root.join("index.html");
             if !index.is_file() {
                 return write_status(client, 404, "not found");
@@ -556,6 +558,7 @@ fn serve_ui(client: &mut TcpStream, root: &Path, target: &str, head_only: bool) 
         }
         None => return write_status(client, 404, "not found"),
     };
+    let body = if is_index { inject_theme_bootstrap(body) } else { body };
     let head = format!(
         "HTTP/1.1 200 OK\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: {}\r\n\r\n",
         content_type,
@@ -567,6 +570,38 @@ fn serve_ui(client: &mut TcpStream, root: &Path, target: &str, head_only: bool) 
         client.write_all(&body)?;
     }
     client.flush()
+}
+
+/// 官方 WebUI 要等脚本启动后才给 <html> 加 dark 类，首帧会先按浅色绘制。
+/// 这里在样式表之前按前端同一规则（本地存储 → 系统偏好）提前落类并铺底色，
+/// 让深色主题下内嵌页面从第一帧起就是深色。
+fn inject_theme_bootstrap(html: Vec<u8>) -> Vec<u8> {
+    const BOOTSTRAP: &str = concat!(
+        "<script>(function(){try{",
+        "var m=localStorage.getItem(\"mode-watcher-mode\")||\"system\";",
+        "var d=m===\"dark\"||(m!==\"light\"&&window.matchMedia(\"(prefers-color-scheme: dark)\").matches);",
+        "document.documentElement.classList.toggle(\"dark\",d);",
+        "document.documentElement.style.colorScheme=d?\"dark\":\"light\";",
+        "}catch(e){}})();</script>",
+        "<style>html.dark,html.dark body{background-color:#0d0d0d;color-scheme:dark}",
+        "html:not(.dark),html:not(.dark) body{background-color:#fbfbfb;color-scheme:light}</style>"
+    );
+    let Ok(text) = std::str::from_utf8(&html) else {
+        return html;
+    };
+    let lower = text.to_ascii_lowercase();
+    let Some(start) = lower.find("<head>").or_else(|| lower.find("<head ")) else {
+        return html;
+    };
+    let Some(offset) = text[start..].find('>') else {
+        return html;
+    };
+    let insert_at = start + offset + 1;
+    let mut out = String::with_capacity(html.len() + BOOTSTRAP.len());
+    out.push_str(&text[..insert_at]);
+    out.push_str(BOOTSTRAP);
+    out.push_str(&text[insert_at..]);
+    out.into_bytes()
 }
 
 /// UI 尚未下载完成：页面路由返回可自动刷新的等待页，静态资源返回 503，避免把 HTML 当脚本加载。
@@ -791,11 +826,27 @@ mod tests {
     }
 
     #[test]
+    fn inject_theme_bootstrap_lands_inside_head() {
+        let html = b"<!doctype html><html><head><link rel=stylesheet href=a.css></head><body></body></html>".to_vec();
+        let text = String::from_utf8(inject_theme_bootstrap(html)).unwrap();
+        let head_end = text.find("</head>").unwrap();
+        let boot = text.find("mode-watcher-mode").unwrap();
+        let link = text.find("a.css").unwrap();
+        assert!(boot < link && boot < head_end, "预置脚本应位于样式表之前");
+    }
+
+    #[test]
+    fn inject_theme_bootstrap_keeps_fragment_without_head() {
+        let html = b"<title>fragment</title>".to_vec();
+        assert_eq!(inject_theme_bootstrap(html.clone()), html);
+    }
+
+    #[test]
     fn proxy_serves_bundled_ui_and_forwards_api() {
         let root = std::env::temp_dir().join(format!("cookllm-webui-test-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("_app/immutable")).unwrap();
-        fs::write(root.join("index.html"), "<!doctype html><title>cookllm-ui-test</title>").unwrap();
+        fs::write(root.join("index.html"), "<!doctype html><html><head><title>cookllm-ui-test</title></head><body>ui</body></html>").unwrap();
         fs::write(root.join("_app/immutable/app.js"), "console.log(1)").unwrap();
 
         let engine = TcpListener::bind(("127.0.0.1", 0)).unwrap();
@@ -836,6 +887,8 @@ mod tests {
         assert!(head.starts_with("HTTP/1.1 200"), "index: {head}");
         assert!(head.contains("text/html"), "index: {head}");
         assert!(body.contains("cookllm-ui-test"));
+        assert!(body.contains("mode-watcher-mode"), "缺少主题预置脚本");
+        assert!(body.contains("<style>html.dark,html.dark body{background-color:#0d0d0d"), "缺少深色首帧底色");
 
         let (head, body) = request("/_app/immutable/app.js");
         assert!(head.starts_with("HTTP/1.1 200"), "asset: {head}");

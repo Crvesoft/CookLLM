@@ -95,7 +95,8 @@
   position: relative;
   flex: 1;
   min-height: 0;
-  overflow: hidden
+  overflow: hidden;
+  background: #0d0d0d;
 }
 
 .native-frame-wrap iframe {
@@ -103,6 +104,20 @@
   width: 100%;
   height: 100%;
   border: 0;
+}
+
+/* 官方 WebUI 要等脚本启动后才切深色，加载完成前用同色遮罩盖住首帧浅色 */
+.native-frame-veil {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  background: inherit;
+  pointer-events: none;
+  transition: opacity .18s ease;
+}
+
+.native-frame-veil.ready {
+  opacity: 0;
 }
 
 /* 会话界面资源失败横幅：离线等场景下提醒 API 仍可用，并提供手动重试 */
@@ -858,7 +873,8 @@
 
 /* 会话中栏跟随 WebUI 的浅色页面底色（neutral-25），与 iframe 内无缝衔接 */
 [data-theme="light"] .chat-panel,
-[data-theme="light"] .chat-header {
+[data-theme="light"] .chat-header,
+[data-theme="light"] .native-frame-wrap {
   background: #fbfbfb;
 }
 

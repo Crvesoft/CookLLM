@@ -29,6 +29,9 @@ export default function Playground({
   const { t } = useI18n();
   /** 刷新内嵌 WebUI：key 变化时重建 iframe（服务重启后旧页面状态失效时用） */
   const [frameKey, setFrameKey] = useState(0);
+  /** 已加载完成的 WebUI 标识：新文档加载前保留遮罩，避免官方界面首帧浅色一闪 */
+  const [loadedFrame, setLoadedFrame] = useState("");
+  const frameId = `${webUiUrl}:${frameKey}:${status.startedAt ?? ""}`;
 
   const frameRef = useRef<HTMLIFrameElement | null>(null);
   useEffect(() => {
@@ -105,7 +108,8 @@ export default function Playground({
           {status.running
             ? (
               <div className="native-frame-wrap">
-                <iframe ref={frameRef} key={`${webUiUrl}:${frameKey}`} src={webUiUrl} title="llama.cpp Web UI" allow="clipboard-read; clipboard-write" />
+                <iframe ref={frameRef} key={frameId} src={webUiUrl} title="llama.cpp Web UI" allow="clipboard-read; clipboard-write" onLoad={() => setLoadedFrame(frameId)} />
+                <div className={cn("native-frame-veil", loadedFrame === frameId && "ready")} aria-hidden="true" />
               </div>
             )
             : <div className="messages-empty"><Globe size={30} /><p>{t("pgNotRunning")}</p></div>}
