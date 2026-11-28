@@ -1041,9 +1041,9 @@
 .hf-format-pill {
   display: inline-flex;
   align-items: center;
-  font: 700 10px / 1 "JetBrains Mono", monospace;
-  padding: 2.5px 6px;
-  border-radius: 5px;
+  font: 700 9.5px / 1 "JetBrains Mono", monospace;
+  padding: 2px 5px;
+  border-radius: 4px;
   letter-spacing: .04em;
   text-transform: uppercase;
   flex: none;
@@ -1056,9 +1056,9 @@
 }
 
 .hf-format-pill.ninfer {
-  color: #e2e8f0;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: #7dd3c8;
+  background: rgba(95, 186, 196, 0.14);
+  border: 1px solid rgba(95, 186, 196, 0.32);
 }
 
 .hf-format-pill.safetensors {
@@ -1085,9 +1085,9 @@
 }
 
 .hf-file-format-badge.ninfer {
-  color: #e2e8f0;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #7dd3c8;
+  background: rgba(95, 186, 196, 0.14);
+  border: 1px solid rgba(95, 186, 196, 0.30);
 }
 
 .hf-file-format-badge.safetensors,

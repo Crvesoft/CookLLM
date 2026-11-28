@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, ArrowRightLeft, Check, Loader2, Maximize2, X } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
-import { DEMO_CONFIG, DEFAULT_PROFILES, DEFAULT_NINFER_PROFILES, migrateConfig, resolvePerfConfig, uid } from "./data";
+import { DEMO_CONFIG, DEFAULT_PROFILES, DEFAULT_NINFER_PROFILES, migrateConfig, resolvePerfConfig, resolveSidebarNav, uid } from "./data";
 import { setLocale, useI18n } from "./i18n";
 import { checkOrphanServer, exportConfigBackup, getServerStatus, isTauri, loadConfig, onConfigUpdated, onShortcutOpenEngineHub, onLlamaLog, onServerLifecycle, onTrayViewError, onWebUiState, openExternal, pathsExist, pickConfigBackup, pickDirectory, retryWebUi as requestWebUiRetry, saveConfig, setWindowTheme, type ConfigBackupEnvelope, type WebUiStatePayload } from "./tauri";
 import { PAGE_LOG_MODE, type AppConfig, type Page, type ServerStatus, type Theme } from "./types";
@@ -13,17 +14,20 @@ import ProfilesPage from "./components/ProfilesPage";
 import Playground from "./components/Playground";
 import SettingsPage from "./components/SettingsPage";
 import ExplorePage from "./components/ExplorePage";
+import LabPage from "./components/LabPage";
 import ProfileEditor from "./components/ProfileEditor";
 import AppUpdateDialog from "./components/AppUpdateDialog";
 import OrphanServerModal from "./components/OrphanServerModal";
 import EngineHubModal from "./components/EngineHubModal";
 import EngineModal from "./components/EngineModal";
 import BackupImportModal from "./components/BackupImportModal";
+import ConvertNinferModal from "./components/ConvertNinferModal";
 import { useAppUpdate } from "./hooks/useAppUpdate";
 import { useDownloads } from "./hooks/useDownloads";
 import { useEngines } from "./hooks/useEngines";
 import { useLogs } from "./hooks/useLogs";
 import { useModelLibrary } from "./hooks/useModelLibrary";
+import { useNinferConvert } from "./hooks/useNinferConvert";
 import { useServiceController } from "./hooks/useServiceController";
 import { useToast } from "./hooks/useToast";
 
@@ -70,6 +74,7 @@ export default function App() {
 
   /** 配置写盘唯一入口：先更新界面，再持久化；失败仅记日志，不打断当前交互 */
   const persist = async (next: AppConfig, message?: string) => {
+    configRef.current = next;
     setConfig(next);
     /** 语言随本次保存立即生效（值未变时为空操作） */
     setLocale(next.language ?? "zh");
@@ -81,10 +86,22 @@ export default function App() {
   const {
     query, setQuery, menuModelId, setMenuModelId, selectedProfiles, setSelectedProfiles,
     profileEditing, setProfileEditing, importOpen, setImportOpen, openImport, handleImportModels,
-    filteredModels, removeModel, reorderModels, removeMultipleModels,
+    filteredModels, addModelFromPaths, removeModel, reorderModels, removeMultipleModels,
     saveProfile, createProfiles, deleteProfile, reorderProfiles, deleteMultipleProfiles, duplicateProfile,
     setDefaultProfile, renameModel, updateModelTags, setDefaultModel,
   } = useModelLibrary({ config, configReady, status, persist, setToast, t });
+  const ninferConvert = useNinferConvert({
+    config,
+    getLatestConfig: () => configRef.current,
+    persist,
+    onSyncConfig: async () => {
+      const cfg = await loadConfig();
+      if (cfg) adopt(cfg);
+    },
+    addModelFromPaths,
+    setToast,
+    t,
+  });
   // ---- Dock 日志状态（除"日志"整页外的所有页面共用同一份展开/高度状态）----
   /** Dock 默认收起：只显示底部状态栏，主区空间最大 */
   const [logDockOpen, setLogDockOpen] = useState(false);
@@ -280,6 +297,28 @@ export default function App() {
     }
   }, [page, zenMode]);
 
+  const sidebarNav = useMemo(() => resolveSidebarNav(config), [config]);
+
+  // 菜单隐藏或关闭实验室开关时，自动切回「模型仓库」并按需收起转换弹窗
+  useEffect(() => {
+    if (!configReady) return;
+    if (sidebarNav.hidden.has(page)) {
+      setPage("models");
+    }
+    if (config.labEnabled === false && ninferConvert.targetModel && !ninferConvert.converting && !ninferConvert.downloadingBundle) {
+      ninferConvert.closeModal();
+    }
+  }, [
+    configReady,
+    config.labEnabled,
+    sidebarNav.hidden,
+    page,
+    ninferConvert.targetModel,
+    ninferConvert.converting,
+    ninferConvert.downloadingBundle,
+    ninferConvert.closeModal,
+  ]);
+
   // F11 快捷键切换会话沉浸模式（非会话页不拦截，且绝不占用/拦截 WebUI 设置等常用的 Esc 键）
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -400,7 +439,7 @@ export default function App() {
   const exploreProgress = exploreProgressBytes.total > 0 ? Math.min(100, Math.round((exploreProgressBytes.downloaded / exploreProgressBytes.total) * 100)) : 0;
 
   return <div className={cn("app-shell", sidebarCollapsed && "sidebar-collapsed", zenMode && "zen-mode")}>
-    <Sidebar page={page} onPage={setPage} downloadBadge={exploreBadge} badgeProgress={exploreActive > 0 ? exploreProgress : undefined} updateAvailable={appUpdate?.status === "available"} status={status} abnormal={serviceAbnormal} perfStats={perfStats} perfConfig={perfConfig} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed((value) => !value)} theme={theme} onToggleTheme={() => void persist({ ...config, theme: theme === "dark" ? "light" : "dark" })} />
+    <Sidebar page={page} onPage={setPage} downloadBadge={exploreBadge} badgeProgress={exploreActive > 0 ? exploreProgress : undefined} updateAvailable={appUpdate?.status === "available"} navOrder={sidebarNav.order} hiddenPages={sidebarNav.hidden} status={status} abnormal={serviceAbnormal} perfStats={perfStats} perfConfig={perfConfig} collapsed={sidebarCollapsed} onToggleCollapsed={() => setSidebarCollapsed((value) => !value)} theme={theme} onToggleTheme={() => void persist({ ...config, theme: theme === "dark" ? "light" : "dark" })} />
     <div className={cn("workspace", isDockPage && "dock-mode")}><Topbar page={page} status={status} abnormal={serviceAbnormal} busy={busy} serviceStarting={serviceStarting} onToggleService={status.running || serviceStarting ? handleStop : startQuick} models={config.models} modelId={quickModelId || config.preferredModelId || config.models[0]?.id || ""} onSelectModel={setQuickModelId} zenMode={zenMode} onToggleZenMode={() => setZenMode((v) => !v)} /><main className="main-content">
       {page === "models" && <ModelsPage config={config} models={filteredModels} status={status} selectedProfiles={selectedProfiles} busy={busy} serviceStarting={serviceStarting} startingModelId={startingModelId} query={query} onQuery={setQuery} onAddModel={openImport} onSelectProfile={(modelId, profileId) => setSelectedProfiles((previous) => ({ ...previous, [modelId]: profileId }))} onStart={handleStart} onStop={handleStop} onEditProfile={(model, profile) => setProfileEditing({ modelId: model.id, profile })} onAddProfile={(model) => { const isN = model.path.toLowerCase().endsWith(".ninfer"); const baseP = isN ? DEFAULT_NINFER_PROFILES[0] : DEFAULT_PROFILES[0]; setProfileEditing({ modelId: model.id, profile: { ...baseP, id: uid("profile"), name: t("newProfile") } }); }} onRenameModel={renameModel} onUpdateModelTags={updateModelTags} onSetDefaultModel={setDefaultModel} onOpenProfiles={() => setPage("profiles")} menuModelId={menuModelId} onMenuModel={setMenuModelId} onRemoveModel={removeModel} onReorderModel={reorderModels} onDeleteMultipleModels={removeMultipleModels} justImportedIds={justImportedIds} onToast={setToast} />}
       <ExplorePage visible={page === "explore"} config={config} onPersist={persist} onToast={setToast} onLog={appendLog} diskUsage={diskUsage} onPickModelsDir={pickModelsDirFlow} onDownload={handleModelDownload} activeDownloads={downloads} progressMap={modelProgress} onPauseTask={handlePauseTask} onResumeTasks={handleResumeTasks} onPauseTasks={handlePauseTasks} onClearDone={handleClearDone} onCancelTask={handleCancelTask} onDeleteTask={handleDeleteTask} onDeleteTasks={deleteTasksImpl} onRetry={handleRetry} onReveal={handleReveal} onGoSettings={() => setPage("settings")} />
@@ -421,8 +460,106 @@ export default function App() {
           onClear={clearLogs}
         />
       )}
+      {page === "lab" && config.labEnabled !== false && (
+        <LabPage
+          config={config}
+          converterStatus={ninferConvert.converterStatus}
+          remoteRelease={ninferConvert.remoteRelease}
+          checkingRelease={ninferConvert.checkingRelease}
+          downloadingBundle={ninferConvert.downloadingBundle}
+          downloadProgress={ninferConvert.downloadProgress}
+          bundleError={ninferConvert.bundleError}
+          activeTargetModel={ninferConvert.targetModel}
+          minimized={ninferConvert.minimized}
+          converting={ninferConvert.converting}
+          convertProgress={ninferConvert.convertProgress}
+          convertResult={ninferConvert.convertResult}
+          convertError={ninferConvert.convertError}
+          onRefreshConverterStatus={ninferConvert.refreshStatus}
+          onCheckRelease={ninferConvert.checkRelease}
+          onDownloadBundle={ninferConvert.installBundleFromGithub}
+          onCancelDownload={ninferConvert.cancelBundleDownload}
+          onImportBundleZip={ninferConvert.importBundleZip}
+          onPickBundleDir={ninferConvert.pickBundleDir}
+          onUninstallBundle={ninferConvert.uninstallBundle}
+          onSaveRepo={ninferConvert.saveConverterRepo}
+          onResetRepo={ninferConvert.resetConverterRepo}
+          onOpenConvert={(model) => void ninferConvert.openModal(model)}
+          onExpandConvert={ninferConvert.expandModal}
+          onCloseConvert={ninferConvert.closeModal}
+          onDeleteHistory={ninferConvert.deleteHistoryItem}
+          onClearHistory={ninferConvert.clearHistory}
+        />
+      )}
       <SettingsPage visible={page === "settings"} config={config} activeEngine={activeAppEngine} appUpdate={appUpdate} checkingUpdate={appUpdateChecking} onCheckUpdate={checkAppUpdate} onPersist={persist} onLog={appendLog} onOpenEngineHub={() => setEngineHubOpen(true)} onExportBackup={exportBackup} onImportBackup={importBackup} />
     </main>
+      {config.labEnabled !== false && ninferConvert.targetModel && ninferConvert.minimized && (
+        <div
+          className={cn(
+            "convert-minimized-bar",
+            ninferConvert.convertResult && "done",
+            ninferConvert.convertError && "err",
+          )}
+        >
+          {ninferConvert.converting && ninferConvert.convertProgress && (
+            <div
+              className="convert-minimized-progress"
+              style={{ width: `${Math.min(100, ninferConvert.convertProgress.percent)}%` }}
+            />
+          )}
+          <div className="convert-minimized-main">
+            <div className="convert-minimized-icon">
+              {ninferConvert.converting ? (
+                <Loader2 size={14} className="spin" />
+              ) : ninferConvert.convertResult ? (
+                <Check size={14} />
+              ) : ninferConvert.convertError ? (
+                <AlertTriangle size={14} />
+              ) : (
+                <ArrowRightLeft size={14} />
+              )}
+            </div>
+            <div className="convert-minimized-text">
+              <strong>
+                {ninferConvert.converting
+                  ? t("convert.minimizedConverting", { model: modelTitle(ninferConvert.targetModel) })
+                  : ninferConvert.convertResult
+                    ? t("convert.minimizedDone", { model: modelTitle(ninferConvert.targetModel) })
+                    : ninferConvert.convertError
+                      ? t("convert.minimizedFailed", { model: modelTitle(ninferConvert.targetModel) })
+                      : t("convert.minimizedReady", { model: modelTitle(ninferConvert.targetModel) })}
+              </strong>
+              <span style={{ fontVariantNumeric: "tabular-nums" }}>
+                {ninferConvert.converting
+                  ? `${ninferConvert.convertProgress?.percent ?? 0}% · ${ninferConvert.convertProgress?.message || t("convert.converting")}`
+                  : ninferConvert.convertResult
+                    ? ninferConvert.convertResult.outputPath
+                    : ninferConvert.convertError || t("convert.minimizeHint")}
+              </span>
+            </div>
+          </div>
+          <div className="convert-minimized-actions">
+            <button
+              type="button"
+              className="secondary-button compact"
+              onClick={ninferConvert.expandModal}
+            >
+              <Maximize2 size={12} />
+              {t("convert.expand")}
+            </button>
+            {!ninferConvert.converting && (
+              <button
+                type="button"
+                className="ghost-icon"
+                aria-label={t("ariaClose")}
+                onClick={ninferConvert.closeModal}
+              >
+                <X size={14} />
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       {/* Dock 日志参与布局（收起=底部状态栏 / 展开=可调高度面板），各页面共用同一份状态，不遮挡内容；仅"日志"整页除外 */}
       {isDockPage && (
         <LogDock
@@ -511,6 +648,41 @@ export default function App() {
         onClose={() => setBackupImportEnvelope(null)}
         checkPathsExist={pathsExist}
         onPickFolder={pickDirectory}
+      />
+    )}
+    {Boolean(config.labEnabled) && ninferConvert.targetModel && (
+      <ConvertNinferModal
+        model={ninferConvert.targetModel}
+        selectedProfileId={selectedProfiles[ninferConvert.targetModel.id]}
+        minimized={ninferConvert.minimized}
+        converterStatus={ninferConvert.converterStatus}
+        downloadingBundle={ninferConvert.downloadingBundle}
+        inspecting={ninferConvert.inspecting}
+        inspection={ninferConvert.inspection}
+        inspectError={ninferConvert.inspectError}
+        fetchingAux={ninferConvert.fetchingAux}
+        auxFetchResult={ninferConvert.auxFetchResult}
+        auxFetchError={ninferConvert.auxFetchError}
+        searchingAux={ninferConvert.searchingAux}
+        auxSearchResults={ninferConvert.auxSearchResults}
+        auxSearchError={ninferConvert.auxSearchError}
+        auxSearchQueried={ninferConvert.auxSearchQueried}
+        converting={ninferConvert.converting}
+        convertProgress={ninferConvert.convertProgress}
+        convertLogs={ninferConvert.convertLogs}
+        convertError={ninferConvert.convertError}
+        convertResult={ninferConvert.convertResult}
+        onMinimize={ninferConvert.minimizeModal}
+        onGoLabBundle={() => {
+          ninferConvert.minimizeModal();
+          setPage("lab");
+        }}
+        onClose={ninferConvert.closeModal}
+        onSearchAuxRepos={ninferConvert.searchAuxRepos}
+        onClearAuxSearch={ninferConvert.clearAuxSearch}
+        onFetchAux={ninferConvert.fetchAuxConfigs}
+        onStartConvert={ninferConvert.startConversion}
+        onCancelConvert={ninferConvert.cancelConversion}
       />
     )}
   </div>;

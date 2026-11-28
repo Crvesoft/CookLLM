@@ -16,6 +16,7 @@ use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutEvent, S
 
 mod app_update;
 mod config;
+mod convert_ninfer;
 mod downloads;
 mod engines;
 mod process;
@@ -912,6 +913,38 @@ fn extract_quant_from_name(name: &str) -> String {
     String::new()
 }
 
+/// 读取 .ninfer v3 容器头部 JSON（失败或非 .ninfer 容器返回 None）。
+pub(crate) fn read_ninfer_header_json(path: &str) -> Option<serde_json::Value> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = fs::File::open(path).ok()?;
+    let mut header = [0u8; 16];
+    file.read_exact(&mut header).ok()?;
+    if &header[0..6] != b"NINFER" {
+        return None;
+    }
+    let json_len = u64::from_le_bytes(header[8..16].try_into().unwrap_or([0; 8]));
+    if json_len == 0 || json_len > 16 * 1024 * 1024 {
+        return None;
+    }
+    file.seek(SeekFrom::Start(32)).ok()?;
+    let mut json_buf = vec![0u8; json_len as usize];
+    file.read_exact(&mut json_buf).ok()?;
+    let json_str = std::str::from_utf8(&json_buf).ok()?;
+    serde_json::from_str(json_str).ok()
+}
+
+/// 判断 .ninfer 容器头部是否包含指定组件（如 "mtp"）；非 .ninfer 文件或解析失败返回 None。
+pub(crate) fn ninfer_has_component(path: &str, component: &str) -> Option<bool> {
+    let value = read_ninfer_header_json(path)?;
+    Some(
+        value
+            .get("components")
+            .and_then(|c| c.as_object())
+            .map(|m| m.contains_key(component))
+            .unwrap_or(false),
+    )
+}
+
 /// 读取 .ninfer 单容器头部元数据：
 /// 偏移 0..7 为魔数 NINFER\0\x03，偏移 8..15 为 64 位 JSON 长度，偏移 32 起为 UTF-8 JSON 架构定义。
 fn read_ninfer_meta(path: &str) -> GgufMeta {
@@ -927,33 +960,7 @@ fn read_ninfer_meta(path: &str) -> GgufMeta {
         context_length: 0,
         weights_bytes: 0,
     };
-    let mut file = match fs::File::open(path) {
-        Ok(file) => file,
-        Err(_) => return empty,
-    };
-    use std::io::{Read, Seek, SeekFrom};
-    let mut header = [0u8; 16];
-    if file.read_exact(&mut header).is_err() {
-        return empty;
-    }
-    if &header[0..6] != b"NINFER" {
-        return empty;
-    }
-    let json_len = u64::from_le_bytes(header[8..16].try_into().unwrap_or([0; 8]));
-    if json_len == 0 || json_len > 16 * 1024 * 1024 {
-        return empty;
-    }
-    if file.seek(SeekFrom::Start(32)).is_err() {
-        return empty;
-    }
-    let mut json_buf = vec![0u8; json_len as usize];
-    if file.read_exact(&mut json_buf).is_err() {
-        return empty;
-    }
-    let Ok(json_str) = std::str::from_utf8(&json_buf) else {
-        return empty;
-    };
-    let Ok(value): Result<serde_json::Value, _> = serde_json::from_str(json_str) else {
+    let Some(value) = read_ninfer_header_json(path) else {
         return empty;
     };
 
@@ -1116,7 +1123,7 @@ fn inspect_gguf(path: String) -> GgufMeta {
 #[cfg(test)]
 mod gguf_meta_tests {
     use crate::engines::detect_engine_type;
-    use super::{read_gguf_meta, read_ninfer_meta, parse_split_filename};
+    use super::{ninfer_has_component, parse_split_filename, read_gguf_meta, read_ninfer_meta};
 
     #[test]
     fn parse_split_filename_identifies_splits() {
@@ -1192,10 +1199,13 @@ mod gguf_meta_tests {
         buf.extend_from_slice(json_bytes);
         std::fs::write(&path, buf).unwrap();
 
-        let meta = read_ninfer_meta(&path.to_string_lossy());
+        let path_str = path.to_string_lossy().to_string();
+        let meta = read_ninfer_meta(&path_str);
         assert_eq!(meta.architecture, "Qwen3.5");
         assert_eq!(meta.parameters, "27B");
         assert_eq!(meta.quantization, "IQ3_S");
+        assert_eq!(ninfer_has_component(&path_str, "text"), Some(true));
+        assert_eq!(ninfer_has_component(&path_str, "mtp"), Some(false));
         let _ = std::fs::remove_file(path);
     }
 
@@ -2541,7 +2551,7 @@ pub fn run() {
             react_mounted_ms: None,
             reported: false,
         })))
-        .invoke_handler(tauri::generate_handler![downloads::hf_trending, downloads::hf_search, downloads::hf_list_files, downloads::hf_whoami, downloads::hf_avatar, downloads::hf_download, downloads::hf_download_url, downloads::hf_cancel_download, downloads::hf_pause_download, downloads::hf_clear_download, downloads::ms_trending, downloads::ms_search, downloads::ms_list_files, downloads::ms_avatar, downloads::ms_download, downloads::remove_local_file, downloads::reveal_in_folder, downloads::get_models_dir, downloads::pick_models_dir, config::load_config, config::save_config, process::start_server, process::stop_server, process::retry_webui, process::get_server_status, process::check_orphan_server, process::kill_orphan_server, system::get_performance_stats, system::get_gpu_info, system::hardware_info, system::detect_hardware, system::test_proxy_connection, system::get_system_proxy, system::get_local_ip, engines::get_llamacpp_status, engines::check_llamacpp_update, engines::download_llamacpp, engines::cancel_llamacpp_update, app_update::check_app_update, app_update::download_app_update, app_update::cancel_app_update, app_update::install_app_update, process::read_ninfer_request_log, pick_files, pick_folder, engines::pick_server_dir, engines::pick_server_file, expand_paths, inspect_gguf, find_split_group, paths_exist, config::export_config_backup, config::pick_config_backup, pick_directory, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing, set_shortcuts_recording_mode])
+        .invoke_handler(tauri::generate_handler![downloads::hf_trending, downloads::hf_search, downloads::hf_list_files, downloads::hf_whoami, downloads::hf_avatar, downloads::hf_download, downloads::hf_download_url, downloads::hf_cancel_download, downloads::hf_pause_download, downloads::hf_clear_download, downloads::ms_trending, downloads::ms_search, downloads::ms_list_files, downloads::ms_avatar, downloads::ms_download, downloads::remove_local_file, downloads::reveal_in_folder, downloads::get_models_dir, downloads::pick_models_dir, config::load_config, config::save_config, process::start_server, process::stop_server, process::retry_webui, process::get_server_status, process::check_orphan_server, process::kill_orphan_server, system::get_performance_stats, system::get_gpu_info, system::hardware_info, system::detect_hardware, system::test_proxy_connection, system::get_system_proxy, system::get_local_ip, engines::get_llamacpp_status, engines::check_llamacpp_update, engines::download_llamacpp, engines::cancel_llamacpp_update, app_update::check_app_update, app_update::download_app_update, app_update::cancel_app_update, app_update::install_app_update, process::read_ninfer_request_log, pick_files, pick_folder, engines::pick_server_dir, engines::pick_server_file, expand_paths, inspect_gguf, find_split_group, paths_exist, config::export_config_backup, config::pick_config_backup, pick_directory, open_url, open_config_dir, clipboard_write, set_window_theme, show_main_window, report_startup_timing, set_shortcuts_recording_mode, convert_ninfer::get_ninfer_converter_status, convert_ninfer::check_ninfer_converter_release, convert_ninfer::download_ninfer_converter, convert_ninfer::cancel_ninfer_converter_download, convert_ninfer::import_ninfer_converter_zip, convert_ninfer::pick_ninfer_converter_dir, convert_ninfer::remove_ninfer_converter, convert_ninfer::inspect_gguf_for_ninfer, convert_ninfer::fetch_hf_aux_configs, convert_ninfer::pick_ninfer_output_file, convert_ninfer::convert_gguf_to_ninfer, convert_ninfer::cancel_ninfer_convert, config::delete_registered_model_files])
         .setup(|app| {
             app.handle().plugin(
                 tauri_plugin_global_shortcut::Builder::new()

@@ -23,7 +23,7 @@ pub(crate) struct ServerStatus {
     running: bool,
     pid: Option<u32>,
     pub(crate) port: Option<u16>,
-    model_id: Option<String>,
+    pub(crate) model_id: Option<String>,
     model_name: Option<String>,
     profile_id: Option<String>,
     profile_name: Option<String>,

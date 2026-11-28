@@ -472,6 +472,63 @@ body.reordering .profile-card:hover {
   background: #1f1f1f;
 }
 
+.confirm-delete-files-opt {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid #383838;
+  border-radius: 9px;
+  background: #1b1b1b;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  cursor: pointer;
+  transition: border-color .15s ease, background .15s ease;
+}
+
+.confirm-delete-files-opt:hover {
+  border-color: #4d4d4d;
+}
+
+.confirm-delete-files-opt.checked {
+  border-color: rgba(240, 100, 141, .45);
+  background: rgba(240, 100, 141, .08);
+}
+
+.confirm-delete-files-opt input {
+  margin-top: 3px;
+  accent-color: var(--rose);
+  flex: none;
+}
+
+.confirm-delete-files-opt>div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.confirm-delete-files-opt strong {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.confirm-delete-files-opt span {
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+
+.confirm-delete-files-warn {
+  margin: 10px 0 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(240, 100, 141, .38);
+  background: rgba(240, 100, 141, .1);
+  color: #f48baa;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .confirm-modal.backup-import-modal {
   width: min(600px, 94vw);
   max-height: min(90vh, 760px);
@@ -1222,6 +1279,34 @@ body.reordering .profile-card:hover {
 [data-theme="light"] .confirm-modal>footer {
   border-top-color: #e9edf3;
   background: #f6f8fb;
+}
+
+[data-theme="light"] .confirm-delete-files-opt {
+  border-color: #dde3ec;
+  background: #f8fafc;
+}
+
+[data-theme="light"] .confirm-delete-files-opt:hover {
+  border-color: #c8d0de;
+}
+
+[data-theme="light"] .confirm-delete-files-opt.checked {
+  border-color: #efb8c9;
+  background: #fdf2f6;
+}
+
+[data-theme="light"] .confirm-delete-files-opt strong {
+  color: #1f2937;
+}
+
+[data-theme="light"] .confirm-delete-files-opt span {
+  color: #5b6474;
+}
+
+[data-theme="light"] .confirm-delete-files-warn {
+  border-color: #f2c6d4;
+  background: #fbe9ef;
+  color: #b4234e;
 }
 
 [data-theme="light"] .pick-model-list button,

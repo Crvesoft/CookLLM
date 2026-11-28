@@ -233,7 +233,6 @@ export default function MiniStatusBar({ status, abnormal, perfStats, perfConfig,
       ) : (<>
         <div className="ms-caption-row">
           <span className="ms-caption">{t("perfCaption")}</span>
-          <span className="ms-cadence">2s</span>
         </div>
         {blocks.map((block, index) => {
           if (block.kind === "compact") {

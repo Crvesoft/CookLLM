@@ -1,0 +1,668 @@
+/* ==================== 实验室（可选功能工作区，舒展低噪卡片布局） ==================== */
+.lab-shell {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.lab-topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.lab-topbar-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.lab-topbar-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.lab-topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lab-topbar-actions .primary-button,
+.lab-topbar-actions .secondary-button {
+  height: 34px;
+  padding: 0 14px;
+  border-radius: 8px;
+  font-size: 13px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.lab-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.lab-card {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+/* 1. 精简整合包环境条 + 展开式维护面板 */
+.lab-bundle-card {
+  padding: 14px 18px;
+  gap: 12px;
+}
+
+.lab-bundle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+}
+
+.lab-bundle-lead {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  flex: 1;
+}
+
+.lab-bundle-icon {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--panel-3);
+  border: 1px solid var(--line-soft);
+  color: var(--muted);
+}
+
+.lab-bundle-icon.ready {
+  background: var(--conv-accent-soft);
+  border-color: var(--conv-accent-line);
+  color: var(--conv-accent);
+}
+
+.lab-bundle-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.lab-bundle-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.lab-bundle-title-row h3 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.lab-bundle-sub {
+  margin: 0;
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.lab-bundle-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex: none;
+}
+
+.lab-bundle-actions .secondary-button.active {
+  border-color: var(--conv-accent-line);
+  background: var(--conv-accent-soft);
+  color: var(--conv-accent);
+}
+
+.lab-bundle-drawer {
+  padding-top: 14px;
+  border-top: 1px solid var(--line-soft);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.lab-bundle-drawer-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+
+.lab-bundle-setting {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line-soft);
+  border-radius: 9px;
+  background: var(--panel-2);
+  min-width: 0;
+}
+
+.lab-bundle-setting.full {
+  grid-column: 1 / -1;
+}
+
+.lab-setting-label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.lab-setting-label {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.lab-setting-hint {
+  font-size: 11.5px;
+  color: var(--muted-2);
+}
+
+.lab-setting-value-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.lab-setting-mono {
+  font: 12px "JetBrains Mono", Consolas, monospace;
+  color: var(--text-soft);
+}
+
+.lab-setting-mono.truncate {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lab-setting-muted {
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+.lab-repo-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.lab-repo-controls>.convert-input {
+  flex: 1;
+  min-width: 220px;
+}
+
+.lab-bundle-drawer-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* 2. 标题栏 & 列表工具栏 */
+.lab-card-title {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.lab-title-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.lab-card-title h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.lab-title-count {
+  font-size: 11.5px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line-soft);
+  background: var(--panel-2);
+  color: var(--muted);
+}
+
+.lab-card-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.lab-history-entry-btn {
+  gap: 6px;
+}
+
+.lab-history-badge {
+  display: inline-grid;
+  place-items: center;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 5px;
+  border-radius: 999px;
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 600;
+  background: var(--conv-accent-soft);
+  color: var(--conv-accent);
+}
+
+.lab-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.lab-count-tag {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* 3. 模型列表行：清爽两行 + 适当留白 */
+.lab-model-list,
+.lab-history-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.lab-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 13px 16px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--panel-2);
+  transition: border-color .15s ease, background .15s ease;
+}
+
+.lab-model-row:hover {
+  border-color: var(--line-strong);
+}
+
+.lab-model-main {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  min-width: 0;
+  flex: 1;
+}
+
+.lab-model-info {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.lab-model-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.lab-model-title strong {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.lab-model-meta {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 0;
+}
+
+.lab-model-meta>span {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.lab-model-short-path {
+  min-width: 0;
+  flex: 1;
+  font: 11.5px "JetBrains Mono", Consolas, monospace;
+  color: var(--muted-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block !important;
+}
+
+.lab-convert-btn {
+  flex: none;
+}
+
+.lab-vision-chip,
+.lab-converted-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 0;
+  background: rgba(57, 217, 138, .12);
+  color: var(--green);
+}
+
+.lab-converted-chip {
+  cursor: pointer;
+}
+
+.lab-converted-chip:hover {
+  filter: brightness(1.08);
+}
+
+.lab-converted-chip.past {
+  background: var(--panel-3);
+  border: 1px solid var(--line-soft);
+  color: var(--muted);
+}
+
+/* 4. 转换记录列表 */
+.lab-history-row {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 13px 16px;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: var(--panel-2);
+}
+
+.lab-history-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.lab-history-title {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.lab-history-title strong {
+  font-size: 13.5px;
+  color: var(--text);
+}
+
+.lab-history-meta-text {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.lab-history-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+}
+
+.lab-history-time {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-right: 2px;
+}
+
+.lab-history-path-summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font: 11.5px "JetBrains Mono", Consolas, monospace;
+  color: var(--muted);
+}
+
+.lab-history-arrow {
+  color: var(--muted-2);
+}
+
+.lab-history-missing {
+  font-family: inherit;
+  font-style: normal;
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+/* 5. 后台任务条 & 紧凑按钮 */
+.lab-active-task-card {
+  border: 1px solid var(--conv-accent-line);
+  border-radius: 12px;
+  background: var(--panel);
+  padding: 13px 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.lab-active-task-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.lab-active-task-info {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  flex: 1;
+}
+
+.lab-active-task-info>svg {
+  flex: none;
+  color: var(--conv-accent);
+}
+
+.lab-active-task-text {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.lab-active-task-text strong {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.lab-active-task-text span {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.lab-card .secondary-button.compact,
+.lab-card .primary-button.compact {
+  height: 30px;
+  padding: 0 11px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+
+.lab-card .primary-button.compact {
+  font-weight: 600;
+}
+
+.lab-empty {
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+  padding: 28px 16px;
+  text-align: center;
+  color: var(--muted);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.lab-empty p {
+  margin: 0;
+  font-size: 13px;
+}
+
+.lab-beta-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--conv-accent-line);
+  background: var(--conv-accent-soft);
+  color: var(--text-soft);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+.lab-beta-banner>svg {
+  flex: none;
+  color: var(--conv-accent);
+}
+
+.lab-beta-banner p {
+  margin: 0;
+}
+
+.lab-compat-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--line-soft);
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.lab-compat-banner>svg {
+  flex: none;
+  margin-top: 2px;
+  color: var(--conv-accent);
+}
+
+/* 亮色主题适配 */
+[data-theme="light"] .lab-card,
+[data-theme="light"] .lab-active-task-card {
+  border-color: #e4e8f0;
+  background: #ffffff;
+}
+
+[data-theme="light"] .lab-active-task-card {
+  border-color: var(--conv-accent-line);
+}
+
+[data-theme="light"] .lab-bundle-setting,
+[data-theme="light"] .lab-model-row,
+[data-theme="light"] .lab-history-row {
+  background: #f8fafc;
+  border-color: #e4e8f0;
+}
+
+[data-theme="light"] .lab-model-row:hover {
+  border-color: #cfd6e3;
+}
+
+[data-theme="light"] .lab-vision-chip,
+[data-theme="light"] .lab-converted-chip {
+  background: #e9fbf2;
+  color: #0e8a4d;
+}
+
+[data-theme="light"] .lab-converted-chip.past {
+  background: #f1f4f9;
+  border-color: #dde3ec;
+  color: #5b6474;
+}
+
+@media (max-width: 720px) {
+  .lab-bundle-drawer-grid {
+    grid-template-columns: 1fr;
+  }
+}

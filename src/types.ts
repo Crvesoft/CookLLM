@@ -1,4 +1,4 @@
-export type Page = "models" | "explore" | "playground" | "profiles" | "settings" | "logs";
+export type Page = "models" | "explore" | "playground" | "profiles" | "lab" | "settings" | "logs";
 
 /** 界面主题 */
 export type Theme = "dark" | "light";
@@ -22,6 +22,7 @@ export const PAGE_LOG_MODE: Record<Page, LogMode> = {
 
   playground: "dock", // 会话：Dock 日志（收起为底部状态栏，展开后 WebUI 自适应缩小）
   logs: "page", // 左菜单"日志"页：整页全屏视图，保持默认全屏显示
+  lab: "dock", // 实验室：Dock 日志（与会话页统一）
   settings: "dock", // 设置：Dock 日志（与会话页统一）
 };
 
@@ -243,6 +244,18 @@ export interface AppConfig {
   llamaCudaVersion?: string;
   /** 全局快捷键自定义配置 */
   shortcuts?: ShortcutsConfig;
+  /** NInfer 转换器独立整合包 GitHub 仓库（owner/repo） */
+  ninferConverterRepo?: string;
+  /** 自定义本地 NInfer 转换器目录；缺省为应用数据目录下的 ninfer_converter */
+  ninferConverterDir?: string;
+  /** 是否开启实验室功能与左侧「实验室」菜单（默认关闭） */
+  labEnabled?: boolean;
+  /** 左侧菜单栏自定义顺序（不含固定置底的 settings） */
+  sidebarNavOrder?: Page[];
+  /** 左侧菜单栏已隐藏项（仅 explore / playground / logs / lab 允许隐藏；lab 仍以 labEnabled 为准） */
+  sidebarHiddenPages?: Page[];
+  /** NInfer 模型转换历史记录（按时间倒序保留最近记录） */
+  ninferConvertHistory?: NinferConvertHistoryItem[];
 }
 
 export type ShortcutActionKey = "toggleWindow" | "startServer" | "stopServer" | "switchEngine";
@@ -490,6 +503,128 @@ export interface ActiveDownload {
   url?: string;
   /** 任务所属社区源（hf: HuggingFace，ms: ModelScope） */
   source?: CommunitySource;
+}
+
+/* ---------------- GGUF → NInfer 转换 ---------------- */
+
+export interface NinferConverterStatus {
+  installed: boolean;
+  ready: boolean;
+  installDir: string;
+  repo: string;
+  localVersion?: string | null;
+  upstreamCommit?: string | null;
+  pythonPath?: string | null;
+  issues: string[];
+}
+
+export interface NinferConverterRelease {
+  tag: string;
+  repo: string;
+  releaseUrl: string;
+  releaseNotes?: string | null;
+  assetName?: string | null;
+  assetUrl?: string | null;
+  assetSize?: number | null;
+  assetSha256?: string | null;
+  upToDate: boolean;
+}
+
+export interface NinferConverterDownloadProgress {
+  phase: "download" | "extract" | "install" | "done" | string;
+  percent: number;
+  downloaded: number;
+  total: number;
+  speedBps: number;
+  message: string;
+}
+
+export interface NinferConvertInspection {
+  compatible: boolean;
+  blockReason?: string | null;
+  warnings: string[];
+  architecture: string;
+  parameters: string;
+  hiddenSize: number;
+  intermediateSize: number;
+  blockCount: number;
+  attentionHeads: number;
+  kvHeads: number;
+  headDim: number;
+  keyHeads: number;
+  valueHeads: number;
+  vocabSize: number;
+  hasMtp: boolean;
+  hasChatTemplate: boolean;
+  hasTokenizerKv: boolean;
+  recommendedHfRepo?: string | null;
+  splitInfo?: {
+    prefix: string;
+    total: number;
+    found: number;
+    primaryPath: string;
+    parts: string[];
+    missingParts: number[];
+    totalBytes: number;
+  } | null;
+  unsupportedTensors: string[];
+  tensorCount: number;
+}
+
+export interface NinferAuxConfigFetchResult {
+  dir: string;
+  repo: string;
+  source: "hf" | "ms" | string;
+  files: string[];
+  missingRequired: string[];
+}
+
+export interface NinferConvertOptions {
+  ggufPath: string;
+  outputPath: string;
+  instanceName?: string;
+  auxDir?: string;
+  autoReconstruct: boolean;
+  includeMtp: boolean;
+  visionPath?: string;
+  dflash2Path?: string;
+  chatTemplatePath?: string;
+  proposal: boolean;
+  recipe?: string;
+}
+
+export interface NinferConvertProgress {
+  phase: "prepare" | "convert" | "finalize" | "done" | string;
+  percent: number;
+  current: number;
+  total: number;
+  message: string;
+}
+
+export interface NinferConvertLogEvent {
+  stream: "stdout" | "stderr" | string;
+  line: string;
+}
+
+export interface NinferConvertResult {
+  outputPath: string;
+  sizeBytes: number;
+  parts: string[];
+}
+
+export interface NinferConvertHistoryItem {
+  id: string;
+  sourcePath: string;
+  sourceName: string;
+  outputPath: string;
+  sizeBytes?: number;
+  status: "success" | "failed";
+  includeMtp?: boolean;
+  visionPath?: string;
+  recipe?: string;
+  error?: string;
+  durationSec?: number;
+  createdAt: number;
 }
 
 

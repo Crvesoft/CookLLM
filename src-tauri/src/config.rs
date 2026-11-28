@@ -1,16 +1,17 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{Mutex, OnceLock},
     time::SystemTime,
 };
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Manager, State};
 use tauri_plugin_dialog::DialogExt;
 
+use crate::process::ProcessState;
 use crate::system::get_installed_cuda_version;
-use crate::{now_ms, refresh_tray_menu, sync_global_shortcuts};
+use crate::{find_split_group_impl, now_ms, refresh_tray_menu, sync_global_shortcuts};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -359,6 +360,53 @@ pub(crate) struct AppConfig {
     /// 全局快捷键自定义配置
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) shortcuts: Option<ShortcutsConfig>,
+    /// NInfer 转换器独立整合包 GitHub 仓库（owner/repo）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) ninfer_converter_repo: Option<String>,
+    /// 自定义本地 NInfer 转换器目录；缺省为应用数据目录下的 ninfer_converter
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) ninfer_converter_dir: Option<String>,
+    /// 是否开启实验室功能与左侧「实验室」菜单（默认关闭）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) lab_enabled: Option<bool>,
+    /// 左侧菜单栏自定义顺序（不含固定置底的 settings）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sidebar_nav_order: Option<Vec<String>>,
+    /// 左侧菜单栏已隐藏项（仅允许 explore / playground / logs / lab）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) sidebar_hidden_pages: Option<Vec<String>>,
+    /// NInfer 转换历史记录
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) ninfer_convert_history: Vec<NinferConvertHistoryItem>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct NinferConvertHistoryItem {
+    #[serde(default)]
+    pub(crate) id: String,
+    #[serde(default)]
+    pub(crate) source_path: String,
+    #[serde(default)]
+    pub(crate) source_name: String,
+    #[serde(default)]
+    pub(crate) output_path: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) size_bytes: Option<u64>,
+    #[serde(default)]
+    pub(crate) status: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) include_mtp: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) vision_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) recipe: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) duration_sec: Option<u64>,
+    #[serde(default)]
+    pub(crate) created_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -529,6 +577,12 @@ impl Default for AppConfig {
             llama_backend: None,
             llama_cuda_version: None,
             shortcuts: Some(ShortcutsConfig::default()),
+            ninfer_converter_repo: None,
+            ninfer_converter_dir: None,
+            lab_enabled: Some(true),
+            sidebar_nav_order: None,
+            sidebar_hidden_pages: None,
+            ninfer_convert_history: Vec::new(),
         }
     }
 }
@@ -692,4 +746,302 @@ pub(crate) fn pick_config_backup(app: AppHandle) -> Result<Option<ConfigBackupEn
         exported_at,
         config,
     }))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DeleteModelFilesResult {
+    pub(crate) deleted_paths: Vec<String>,
+    pub(crate) deleted_bytes: u64,
+}
+
+fn normalize_model_path_key(path: &Path) -> String {
+    let resolved = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let raw = resolved.to_string_lossy();
+    #[cfg(target_os = "windows")]
+    {
+        raw.trim_start_matches("\\\\?\\").to_lowercase()
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        raw.into_owned()
+    }
+}
+
+fn is_allowed_model_disk_file(path: &Path) -> bool {
+    let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
+        return false;
+    };
+    let lower = name.to_ascii_lowercase();
+    lower.ends_with(".gguf")
+        || lower.ends_with(".ninfer")
+        || lower.contains(".ninfer.part-")
+        || lower.ends_with(".ninfer.conversion.json")
+}
+
+/// 解析待彻底删除模型在磁盘上关联的真实模型文件集合（自动纳入分卷 GGUF / 分卷 .ninfer，
+/// 并跳过仍被其他未移除模型引用的路径，同时限定扩展名为受控模型文件）。
+pub(crate) fn collect_registered_model_delete_targets(
+    config: &AppConfig,
+    model_ids: &[String],
+) -> Vec<PathBuf> {
+    let id_set: HashSet<&str> = model_ids.iter().map(String::as_str).collect();
+    if id_set.is_empty() {
+        return Vec::new();
+    }
+
+    let mut protected_keys = HashSet::new();
+    for model in &config.models {
+        if id_set.contains(model.id.as_str()) {
+            continue;
+        }
+        let primary = Path::new(model.path.trim());
+        if !model.path.trim().is_empty() {
+            protected_keys.insert(normalize_model_path_key(primary));
+        }
+        if let Some(split) = &model.split_info {
+            for part in &split.parts {
+                if !part.trim().is_empty() {
+                    protected_keys.insert(normalize_model_path_key(Path::new(part.trim())));
+                }
+            }
+        }
+    }
+
+    let mut seen_keys = HashSet::new();
+    let mut targets = Vec::new();
+    let mut push_candidate = |p: PathBuf| {
+        if p.as_os_str().is_empty() || !is_allowed_model_disk_file(&p) {
+            return;
+        }
+        let key = normalize_model_path_key(&p);
+        if protected_keys.contains(&key) || !seen_keys.insert(key) {
+            return;
+        }
+        targets.push(p);
+    };
+
+    for model in &config.models {
+        if !id_set.contains(model.id.as_str()) {
+            continue;
+        }
+        let trimmed = model.path.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let primary = PathBuf::from(trimmed);
+        let lower_primary = trimmed.to_ascii_lowercase();
+
+        push_candidate(primary.clone());
+
+        if let Some(split) = &model.split_info {
+            for part in &split.parts {
+                let pt = part.trim();
+                if !pt.is_empty() {
+                    push_candidate(PathBuf::from(pt));
+                }
+            }
+        }
+
+        if lower_primary.ends_with(".gguf") {
+            if let Some(group) = find_split_group_impl(&primary) {
+                for part in group.parts {
+                    push_candidate(PathBuf::from(part));
+                }
+            }
+        } else if lower_primary.ends_with(".ninfer") {
+            if let (Some(parent), Some(fname)) = (primary.parent(), primary.file_name().and_then(|s| s.to_str())) {
+                let prefix = format!("{fname}.part-");
+                if let Ok(entries) = fs::read_dir(parent) {
+                    for entry in entries.flatten() {
+                        let p = entry.path();
+                        if p.is_file() {
+                            if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
+                                if name.starts_with(&prefix) {
+                                    push_candidate(p);
+                                }
+                            }
+                        }
+                    }
+                }
+                let sidecar = PathBuf::from(format!("{}.conversion.json", primary.to_string_lossy()));
+                if sidecar.is_file() {
+                    push_candidate(sidecar);
+                }
+            }
+        }
+    }
+
+    targets
+}
+
+/// 彻底删除已登记模型的磁盘文件（仅允许删除当前配置中已注册的模型主体及其分卷文件，
+/// 运行中的模型会被拦截；未传入或磁盘已缺失的文件自动跳过）。
+#[tauri::command]
+pub(crate) fn delete_registered_model_files(
+    app: AppHandle,
+    state: State<'_, ProcessState>,
+    model_ids: Vec<String>,
+) -> Result<DeleteModelFilesResult, String> {
+    if model_ids.is_empty() {
+        return Ok(DeleteModelFilesResult {
+            deleted_paths: Vec::new(),
+            deleted_bytes: 0,
+        });
+    }
+
+    if let Ok(guard) = state.0.lock() {
+        if let Some(proc) = guard.as_ref() {
+            if let Some(running_id) = proc.status.model_id.as_deref() {
+                if model_ids.iter().any(|id| id == running_id) {
+                    return Err("目标模型正在运行中，请先停止服务后再删除文件".into());
+                }
+            }
+        }
+    }
+
+    let config = read_config(&app)?;
+    let targets = collect_registered_model_delete_targets(&config, &model_ids);
+    let mut deleted_paths = Vec::new();
+    let mut deleted_bytes = 0u64;
+
+    for target in targets {
+        if !target.exists() {
+            continue;
+        }
+        if !target.is_file() {
+            continue;
+        }
+        let bytes = fs::metadata(&target).map(|m| m.len()).unwrap_or(0);
+        fs::remove_file(&target)
+            .map_err(|error| format!("删除模型文件失败（{}）：{}", target.display(), error))?;
+        deleted_bytes = deleted_bytes.saturating_add(bytes);
+        deleted_paths.push(target.to_string_lossy().to_string());
+    }
+
+    Ok(DeleteModelFilesResult {
+        deleted_paths,
+        deleted_bytes,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_model(id: &str, path: &str, parts: Vec<String>) -> ModelAsset {
+        ModelAsset {
+            id: id.into(),
+            name: id.into(),
+            display_name: None,
+            path: path.into(),
+            size_bytes: 0,
+            architecture: String::new(),
+            quantization: String::new(),
+            parameters: String::new(),
+            profiles: Vec::new(),
+            profile_ids: Vec::new(),
+            default_profile_id: None,
+            accent: "violet".into(),
+            tags: Vec::new(),
+            metadata_source: None,
+            split_info: if parts.is_empty() {
+                None
+            } else {
+                Some(ModelSplitInfo {
+                    total: parts.len() as u32,
+                    found: parts.len() as u32,
+                    parts,
+                    missing_parts: Vec::new(),
+                })
+            },
+        }
+    }
+
+    fn empty_config(models: Vec<ModelAsset>) -> AppConfig {
+        AppConfig {
+            server_path: String::new(),
+            active_engine_id: None,
+            engines: Vec::new(),
+            models,
+            profiles: Vec::new(),
+            theme: None,
+            custom_tags: Vec::new(),
+            language: None,
+            perf_monitor_enabled: None,
+            gpu_monitor_enabled: None,
+            monitor_cpu_enabled: None,
+            monitor_memory_enabled: None,
+            gpu_temp_enabled: None,
+            vram_monitor_enabled: None,
+            power_monitor_enabled: None,
+            perf_item_order: None,
+            perf_item_styles: None,
+            perf_presets: Vec::new(),
+            explore_sidebar_collapsed: None,
+            hf_token: None,
+            hf_token_user: None,
+            preferred_model_id: None,
+            preferred_profile_id: None,
+            network: None,
+            llamacpp_dir: None,
+            models_dir: None,
+            auto_update_enabled: None,
+            minimize_to_tray_on_close: None,
+            llama_backend: None,
+            llama_cuda_version: None,
+            shortcuts: None,
+            ninfer_converter_repo: None,
+            ninfer_converter_dir: None,
+            lab_enabled: Some(true),
+            sidebar_nav_order: None,
+            sidebar_hidden_pages: None,
+            ninfer_convert_history: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn collect_delete_targets_includes_splits_and_ninfer_companions_and_guards_shared() {
+        let dir = std::env::temp_dir().join(format!("cookllm-del-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+
+        let part1 = dir.join("m-00001-of-00002.gguf");
+        let part2 = dir.join("m-00002-of-00002.gguf");
+        let shared = dir.join("shared.gguf");
+        let ninfer = dir.join("out.ninfer");
+        let ninfer_part = dir.join("out.ninfer.part-0001");
+        let ninfer_meta = dir.join("out.ninfer.conversion.json");
+        let other = dir.join("readme.txt");
+        for f in [&part1, &part2, &shared, &ninfer, &ninfer_part, &ninfer_meta, &other] {
+            fs::write(f, b"x").unwrap();
+        }
+
+        let m_split = sample_model(
+            "m1",
+            &part1.to_string_lossy(),
+            vec![part1.to_string_lossy().into(), part2.to_string_lossy().into()],
+        );
+        let m_ninfer = sample_model("m2", &ninfer.to_string_lossy(), Vec::new());
+        let m_dup_shared = sample_model("m3", &shared.to_string_lossy(), Vec::new());
+        let m_keep_shared = sample_model("m4", &shared.to_string_lossy(), Vec::new());
+        let m_non_model = sample_model("m5", &other.to_string_lossy(), Vec::new());
+
+        let cfg = empty_config(vec![m_split, m_ninfer, m_dup_shared, m_keep_shared, m_non_model]);
+        let targets = collect_registered_model_delete_targets(
+            &cfg,
+            &["m1".into(), "m2".into(), "m3".into(), "m5".into()],
+        );
+        let keys: HashSet<String> = targets.iter().map(|p| normalize_model_path_key(p)).collect();
+
+        assert!(keys.contains(&normalize_model_path_key(&part1)));
+        assert!(keys.contains(&normalize_model_path_key(&part2)));
+        assert!(keys.contains(&normalize_model_path_key(&ninfer)));
+        assert!(keys.contains(&normalize_model_path_key(&ninfer_part)));
+        assert!(keys.contains(&normalize_model_path_key(&ninfer_meta)));
+        assert!(!keys.contains(&normalize_model_path_key(&shared)), "kept model path must be protected");
+        assert!(!keys.contains(&normalize_model_path_key(&other)), "non-model extension must be rejected");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
 }

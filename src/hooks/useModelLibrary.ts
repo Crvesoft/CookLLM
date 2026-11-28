@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DEFAULT_NINFER_PROFILES, DEFAULT_PROFILES, uid } from "../data";
 import { buildAutoProfiles, nvfp4SupportedOf } from "../autoProfiles";
-import { findSplitGroup, getHardwareInfo, inspectGguf, splitInfoFromGroup } from "../tauri";
+import { deleteRegisteredModelFiles, findSplitGroup, getHardwareInfo, inspectGguf, splitInfoFromGroup } from "../tauri";
 import type { PickedFile } from "../tauri";
 import type { AppConfig, ModelAsset, Profile, ServerStatus } from "../types";
 import { ACCENTS, fileName, modelTitle, parseQuantization } from "../utils";
@@ -64,24 +64,45 @@ export function useModelLibrary({ config, configReady, status, persist, setToast
       : config.models;
   }, [config.models, query]);
 
-  const addModelFromPaths = async (paths: { path: string; sizeBytes: number }[]) => {
+  const addModelFromPaths = async (paths: { path: string; sizeBytes: number; name?: string }[]) => {
     if (!paths.length) return;
-    const existing = new Set(config.models.map((model) => model.path.toLowerCase()));
-    for (const m of config.models) {
+    const baseModels = configRef.current.models;
+    const existingByPath = new Map(baseModels.map((model) => [model.path.toLowerCase(), model]));
+    const existing = new Set(baseModels.map((model) => model.path.toLowerCase()));
+    for (const m of baseModels) {
       if (m.splitInfo?.parts) {
         for (const p of m.splitInfo.parts) {
           existing.add(p.toLowerCase());
         }
       }
     }
-    const fresh = paths.filter((item) => !existing.has(item.path.toLowerCase()));
-    if (!fresh.length) return setToast(t("toast.alreadyInLibrary"));
-    const [hardware] = await Promise.all([getHardwareInfo().catch(() => null)]);
+    const mergedById = new Map<string, ModelAsset>();
+    let hasSplitMerge = false;
+    const fresh: { path: string; sizeBytes: number; name?: string }[] = [];
+    for (const item of paths) {
+      const lower = item.path.toLowerCase();
+      const customName = item.name?.trim();
+      const matched = existingByPath.get(lower);
+      if (matched) {
+        if (customName || (item.sizeBytes > 0 && item.sizeBytes !== matched.sizeBytes)) {
+          mergedById.set(matched.id, {
+            ...matched,
+            name: customName || matched.name,
+            displayName: customName ? undefined : matched.displayName,
+            sizeBytes: item.sizeBytes > 0 ? item.sizeBytes : matched.sizeBytes,
+          });
+        }
+        continue;
+      }
+      if (!existing.has(lower)) {
+        fresh.push(item);
+      }
+    }
+    if (!fresh.length && !mergedById.size) return setToast(t("toast.alreadyInLibrary"));
+    const hardware = fresh.length ? await getHardwareInfo().catch(() => null) : null;
     const vramMb = hardware?.vramTotalMb ?? 0;
     const additions: ModelAsset[] = [];
     const processed = new Set<string>();
-    /** 已入库的分卷模型补齐新分卷：更新现有条目，而不是再建一个重复模型 */
-    const mergedById = new Map<string, ModelAsset>();
 
     for (const [index, item] of fresh.entries()) {
       const path = item.path;
@@ -89,13 +110,15 @@ export function useModelLibrary({ config, configReady, status, persist, setToast
 
       const isNinfer = path.toLowerCase().endsWith(".ninfer");
       const splitGroup = !isNinfer ? await findSplitGroup(path).catch(() => null) : null;
+      const explicitName = item.name?.trim();
       let targetPath = path;
       let targetSize = item.sizeBytes;
-      let targetName = fileName(path).replace(/\.(gguf|ninfer)$/i, "").replace(/[-_]/g, " ");
+      let targetName =
+        explicitName || fileName(path).replace(/\.(gguf|ninfer)$/i, "").replace(/[-_]/g, " ");
 
       if (splitGroup) {
         const partSet = new Set(splitGroup.parts.map((part) => part.toLowerCase()));
-        const existingSplit = config.models.find((model) =>
+        const existingSplit = baseModels.find((model) =>
           model.path.toLowerCase() === splitGroup.primaryPath.toLowerCase() ||
           (model.splitInfo?.parts || []).some((part) => partSet.has(part.toLowerCase()))
         );
@@ -119,6 +142,7 @@ export function useModelLibrary({ config, configReady, status, persist, setToast
               };
             }
           }
+          hasSplitMerge = true;
           mergedById.set(existingSplit.id, merged);
           for (const part of splitGroup.parts) {
             processed.add(part.toLowerCase());
@@ -127,7 +151,7 @@ export function useModelLibrary({ config, configReady, status, persist, setToast
         }
         targetPath = splitGroup.primaryPath;
         targetSize = splitGroup.totalBytes > 0 ? splitGroup.totalBytes : item.sizeBytes;
-        targetName = splitGroup.prefix.replace(/[-_]/g, " ");
+        targetName = explicitName || splitGroup.prefix.replace(/[-_]/g, " ");
         for (const part of splitGroup.parts) {
           processed.add(part.toLowerCase());
         }
@@ -195,12 +219,15 @@ export function useModelLibrary({ config, configReady, status, persist, setToast
       });
     }
     setSelectedProfiles((previous) => { const next = { ...previous }; for (const model of additions) next[model.id] = model.profiles[0].id; return next; });
-    const mergedModels = config.models.map((model) => mergedById.get(model.id) ?? model);
+    const latestConfig = configRef.current;
+    const mergedModels = latestConfig.models.map((model) => mergedById.get(model.id) ?? model);
     const mergedName = Array.from(mergedById.values())[0];
     const message = additions.length
       ? t(additions.length === 1 ? "toast.modelAdded" : "toast.modelsAdded", { count: additions.length })
-      : t("toast.splitMerged", { name: mergedName ? modelTitle(mergedName) : "" });
-    await persist({ ...config, models: [...mergedModels, ...additions] }, message);
+      : hasSplitMerge
+        ? t("toast.splitMerged", { name: mergedName ? modelTitle(mergedName) : "" })
+        : undefined;
+    await persist({ ...latestConfig, models: [...mergedModels, ...additions] }, message);
   };
 
   /** 统一入口：打开导入弹窗（拖拽 / 选文件 / 选文件夹都在弹窗内完成） */
@@ -210,9 +237,26 @@ export function useModelLibrary({ config, configReady, status, persist, setToast
     finally { setImportOpen(false); }
   };
 
-  const removeModel = async (id: string) => {
-    if (status.modelId === id) return setToast(t("toast.stopFirst"));
-    setMenuModelId(null); await persist({ ...config, models: config.models.filter((model) => model.id !== id) }, t("toast.modelRemoved"));
+  const removeModel = async (id: string, deleteFiles = false): Promise<boolean> => {
+    if (status.modelId === id) {
+      setToast(t("toast.stopFirst"));
+      return false;
+    }
+    setMenuModelId(null);
+    if (deleteFiles) {
+      try {
+        await deleteRegisteredModelFiles([id]);
+      } catch (error) {
+        setToast(t("toast.deleteFilesFailed", { error: error instanceof Error ? error.message : String(error) }));
+        return false;
+      }
+    }
+    const nextPreferred = config.preferredModelId === id ? undefined : config.preferredModelId;
+    await persist(
+      { ...config, preferredModelId: nextPreferred, models: config.models.filter((model) => model.id !== id) },
+      t(deleteFiles ? "toast.modelRemovedAndDeleted" : "toast.modelRemoved"),
+    );
+    return true;
   };
 
   /** 拖拽排序提交（最终可见顺序）：拖动中页面只改本地预览，松手后一次性写盘。搜索过滤下的稳定交织——可见模型按新顺序填入原槽位，被过滤隐藏的保持原位 */
@@ -226,13 +270,29 @@ export function useModelLibrary({ config, configReady, status, persist, setToast
     void persist({ ...config, models: list }, t("toast.orderUpdated"));
   };
 
-  /** 批量移出：运行中的模型不可删除，整批拦截 */
-  const removeMultipleModels = async (ids: string[]) => {
-    if (!ids.length) return;
+  /** 批量移出：运行中的模型不可删除，整批拦截；可选同时删除磁盘模型文件 */
+  const removeMultipleModels = async (ids: string[], deleteFiles = false): Promise<boolean> => {
+    if (!ids.length) return true;
     const idSet = new Set(ids);
     const running = config.models.find((item) => status.modelId === item.id && idSet.has(item.id));
-    if (running) return setToast(t("toast.runningSelectedModels"));
-    await persist({ ...config, models: config.models.filter((model) => !idSet.has(model.id)) }, t("toast.modelsRemoved", { count: ids.length }));
+    if (running) {
+      setToast(t("toast.runningSelectedModels"));
+      return false;
+    }
+    if (deleteFiles) {
+      try {
+        await deleteRegisteredModelFiles(ids);
+      } catch (error) {
+        setToast(t("toast.deleteFilesFailed", { error: error instanceof Error ? error.message : String(error) }));
+        return false;
+      }
+    }
+    const nextPreferred = config.preferredModelId && idSet.has(config.preferredModelId) ? undefined : config.preferredModelId;
+    await persist(
+      { ...config, preferredModelId: nextPreferred, models: config.models.filter((model) => !idSet.has(model.id)) },
+      t(deleteFiles ? "toast.modelsRemovedAndDeleted" : "toast.modelsRemoved", { count: ids.length }),
+    );
+    return true;
   };
 
   const upsertProfile = (modelId: string, profile: Profile, message?: string) => {

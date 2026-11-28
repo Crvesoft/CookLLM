@@ -579,6 +579,12 @@
   color: #334155;
 }
 
+[data-theme="light"] .topbar-beta-pill {
+  color: #b96a10;
+  background: #fdf2e1;
+  border-color: #efd3a6;
+}
+
 [data-theme="light"] .runtime-card {
   border-color: #e3e7ef;
   background: linear-gradient(145deg, #ffffff, #f3f5fa);
@@ -625,10 +631,6 @@
 
 [data-theme="light"] .mini-status .ms-env-item svg {
   color: #7c8698;
-}
-
-[data-theme="light"] .ms-cadence {
-  color: #8a93a3;
 }
 
 [data-theme="light"] .ms-theme-toggle {
@@ -1060,23 +1062,23 @@
   box-shadow: 0 4px 14px rgba(234, 88, 12, 0.18), inset 0 1px 0 rgba(255, 255, 255, 1);
 }
 
-/* NINFER Format Theme (白灰银岩 · 浅色模式 - 匹配金属白灰附图) */
+/* NINFER Format Theme (雾青蓝绿 · 浅色模式 - 对齐性能监控青绿，低饱和轻柔底色) */
 [data-theme="light"] .model-symbol.ninfer {
-  color: #475569;
-  background: linear-gradient(145deg, #ffffff, #f1f5f9);
-  border: 1px solid rgba(148, 163, 184, 0.42);
-  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06), inset 0 1px 0 rgba(255, 255, 255, 1);
+  color: #247985;
+  background: linear-gradient(145deg, #f8fcfc, #ebf4f5);
+  border: 1px solid rgba(47, 143, 158, 0.28);
+  box-shadow: 0 2px 8px rgba(36, 121, 133, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.95);
 }
 
 [data-theme="light"] .model-symbol.ninfer span,
 [data-theme="light"] .model-symbol.ninfer .model-symbol-tag {
-  color: #334155;
+  color: #247985;
   text-shadow: none;
 }
 
 [data-theme="light"] .model-symbol.ninfer:hover {
-  border-color: rgba(100, 116, 139, 0.65);
-  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.12), inset 0 1px 0 rgba(255, 255, 255, 1);
+  border-color: rgba(47, 143, 158, 0.52);
+  box-shadow: 0 4px 14px rgba(36, 121, 133, 0.14), inset 0 1px 0 rgba(255, 255, 255, 1);
 }
 
 [data-theme="light"] .model-symbol.violet {
@@ -2156,9 +2158,9 @@
 }
 
 [data-theme="light"] .editor-icon.ninfer {
-  background: #f1f5f9;
-  color: #334155;
-  border-color: rgba(148, 163, 184, 0.35);
+  background: #eef6f7;
+  color: #247985;
+  border-color: rgba(47, 143, 158, 0.28);
 }
 
 [data-theme="light"] .form-section-title>span {

@@ -940,9 +940,9 @@
 }
 
 .editor-icon.ninfer {
-  color: #e2e8f0;
-  background: rgba(255, 255, 255, 0.08);
-  border: 1px solid rgba(255, 255, 255, 0.16);
+  color: #5fbac4;
+  background: rgba(20, 83, 89, 0.45);
+  border: 1px solid rgba(95, 186, 196, 0.36);
 }
 
 .profile-header-tag-line {

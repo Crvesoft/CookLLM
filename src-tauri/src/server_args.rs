@@ -567,7 +567,7 @@ pub(crate) fn build_server_launch(app: &AppHandle, model_id: &str, profile_id: &
 
         // 9. 投机采样 (MTP / DFlash / DFlash2 / Draft)
         // KVMem 引擎默认开启投机采样，但后端算法与草稿宽度均可配置（--spec mtp|dflash|dflash2）。
-        let need_spec = if engine_type == "ninfer_kvmem" {
+        let mut need_spec = if engine_type == "ninfer_kvmem" {
             profile.spec_mtp.unwrap_or(true)
         } else {
             profile.spec_mtp.unwrap_or(profile.mtp)
@@ -579,38 +579,44 @@ pub(crate) fn build_server_launch(app: &AppHandle, model_id: &str, profile_id: &
                 Some("dflash") => "dflash",
                 _ => "mtp",
             };
-            command.arg("--spec").arg(spec_mode);
-            let default_tokens = if spec_mode == "dflash2" || spec_mode == "dflash" { 5 } else { 4 };
-            let draft_tokens = profile.draft_tokens.unwrap_or_else(|| {
-                // spec_draft_n_max 是 llama.cpp 的草稿宽度，只在 MTP 下沿用兜底；DFlash 家族用自身默认
-                if spec_mode == "mtp" && profile.spec_draft_n_max > 0 { profile.spec_draft_n_max } else { default_tokens }
-            }).clamp(1, 15);
-            command.arg("--draft-tokens").arg(draft_tokens.to_string());
+            // 若当前 .ninfer 文件未打包 mtp 组件，避免传递 --spec mtp 导致引擎启动直接报 missing component mtp 退出
+            if spec_mode == "mtp" && crate::ninfer_has_component(&model_path, "mtp") == Some(false) {
+                need_spec = false;
+            } else {
+                command.arg("--spec").arg(spec_mode);
+                let default_tokens = if spec_mode == "dflash2" || spec_mode == "dflash" { 5 } else { 4 };
+                let draft_tokens = profile.draft_tokens.unwrap_or_else(|| {
+                    // spec_draft_n_max 是 llama.cpp 的草稿宽度，只在 MTP 下沿用兜底；DFlash 家族用自身默认
+                    if spec_mode == "mtp" && profile.spec_draft_n_max > 0 { profile.spec_draft_n_max } else { default_tokens }
+                }).clamp(1, 15);
+                command.arg("--draft-tokens").arg(draft_tokens.to_string());
 
-            let need_adaptive = profile.adaptive_mtp.unwrap_or(true);
-            if need_adaptive && spec_mode == "mtp" && !has_extra_arg("--adaptive-mtp") {
-                command.arg("--adaptive-mtp");
-            }
+                let need_adaptive = profile.adaptive_mtp.unwrap_or(true);
+                if need_adaptive && spec_mode == "mtp" && !has_extra_arg("--adaptive-mtp") {
+                    command.arg("--adaptive-mtp");
+                }
 
-            // 0 表示关闭 ngram 复制草稿，必须原样传递；DFlash 不依赖 ngram 提速，默认关闭
-            let default_ngram = if spec_mode == "mtp" { 31 } else { 0 };
-            let mut ngram = profile.ngram_draft_tokens.unwrap_or(default_ngram);
-            if ngram > 0 {
-                // DFlash 的复制轮在启动预热（CUDA Graph 捕获）时按 ngram 宽度建帧，
-                // 宽度小于草稿宽度会直接崩溃：neural proposal is outside its supported frame
-                if spec_mode != "mtp" {
-                    ngram = ngram.max(draft_tokens);
+                // 0 表示关闭 ngram 复制草稿，必须原样传递；DFlash 不依赖 ngram 提速，默认关闭
+                let default_ngram = if spec_mode == "mtp" { 31 } else { 0 };
+                let mut ngram = profile.ngram_draft_tokens.unwrap_or(default_ngram);
+                if ngram > 0 {
+                    // DFlash 的复制轮在启动预热（CUDA Graph 捕获）时按 ngram 宽度建帧，
+                    // 宽度小于草稿宽度会直接崩溃：neural proposal is outside its supported frame
+                    if spec_mode != "mtp" {
+                        ngram = ngram.max(draft_tokens);
+                    }
+                    if profile.parallel > 1 && ngram > 15 {
+                        ngram = 15;
+                    }
                 }
-                if profile.parallel > 1 && ngram > 15 {
-                    ngram = 15;
+                command.arg("--ngram-draft-tokens").arg(ngram.min(63).to_string());
+                if !has_extra_arg("--ngram-min-match") {
+                    command.arg("--ngram-min-match").arg("12");
                 }
             }
-            command.arg("--ngram-draft-tokens").arg(ngram.min(63).to_string());
-            if !has_extra_arg("--ngram-min-match") {
-                command.arg("--ngram-min-match").arg("12");
-            }
-        } else if engine_type == "ninfer_kvmem" && !has_extra_arg("--spec") {
-            // KVMem 检测到伴随权重时会自动启用 MTP，显式 none 才能让用户真正关闭投机采样
+        }
+        if !need_spec && engine_type == "ninfer_kvmem" && !has_extra_arg("--spec") {
+            // KVMem 检测到伴随权重或默认策略时会自动启用 MTP，显式 none 才能安全关闭投机采样并启动无 MTP 的模型
             command.arg("--spec").arg("none");
         }
 

@@ -1,4 +1,4 @@
-import type { AppConfig, LlamaEngine, LlamaLogPayload, ModelAsset, PerfItemId, PerfItemStyle, PerfMonitorConfig, PerfPreset, Profile } from "./types";
+import type { AppConfig, LlamaEngine, LlamaLogPayload, ModelAsset, Page, PerfItemId, PerfItemStyle, PerfMonitorConfig, PerfPreset, Profile } from "./types";
 import { formatMessage, getLocale } from "./i18n";
 import { DEFAULT_SHORTCUTS } from "./utils";
 
@@ -7,6 +7,71 @@ export const APP_VERSION = "0.4.9";
 /** 项目信息：GitHub 仓库（owner/repo）与主页地址 */
 export const APP_REPO = "Crvesoft/CookLLM";
 export const PROJECT_URL = `https://github.com/${APP_REPO}`;
+/** NInfer 转换整合包默认官方发布仓库（可在实验室恢复默认） */
+export const DEFAULT_NINFER_CONVERTER_REPO = "Crvesoft/cookllm-ninfer-converter";
+
+/* ------------------------------------------------------------------ */
+/* 左侧导航栏配置：默认顺序、允许隐藏项与兼容解析                       */
+/* ------------------------------------------------------------------ */
+
+/** 工作区左侧主导航默认顺序（模型仓库、运行预设、设置不可隐藏，均可拖动排序） */
+export const DEFAULT_SIDEBAR_NAV_ORDER: Page[] = [
+  "models",
+  "profiles",
+  "explore",
+  "lab",
+  "playground",
+  "logs",
+  "settings",
+];
+
+/** 仅允许隐藏的非核心页面；models / profiles / settings 始终保留 */
+export const HIDEABLE_SIDEBAR_PAGES: readonly Page[] = [
+  "explore",
+  "playground",
+  "logs",
+  "lab",
+];
+
+const NAV_ORDER_SET = new Set<Page>(DEFAULT_SIDEBAR_NAV_ORDER);
+const HIDEABLE_OPTIONAL_SET = new Set<Page>(["explore", "playground", "logs"]);
+
+export function resolveSidebarNav(config: AppConfig): {
+  order: Page[];
+  hidden: Set<Page>;
+  visiblePages: Page[];
+} {
+  const order: Page[] = [];
+  const seen = new Set<Page>();
+  for (const id of config.sidebarNavOrder ?? []) {
+    if (NAV_ORDER_SET.has(id) && !seen.has(id)) {
+      seen.add(id);
+      order.push(id);
+    }
+  }
+  for (const id of DEFAULT_SIDEBAR_NAV_ORDER) {
+    if (!seen.has(id)) {
+      seen.add(id);
+      order.push(id);
+    }
+  }
+
+  const hidden = new Set<Page>();
+  for (const id of config.sidebarHiddenPages ?? []) {
+    if (HIDEABLE_OPTIONAL_SET.has(id)) {
+      hidden.add(id);
+    }
+  }
+  if (config.labEnabled === false) {
+    hidden.add("lab");
+  }
+
+  return {
+    order,
+    hidden,
+    visiblePages: order.filter((id) => !hidden.has(id)),
+  };
+}
 
 /* ------------------------------------------------------------------ */
 /* 性能卡片 DIY 默认值                                                  */
@@ -235,6 +300,9 @@ export function mergeImportedConfig(
         shortcuts: incoming.shortcuts
           ? { ...DEFAULT_SHORTCUTS, ...incoming.shortcuts }
           : current.shortcuts,
+        labEnabled: incoming.labEnabled ?? current.labEnabled,
+        sidebarNavOrder: incoming.sidebarNavOrder ?? current.sidebarNavOrder,
+        sidebarHiddenPages: incoming.sidebarHiddenPages ?? current.sidebarHiddenPages,
       },
       addedModels,
       updatedModels: 0,
@@ -366,11 +434,17 @@ export function mergeImportedConfig(
     if (incoming.preferredProfileId && !current.preferredProfileId) {
       mergedConfig.preferredProfileId = incoming.preferredProfileId;
     }
-    const booleanSettings = ["perfMonitorEnabled", "gpuMonitorEnabled", "vramMonitorEnabled", "powerMonitorEnabled", "monitorCpuEnabled", "monitorMemoryEnabled", "gpuTempEnabled", "exploreSidebarCollapsed", "autoUpdateEnabled", "minimizeToTrayOnClose"] as const;
+    const booleanSettings = ["perfMonitorEnabled", "gpuMonitorEnabled", "vramMonitorEnabled", "powerMonitorEnabled", "monitorCpuEnabled", "monitorMemoryEnabled", "gpuTempEnabled", "exploreSidebarCollapsed", "autoUpdateEnabled", "minimizeToTrayOnClose", "labEnabled"] as const;
     for (const key of booleanSettings) {
       if (incoming[key] !== undefined && current[key] === undefined) {
         mergedConfig[key] = incoming[key];
       }
+    }
+    if (incoming.sidebarNavOrder && !current.sidebarNavOrder) {
+      mergedConfig.sidebarNavOrder = incoming.sidebarNavOrder;
+    }
+    if (incoming.sidebarHiddenPages && !current.sidebarHiddenPages) {
+      mergedConfig.sidebarHiddenPages = incoming.sidebarHiddenPages;
     }
     if (incoming.perfItemOrder && !current.perfItemOrder) {
       mergedConfig.perfItemOrder = incoming.perfItemOrder;
@@ -491,6 +565,7 @@ export const DEMO_CONFIG: AppConfig = {
   models: DEMO_MODELS,
   preferredModelId: "qwen-25-32b",
   preferredProfileId: "deep-thought",
+  labEnabled: true,
 };
 
 /** 兼容旧配置文件：旧版预设存在全局池 config.profiles，并按模型 profileIds 引用。此处把每个模型缺少的预设回填为它自己的副本。 */
@@ -577,7 +652,15 @@ export function migrateConfig(config: AppConfig): AppConfig {
     shortcuts.switchEngine = "Alt+Shift+E";
   }
 
-  return { ...config, models, engines, activeEngineId, shortcuts };
+  return {
+    ...config,
+    models,
+    engines,
+    activeEngineId,
+    shortcuts,
+    labEnabled: typeof config.labEnabled === "boolean" ? config.labEnabled : true,
+    ninferConvertHistory: Array.isArray(config.ninferConvertHistory) ? config.ninferConvertHistory : undefined,
+  };
 }
 export const INITIAL_LOGS: LlamaLogPayload[] = [
   { stream: "system", line: "CookLLM runtime initialized · waiting for a model", timestamp: Date.now() - 1800 },

@@ -14,8 +14,8 @@ interface Props {
   onAddModel: () => void; onSelectProfile: (modelId: string, profileId: string) => void; onStart: (model: ModelAsset) => void; onStop: () => void;
   onEditProfile: (model: ModelAsset, profile: Profile) => void; onAddProfile: (model: ModelAsset) => void; onRenameModel: (modelId: string, displayName: string) => void;
   onUpdateModelTags: (modelId: string, quantization: string, tags: string[], nextPool?: string[]) => void;
-  onSetDefaultModel: (modelId: string) => void; onReorderModel: (orderedIds: string[]) => void; onDeleteMultipleModels: (ids: string[]) => Promise<void>;
-  onOpenProfiles: () => void; menuModelId: string | null; onMenuModel: (id: string | null) => void; onRemoveModel: (id: string) => void;
+  onSetDefaultModel: (modelId: string) => void; onReorderModel: (orderedIds: string[]) => void; onDeleteMultipleModels: (ids: string[], deleteFiles?: boolean) => Promise<boolean>;
+  onOpenProfiles: () => void; menuModelId: string | null; onMenuModel: (id: string | null) => void; onRemoveModel: (id: string, deleteFiles?: boolean) => Promise<boolean>;
   /** 下载完成后刚导入的模型 id（卡片显示「刚刚导入」Badge） */
   justImportedIds: Set<string>;
   onToast?: (msg: string) => void;
@@ -28,7 +28,12 @@ export default function ModelsPage(props: Props) {
   /** 批量选择模式与拖拽排序状态 */
   const [selectMode, setSelectMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [removeConfirm, setRemoveConfirm] = useState<{
+    models: ModelAsset[];
+    bulk: boolean;
+    deleteFiles: boolean;
+  } | null>(null);
+  const [removing, setRemoving] = useState(false);
   const [tagModalModel, setTagModalModel] = useState<ModelAsset | null>(null);
   const [lanModalTarget, setLanModalTarget] = useState<{ model: ModelAsset; profile?: Profile } | null>(null);
   /** 视图模式：卡片网格 / 紧凑列表（本地持久化） */
@@ -80,11 +85,34 @@ export default function ModelsPage(props: Props) {
   const selectAll = () => setSelectedIds(new Set(props.models.map((model) => model.id)));
   const toggleSelected = (id: string) => setSelectedIds((previous) => { const next = new Set(previous); if (next.has(id)) next.delete(id); else next.add(id); return next; });
 
-  const handleBulkDelete = () => {
-    setConfirmDelete(false);
-    void props.onDeleteMultipleModels([...selectedIds]);
-    setSelectedIds(new Set());
-    setSelectMode(false);
+  const requestRemoveModels = (modelsToRemove: ModelAsset[], bulk: boolean) => {
+    if (!modelsToRemove.length) return;
+    const hasRunning = modelsToRemove.some((m) => props.status.modelId === m.id);
+    if (hasRunning) {
+      props.onToast?.(t(bulk ? "toast.runningSelectedModels" : "toast.stopFirst"));
+      return;
+    }
+    setRemoveConfirm({ models: modelsToRemove, bulk, deleteFiles: false });
+  };
+
+  const handleConfirmRemove = async () => {
+    if (!removeConfirm || removing) return;
+    setRemoving(true);
+    try {
+      const ids = removeConfirm.models.map((m) => m.id);
+      const ok = removeConfirm.models.length === 1 && !removeConfirm.bulk
+        ? await props.onRemoveModel(ids[0], removeConfirm.deleteFiles)
+        : await props.onDeleteMultipleModels(ids, removeConfirm.deleteFiles);
+      if (ok) {
+        if (removeConfirm.bulk) {
+          setSelectedIds(new Set());
+          setSelectMode(false);
+        }
+        setRemoveConfirm(null);
+      }
+    } finally {
+      setRemoving(false);
+    }
   };
 
   /** 打开局域网接入弹窗：运行中优先展示实际生效的运行预设，而非卡片上选中的预设 */
@@ -137,7 +165,7 @@ export default function ModelsPage(props: Props) {
         <button className="primary-button" onClick={props.onAddModel}><Plus size={16} />{t("addModel")}</button>
       </div>
     </div>
-    {selectMode && selectedIds.size > 0 && <div className="bulk-bar"><span>{t("bulkSelectedPrefix")}<strong>{selectedIds.size}</strong>{t("models.unitModels")}</span><button className="text-button" onClick={selectAll}>{t("selectAll")}</button><div className="bulk-spacer" /><button className="secondary-button compact" disabled={!selectedIds.size} onClick={() => setSelectedIds(new Set())}>{t("clearSelection")}</button><button className="danger-button" disabled={!selectedIds.size} onClick={() => setConfirmDelete(true)}><Trash2 size={14} />{t("deleteSelected", { count: selectedIds.size })}</button></div>}
+    {selectMode && selectedIds.size > 0 && <div className="bulk-bar"><span>{t("bulkSelectedPrefix")}<strong>{selectedIds.size}</strong>{t("models.unitModels")}</span><button className="text-button" onClick={selectAll}>{t("selectAll")}</button><div className="bulk-spacer" /><button className="secondary-button compact" disabled={!selectedIds.size} onClick={() => setSelectedIds(new Set())}>{t("clearSelection")}</button><button className="danger-button" disabled={!selectedIds.size} onClick={() => requestRemoveModels(props.config.models.filter((m) => selectedIds.has(m.id)), true)}><Trash2 size={14} />{t("deleteSelected", { count: selectedIds.size })}</button></div>}
     {props.models.length ? <section className={viewMode === "list" ? "model-list" : "model-grid"}>{modelOrder.map((id) => {
       const model = modelById.get(id);
       if (!model) return null;
@@ -165,7 +193,7 @@ export default function ModelsPage(props: Props) {
         onRenameModel: props.onRenameModel,
         onOpenTagModal: () => setTagModalModel(model),
         onSetDefaultModel: props.onSetDefaultModel,
-        onRemove: () => props.onRemoveModel(model.id),
+        onRemove: () => requestRemoveModels([model], false),
         selectMode,
         isSelected: selectedIds.has(model.id),
         isJustImported: props.justImportedIds.has(model.id),
@@ -176,7 +204,86 @@ export default function ModelsPage(props: Props) {
       };
       return viewMode === "list" ? <ModelRow key={id} {...itemProps} /> : <ModelCard key={id} {...itemProps} />;
     })}</section> : <div className="empty-state">{searching ? <><div><Search size={28} /></div><h3>{t("noMatchTitle")}</h3><p>{t("noMatchDesc", { query: props.query.trim() })}</p><div className="empty-actions"><button className="secondary-button" onClick={() => props.onQuery("")}>{t("clearSearch")}</button></div></> : <><div><Box size={28} /></div><h3>{t("emptyModelsTitle")}</h3><p>{t("emptyModelsDesc")}</p><div className="empty-actions"><button className="secondary-button" onClick={props.onAddModel}><Plus size={16} />{t("addModel")}</button></div></>}</div>}
-    {confirmDelete && <ConfirmModal title={t("confirm.removeModelsTitle")} description={<>{t("confirm.removeModelsPre")}<strong>{selectedIds.size}</strong>{t("confirm.removeModelsMid")}</>} onConfirm={handleBulkDelete} onClose={() => setConfirmDelete(false)} />}
+    {removeConfirm && (() => {
+      const isSingle = removeConfirm.models.length === 1 && !removeConfirm.bulk;
+      const single = removeConfirm.models[0];
+      const totalRemoveBytes = removeConfirm.models.reduce((sum, item) => sum + item.sizeBytes, 0);
+      const totalPartsCount = removeConfirm.models.reduce(
+        (sum, item) => sum + (item.splitInfo?.found ? item.splitInfo.found : 1),
+        0,
+      );
+      return (
+        <ConfirmModal
+          title={isSingle ? t("confirm.removeModelTitle") : t("confirm.removeModelsTitle")}
+          confirmLabel={
+            removing
+              ? t("confirm.removing")
+              : removeConfirm.deleteFiles
+                ? t("confirm.removeAndDeleteFiles")
+                : t("confirm.removeOnly")
+          }
+          confirmDisabled={removing}
+          description={
+            <>
+              <div>
+                {isSingle ? (
+                  <>
+                    {t("confirm.removeModelPre")}
+                    <strong>{modelTitle(single)}</strong>
+                    {t("confirm.removeModelPost")}
+                  </>
+                ) : (
+                  <>
+                    {t("confirm.removeModelsPre")}
+                    <strong>{removeConfirm.models.length}</strong>
+                    {t("confirm.removeModelsMid")}
+                  </>
+                )}
+              </div>
+              <label className={cn("confirm-delete-files-opt", removeConfirm.deleteFiles && "checked")}>
+                <input
+                  type="checkbox"
+                  checked={removeConfirm.deleteFiles}
+                  disabled={removing}
+                  onChange={(e) =>
+                    setRemoveConfirm((prev) =>
+                      prev ? { ...prev, deleteFiles: e.target.checked } : prev,
+                    )
+                  }
+                />
+                <div>
+                  <strong>{t("confirm.deleteFilesLabel")}</strong>
+                  <span>
+                    {t("confirm.deleteFilesHint", {
+                      size: formatBytes(totalRemoveBytes),
+                    })}
+                  </span>
+                </div>
+              </label>
+              {removeConfirm.deleteFiles && (
+                <p className="confirm-delete-files-warn">
+                  {isSingle
+                    ? single.splitInfo && single.splitInfo.found > 1
+                      ? t("confirm.deleteFilesWarnSplit", {
+                          file: fileName(single.path),
+                          count: single.splitInfo.found,
+                        })
+                      : t("confirm.deleteFilesWarnSingle", {
+                          file: fileName(single.path),
+                        })
+                    : t("confirm.deleteFilesWarnMulti", {
+                        models: removeConfirm.models.length,
+                        files: totalPartsCount,
+                      })}
+                </p>
+              )}
+            </>
+          }
+          onConfirm={() => void handleConfirmRemove()}
+          onClose={() => setRemoveConfirm(null)}
+        />
+      );
+    })()}
     {tagModalModel && (
       <ModelTagModal
         model={tagModalModel}

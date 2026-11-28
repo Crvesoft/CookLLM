@@ -36,6 +36,20 @@
   font-weight: 600;
 }
 
+.topbar-beta-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: #eaa657;
+  background: rgba(216, 138, 29, .15);
+  border: 1px solid rgba(216, 138, 29, .42);
+}
+
 .topbar-actions {
   display: flex;
   align-items: center;

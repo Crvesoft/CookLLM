@@ -7,6 +7,7 @@ import NetworkCard from "./settings/NetworkCard";
 import PerformanceCard from "./settings/PerformanceCard";
 import PreferencesCard from "./settings/PreferencesCard";
 import ShortcutsCard from "./settings/ShortcutsCard";
+import SidebarNavCard from "./settings/SidebarNavCard";
 
 interface Props {
   visible: boolean;
@@ -26,12 +27,13 @@ export default function SettingsPage({ visible, config, activeEngine, appUpdate,
   return (
     <div hidden={!visible}>
       <section className="settings-stack">
-        <NetworkCard config={config} onPersist={onPersist} />
-        <HfTokenCard config={config} onPersist={onPersist} />
-        <EngineCard config={config} activeEngine={activeEngine} onPersist={onPersist} onLog={onLog} onOpenEngineHub={onOpenEngineHub} />
         <PreferencesCard config={config} onPersist={onPersist} onLog={onLog} onExportBackup={onExportBackup} onImportBackup={onImportBackup} />
+        <EngineCard config={config} activeEngine={activeEngine} onPersist={onPersist} onLog={onLog} onOpenEngineHub={onOpenEngineHub} />
+        <SidebarNavCard config={config} onPersist={onPersist} />
         <PerformanceCard config={config} onPersist={onPersist} />
         <ShortcutsCard config={config} onPersist={onPersist} />
+        <NetworkCard config={config} onPersist={onPersist} />
+        <HfTokenCard config={config} onPersist={onPersist} />
         <AboutCard config={config} appUpdate={appUpdate} checkingUpdate={checkingUpdate} onCheckUpdate={onCheckUpdate} onPersist={onPersist} onLog={onLog} />
       </section>
     </div>

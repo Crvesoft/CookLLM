@@ -1,9 +1,9 @@
 import { getVersion as appVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { APP_REPO, APP_VERSION, PROJECT_URL } from "./data";
+import { APP_REPO, APP_VERSION, DEFAULT_NINFER_CONVERTER_REPO, PROJECT_URL } from "./data";
 import { isNewerVersion } from "./utils";
-import type { AppConfig, DiskUsage, EngineType, HfDownloadResult, HfFile, HfModel, LlamaBackend, LlamaLogPayload, ModelDownloadProgress, ModelSplitInfo, PerformanceStats, ProxyMode, ServerStatus } from "./types";
+import type { AppConfig, DiskUsage, EngineType, HfDownloadResult, HfFile, HfModel, LlamaBackend, LlamaLogPayload, ModelDownloadProgress, ModelSplitInfo, NinferAuxConfigFetchResult, NinferConvertInspection, NinferConvertLogEvent, NinferConvertOptions, NinferConvertProgress, NinferConvertResult, NinferConverterDownloadProgress, NinferConverterRelease, NinferConverterStatus, PerformanceStats, ProxyMode, ServerStatus } from "./types";
 
 export const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 
@@ -670,4 +670,143 @@ export async function onModelDownloadProgress(handler: (payload: ModelDownloadPr
 export async function setShortcutsRecordingMode(recording: boolean): Promise<void> {
   if (!isTauri()) return;
   await invoke("set_shortcuts_recording_mode", { recording });
+}
+
+/* ==================== GGUF → NInfer 转换 ==================== */
+
+export async function getNinferConverterStatus(): Promise<NinferConverterStatus> {
+  if (!isTauri()) {
+    return {
+      installed: false,
+      ready: false,
+      installDir: "",
+      repo: DEFAULT_NINFER_CONVERTER_REPO,
+      issues: ["仅 Tauri 桌面端可用"],
+    };
+  }
+  return invoke<NinferConverterStatus>("get_ninfer_converter_status");
+}
+
+export async function checkNinferConverterRelease(repo?: string): Promise<NinferConverterRelease> {
+  if (!isTauri()) throw new Error("仅 Tauri 桌面端可用");
+  return invoke<NinferConverterRelease>("check_ninfer_converter_release", { repo: repo?.trim() || null });
+}
+
+export async function downloadNinferConverter(input?: {
+  repo?: string;
+  assetUrl?: string;
+  assetName?: string;
+  tag?: string;
+  sha256?: string;
+}): Promise<NinferConverterStatus> {
+  if (!isTauri()) throw new Error("仅 Tauri 桌面端可用");
+  return invoke<NinferConverterStatus>("download_ninfer_converter", {
+    repo: input?.repo?.trim() || null,
+    assetUrl: input?.assetUrl ?? null,
+    assetName: input?.assetName ?? null,
+    tag: input?.tag ?? null,
+    sha256: input?.sha256 ?? null,
+  });
+}
+
+export async function cancelNinferConverterDownload(): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("cancel_ninfer_converter_download");
+}
+
+export async function importNinferConverterZip(): Promise<NinferConverterStatus | null> {
+  if (!isTauri()) return null;
+  return invoke<NinferConverterStatus | null>("import_ninfer_converter_zip");
+}
+
+export async function pickNinferConverterDir(): Promise<NinferConverterStatus | null> {
+  if (!isTauri()) return null;
+  return invoke<NinferConverterStatus | null>("pick_ninfer_converter_dir");
+}
+
+export async function removeNinferConverter(): Promise<NinferConverterStatus> {
+  if (!isTauri()) throw new Error("仅 Tauri 桌面端可用");
+  return invoke<NinferConverterStatus>("remove_ninfer_converter");
+}
+
+export async function inspectGgufForNinfer(path: string): Promise<NinferConvertInspection> {
+  if (!isTauri()) {
+    return {
+      compatible: false,
+      blockReason: "仅 Tauri 桌面端可用",
+      warnings: [],
+      architecture: "",
+      parameters: "",
+      hiddenSize: 0,
+      intermediateSize: 0,
+      blockCount: 0,
+      attentionHeads: 0,
+      kvHeads: 0,
+      headDim: 0,
+      keyHeads: 0,
+      valueHeads: 0,
+      vocabSize: 0,
+      hasMtp: false,
+      hasChatTemplate: false,
+      hasTokenizerKv: false,
+      unsupportedTensors: [],
+      tensorCount: 0,
+    };
+  }
+  return invoke<NinferConvertInspection>("inspect_gguf_for_ninfer", { path });
+}
+
+export async function fetchHfAuxConfigs(repo: string, source: "hf" | "ms" = "hf"): Promise<NinferAuxConfigFetchResult> {
+  if (!isTauri()) throw new Error("仅 Tauri 桌面端可用");
+  return invoke<NinferAuxConfigFetchResult>("fetch_hf_aux_configs", { repo, source });
+}
+
+export async function pickNinferOutputFile(defaultName?: string, defaultDir?: string): Promise<string> {
+  if (!isTauri()) return "";
+  return invoke<string>("pick_ninfer_output_file", {
+    defaultName: defaultName ?? null,
+    defaultDir: defaultDir ?? null,
+  });
+}
+
+export async function convertGgufToNinfer(options: NinferConvertOptions): Promise<NinferConvertResult> {
+  if (!isTauri()) throw new Error("仅 Tauri 桌面端可用");
+  return invoke<NinferConvertResult>("convert_gguf_to_ninfer", { options });
+}
+
+export async function cancelNinferConvert(): Promise<void> {
+  if (!isTauri()) return;
+  await invoke("cancel_ninfer_convert");
+}
+
+export interface DeleteModelFilesResult {
+  deletedPaths: string[];
+  deletedBytes: number;
+}
+
+/** 彻底删除已登记模型的磁盘文件（仅作用于当前配置里已登记模型及其分卷） */
+export async function deleteRegisteredModelFiles(modelIds: string[]): Promise<DeleteModelFilesResult> {
+  if (!isTauri() || !modelIds.length) return { deletedPaths: [], deletedBytes: 0 };
+  return invoke<DeleteModelFilesResult>("delete_registered_model_files", { modelIds });
+}
+
+export async function onNinferConverterDownloadProgress(
+  handler: (payload: NinferConverterDownloadProgress) => void,
+): Promise<UnlistenFn | undefined> {
+  if (!isTauri()) return undefined;
+  return listen<NinferConverterDownloadProgress>("ninfer-converter-download-progress", (e) => handler(e.payload));
+}
+
+export async function onNinferConvertProgress(
+  handler: (payload: NinferConvertProgress) => void,
+): Promise<UnlistenFn | undefined> {
+  if (!isTauri()) return undefined;
+  return listen<NinferConvertProgress>("ninfer-convert-progress", (e) => handler(e.payload));
+}
+
+export async function onNinferConvertLog(
+  handler: (payload: NinferConvertLogEvent) => void,
+): Promise<UnlistenFn | undefined> {
+  if (!isTauri()) return undefined;
+  return listen<NinferConvertLogEvent>("ninfer-convert-log", (e) => handler(e.payload));
 }

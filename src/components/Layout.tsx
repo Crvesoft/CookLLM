@@ -1,4 +1,4 @@
-import { Activity, Check, ChevronDown, Copy, MessageSquareText, PanelLeftClose, PanelLeftOpen, Play, Power, Settings, SlidersHorizontal, SquareTerminal, Boxes, Globe, Loader2, Minimize, type LucideIcon } from "lucide-react";
+import { Activity, Check, ChevronDown, Copy, FlaskConical, MessageSquareText, PanelLeftClose, PanelLeftOpen, Play, Power, Settings, SlidersHorizontal, SquareTerminal, Boxes, Globe, Loader2, Minimize, type LucideIcon } from "lucide-react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type React from "react";
 import { useEffect, useRef, useState } from "react";
@@ -55,17 +55,20 @@ function WindowControls({ zenToggle }: { zenToggle?: React.ReactNode }) {
   );
 }
 
-export function Sidebar({ page, onPage, downloadBadge, badgeProgress, updateAvailable, status, abnormal, perfStats, perfConfig, collapsed, onToggleCollapsed, theme, onToggleTheme }: { page: Page; onPage: (page: Page) => void; downloadBadge?: string; badgeProgress?: number; updateAvailable?: boolean; status: ServerStatus; abnormal: boolean; perfStats: PerformanceStats | null; perfConfig: PerfMonitorConfig; collapsed: boolean; onToggleCollapsed: () => void; theme: string; onToggleTheme: () => void }) {
+export function Sidebar({ page, onPage, downloadBadge, badgeProgress, updateAvailable, navOrder, hiddenPages, status, abnormal, perfStats, perfConfig, collapsed, onToggleCollapsed, theme, onToggleTheme }: { page: Page; onPage: (page: Page) => void; downloadBadge?: string; badgeProgress?: number; updateAvailable?: boolean; navOrder: Page[]; hiddenPages: Set<Page>; status: ServerStatus; abnormal: boolean; perfStats: PerformanceStats | null; perfConfig: PerfMonitorConfig; collapsed: boolean; onToggleCollapsed: () => void; theme: string; onToggleTheme: () => void }) {
   const { t } = useI18n();
-  const nav: Array<{ id: Page; label: string; icon: LucideIcon; badge?: string; badgeProgress?: number; dot?: boolean }> = [
-    { id: "models", label: t("nav.models"), icon: Boxes },
-    { id: "profiles", label: t("nav.profiles"), icon: SlidersHorizontal },
-    { id: "explore", label: t("nav.explore"), icon: Globe, badge: downloadBadge, badgeProgress: badgeProgress },
-
-    { id: "playground", label: t("nav.playground"), icon: MessageSquareText },
-    { id: "logs", label: t("nav.logs"), icon: SquareTerminal },
-    { id: "settings", label: t("nav.settings"), icon: Settings },
-  ];
+  const navMeta: Record<Page, { label: string; icon: LucideIcon; badge?: string; badgeProgress?: number }> = {
+    models: { label: t("nav.models"), icon: Boxes },
+    profiles: { label: t("nav.profiles"), icon: SlidersHorizontal },
+    explore: { label: t("nav.explore"), icon: Globe, badge: downloadBadge, badgeProgress },
+    playground: { label: t("nav.playground"), icon: MessageSquareText },
+    logs: { label: t("nav.logs"), icon: SquareTerminal },
+    lab: { label: t("nav.lab"), icon: FlaskConical },
+    settings: { label: t("nav.settings"), icon: Settings },
+  };
+  const nav: Array<{ id: Page; label: string; icon: LucideIcon; badge?: string; badgeProgress?: number; dot?: boolean }> = navOrder
+    .filter((id) => !hiddenPages.has(id))
+    .map((id) => ({ id, ...navMeta[id] }));
   return <aside className={cn("sidebar", collapsed && "collapsed")}>
     {/* 品牌区即标题栏左端：deep 拖拽区（收起/展开按钮自身可点击，自动豁免拖拽） */}
     <div className="brand" data-tauri-drag-region="deep"><div className="brand-mark"><LlamaMark size={36} /></div><div className="brand-name"><strong>CookLLM</strong></div><button className="sidebar-toggle" title={collapsed ? t("expandMenu") : t("collapseMenu")} aria-label={collapsed ? t("expandMenu") : t("collapseMenu")} onClick={onToggleCollapsed}>{collapsed ? <PanelLeftOpen size={16} /> : <PanelLeftClose size={16} />}</button></div>
@@ -113,7 +116,13 @@ export function Topbar({ page, status, abnormal, busy, serviceStarting, onToggle
   return (
     <header className="topbar" data-tauri-drag-region="deep">
       <div className="breadcrumbs">
-        <strong>{t(page === "models" ? "nav.models" : page === "explore" ? "nav.explore" : page === "profiles" ? "nav.profiles" : page === "playground" ? "nav.playground" : page === "logs" ? "nav.logs" : "nav.settings")}</strong>
+        <strong>{t(page === "models" ? "nav.models" : page === "explore" ? "nav.explore" : page === "profiles" ? "nav.profiles" : page === "playground" ? "nav.playground" : page === "logs" ? "nav.logs" : page === "lab" ? "nav.lab" : "nav.settings")}</strong>
+        {page === "lab" && (
+          <span className="topbar-beta-pill" title={t("lab.betaNotice")}>
+            <FlaskConical size={11} />
+            <span>{t("lab.betaBadge")}</span>
+          </span>
+        )}
       </div>
       <div className="topbar-actions">
         {!isZenActive && (

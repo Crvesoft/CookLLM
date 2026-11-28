@@ -849,9 +849,9 @@
 }
 
 [data-theme="light"] .hf-format-pill.ninfer {
-  color: #334155;
-  background: #f1f5f9;
-  border: 1px solid rgba(148, 163, 184, 0.35);
+  color: #247985;
+  background: #eef6f7;
+  border: 1px solid rgba(47, 143, 158, 0.28);
 }
 
 [data-theme="light"] .hf-format-pill.safetensors {
@@ -867,9 +867,9 @@
 }
 
 [data-theme="light"] .hf-file-format-badge.ninfer {
-  color: #334155;
-  background: #f1f5f9;
-  border: 1px solid rgba(148, 163, 184, 0.32);
+  color: #247985;
+  background: #f4f9fa;
+  border: 1px solid rgba(47, 143, 158, 0.28);
 }
 
 [data-theme="light"] .hf-file-format-badge.safetensors,
